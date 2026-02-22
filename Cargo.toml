@@ -1,0 +1,18 @@
+[package]
+name = "tmark"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tmark"
+path = "src/main.rs"
+
+[dependencies]
+typst = "0.14"
+typst-render = "0.14"
+typst-kit = { version = "0.14", features = ["embed-fonts"] }
+pulldown-cmark = "0.12"
+clap = { version = "4", features = ["derive"] }
+comemo = "0.5"
+ecow = "0.2"
+anyhow = "1"
