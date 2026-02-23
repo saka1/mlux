@@ -97,9 +97,9 @@ fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
 
         if i == 0 {
             // 最初のチャンク: 全パラメータを含む
-            // a=t (小文字) で送信のみ — 表示せずキャッシュに格納
-            // 表示は a=p (place_viewport) で行う
-            write!(out, "\x1b_Ga=t,f=100,i={image_id},t=d,q=1,m={m};{chunk}\x1b\\")?;
+            // a=T で送信+表示。Ghostty でも i= 付きならキャッシュされ a=p で参照可能。
+            // ただし \x1b[2J はキャッシュごと消すので絶対に使わないこと。
+            write!(out, "\x1b_Ga=T,f=100,i={image_id},t=d,q=1,m={m};{chunk}\x1b\\")?;
         } else {
             write!(out, "\x1b_Gm={m},q=1;{chunk}\x1b\\")?;
         }
