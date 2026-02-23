@@ -30,23 +30,34 @@ impl TmarkWorld {
             "{theme_text}\n#set page(width: {width}pt)\n{content_text}\n"
         );
 
+        Self::from_source(&main_text, true)
+    }
+
+    /// Create a TmarkWorld from raw Typst source (no theme injection or width override).
+    pub fn new_raw(source: &str) -> Self {
+        Self::from_source(source, false)
+    }
+
+    fn from_source(main_text: &str, check_cjk: bool) -> Self {
         let vpath = VirtualPath::new("main.typ");
         let main_id = FileId::new(None, vpath);
-        let main_source = Source::new(main_id, main_text);
+        let main_source = Source::new(main_id, main_text.to_string());
 
         let Fonts { book, fonts } = FontSearcher::new()
             .include_system_fonts(true)
             .search();
 
-        // Check if any CJK font is available
-        // FontBook uses lowercased family names
-        let has_cjk = book.contains_family("ipagothic")
-            || book.contains_family("noto sans cjk jp")
-            || book.contains_family("noto serif cjk jp")
-            || book.contains_family("ipamincho");
-        if !has_cjk {
-            eprintln!("warning: no CJK font found. Japanese text may not render correctly.");
-            eprintln!("  Install IPAGothic or Noto Sans CJK JP for proper rendering.");
+        if check_cjk {
+            // Check if any CJK font is available
+            // FontBook uses lowercased family names
+            let has_cjk = book.contains_family("ipagothic")
+                || book.contains_family("noto sans cjk jp")
+                || book.contains_family("noto serif cjk jp")
+                || book.contains_family("ipamincho");
+            if !has_cjk {
+                eprintln!("warning: no CJK font found. Japanese text may not render correctly.");
+                eprintln!("  Install IPAGothic or Noto Sans CJK JP for proper rendering.");
+            }
         }
 
         Self {

@@ -236,6 +236,9 @@ pub fn markdown_to_typst(markdown: &str) -> String {
             // === Leaf events ===
             Event::Text(text) => {
                 if in_code_block {
+                    // Insert a space on blank lines so Typst generates a TextItem
+                    // (needed for visual line extraction in the sidebar).
+                    let text = fill_blank_lines(&text);
                     push_to_target(&mut output, &mut cell_buf, &text);
                 } else if cell_buf.is_some() {
                     let escaped = escape_typst(&text);
@@ -310,6 +313,27 @@ fn pop_expect(stack: &mut Vec<Container>, expected: &str) {
             "Expected {expected}, got {container:?}"
         );
     }
+}
+
+/// Replace blank lines with space-only lines in code block text.
+///
+/// Typst does not generate a TextItem for empty lines in raw blocks.
+/// By inserting a space, we ensure each line has a TextItem whose Y
+/// coordinate can be picked up by `extract_visual_lines()`.
+fn fill_blank_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut result = String::with_capacity(text.len() + lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if line.is_empty() && i < lines.len() - 1 {
+            result.push(' ');
+        } else {
+            result.push_str(line);
+        }
+    }
+    result
 }
 
 /// Escape characters that have special meaning in Typst markup.
@@ -468,5 +492,35 @@ mod tests {
             typst.contains("#hello *world* $100"),
             "Code block content should not be escaped, got: {typst}"
         );
+    }
+
+    #[test]
+    fn test_code_block_blank_lines_filled() {
+        let md = "```\nline1\n\nline3\n```";
+        let typst = markdown_to_typst(md);
+        // Blank line should be replaced with a space
+        assert!(
+            typst.contains("line1\n \nline3"),
+            "Blank lines in code blocks should be filled with a space, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_code_block_multiple_blank_lines() {
+        let md = "```\nline1\n\n\nline4\n```";
+        let typst = markdown_to_typst(md);
+        // Two consecutive blank lines should each get a space
+        assert!(
+            typst.contains("line1\n \n \nline4"),
+            "Multiple blank lines should each be filled, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_fill_blank_lines() {
+        assert_eq!(fill_blank_lines("a\n\nb\n"), "a\n \nb\n");
+        assert_eq!(fill_blank_lines("a\n\n\nb\n"), "a\n \n \nb\n");
+        assert_eq!(fill_blank_lines("a\nb\n"), "a\nb\n"); // no blanks
+        assert_eq!(fill_blank_lines("a\n"), "a\n"); // trailing newline preserved
     }
 }

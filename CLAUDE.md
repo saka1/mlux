@@ -29,6 +29,7 @@ Markdown → pulldown-cmark → Event stream → convert.rs → Typst markup
 - `docs/paged-document-structure.md` — PagedDocument frame tree structure (実機ダンプ付き)
 - `docs/kitty-graphics-protocol.md` — Kitty Graphics Protocol full spec reference
 - `docs/terminal-viewer-design.md` — Terminal viewer design decisions and architecture
+- `docs/visual-line-extraction.md` — フレームツリーからの視覚行抽出とベースラインオフセット問題
 
 ## Commands
 
