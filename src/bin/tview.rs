@@ -28,9 +28,8 @@ use std::process;
 use std::time::{Duration, Instant};
 
 use tmark::convert::markdown_to_typst;
-use tmark::render::{
-    StripDocument, VisibleStrips, compile_document, generate_sidebar_typst, render_page_to_png,
-};
+use tmark::render::{compile_document, render_page_to_png};
+use tmark::strip::{StripDocument, VisibleStrips, generate_sidebar_typst};
 use tmark::world::TmarkWorld;
 
 const CHUNK_SIZE: usize = 4096;
