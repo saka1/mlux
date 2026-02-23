@@ -1,6 +1,6 @@
 # Kitty Graphics Protocol 仕様リファレンス
 
-tmark Phase 4（ターミナル表示）実装のためのプロトコル仕様書。
+mlux Phase 4（ターミナル表示）実装のためのプロトコル仕様書。
 公式仕様: https://sw.kovidgoyal.net/kitty/graphics-protocol/
 
 ## エスケープシーケンス基本構造
@@ -335,7 +335,7 @@ for (i, chunk) in chunks.enumerate():
 
 ---
 
-## tmark での利用設計
+## mlux での利用設計
 
 ### 基本方針
 

@@ -41,7 +41,7 @@ use crate::strip::{
     StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
     extract_visual_lines, generate_sidebar_typst,
 };
-use crate::world::TmarkWorld;
+use crate::world::MluxWorld;
 
 const CHUNK_SIZE: usize = 4096;
 const SCROLL_STEP_CELLS: u32 = 3;
@@ -417,7 +417,7 @@ fn build_strip_document(
     );
 
     // 1. Compile content document
-    let content_world = TmarkWorld::new(theme_text, content_text, width_pt);
+    let content_world = MluxWorld::new(theme_text, content_text, width_pt);
     let document = compile_document(&content_world)?;
 
     // 2. Extract visual lines (needed for sidebar generation)
@@ -449,7 +449,7 @@ fn build_sidebar_doc(
         page_height_pt,
     );
 
-    let sidebar_world = TmarkWorld::new_raw(&sidebar_source);
+    let sidebar_world = MluxWorld::new_raw(&sidebar_source);
     compile_document(&sidebar_world)
 }
 

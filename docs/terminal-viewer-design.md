@@ -1,4 +1,4 @@
-# tmark ターミナルビューア設計
+# mlux ターミナルビューア設計
 
 Phase 4（Kitty Graphics Protocol 表示）および Phase 5（Vimライクナビゲーション）の設計文書。
 セッション内の議論で確定した方針と、残課題を記録する。

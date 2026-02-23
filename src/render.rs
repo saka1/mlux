@@ -1,10 +1,10 @@
 use anyhow::{Result, bail};
 use typst::layout::{Frame, FrameItem, PagedDocument, Point};
 
-use crate::world::TmarkWorld;
+use crate::world::MluxWorld;
 
 /// Compile Typst sources into a PagedDocument (no rendering).
-pub fn compile_document(world: &TmarkWorld) -> Result<PagedDocument> {
+pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
     let warned = typst::compile::<PagedDocument>(world);
 
     for warning in &warned.warnings {
@@ -37,7 +37,7 @@ pub fn render_page_to_png(document: &PagedDocument, ppi: f32) -> Result<Vec<u8>>
 }
 
 /// Compile Typst sources and render to PNG bytes (convenience wrapper).
-pub fn render_to_png(world: &TmarkWorld, ppi: f32) -> Result<Vec<u8>> {
+pub fn render_to_png(world: &MluxWorld, ppi: f32) -> Result<Vec<u8>> {
     let document = compile_document(world)?;
     render_page_to_png(&document, ppi)
 }

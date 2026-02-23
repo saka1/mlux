@@ -1,6 +1,6 @@
 # PagedDocument フレーム構造 詳細解析
 
-tmark の Typst コンパイル結果（`PagedDocument`）の内部構造を実機ダンプに基づき記録する。
+mlux の Typst コンパイル結果（`PagedDocument`）の内部構造を実機ダンプに基づき記録する。
 将来の Phase 4（Kitty Graphics Protocol）および行・ブロック座標に依存する機能の設計資料。
 
 ## 調査環境
@@ -38,7 +38,7 @@ typst_render::render(&page, ppi/72)
 `#set page(height: auto)` を指定すると**コンテンツに合わせて高さが自動伸長**する。
 この場合 `document.pages` の長さは常に1で、その1ページが全コンテンツを含む。
 
-tmark では catppuccin.typ の `#set page(height: auto)` により、
+mlux では catppuccin.typ の `#set page(height: auto)` により、
 スクロールビュー的な無限縦長フレームとして使用している。
 
 ## Document トレイト
@@ -54,7 +54,7 @@ typst::compile::<HtmlDocument>(&world)
 ```
 
 `Document` トレイトは sealed（外部実装不可）で、上記2つのみ。
-tmark の用途（Typst レイアウトエンジンを活かしたラスタライズ）には `PagedDocument` が適切。
+mlux の用途（Typst レイアウトエンジンを活かしたラスタライズ）には `PagedDocument` が適切。
 
 ## フレームツリー構造
 

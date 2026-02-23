@@ -6,11 +6,11 @@ use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
 use typst_kit::fonts::{FontSearcher, FontSlot, Fonts};
 
-/// The Typst world for tmark.
+/// The Typst world for mlux.
 ///
 /// Provides a single virtual file (`/main.typ`) containing the theme
 /// set-rules followed by the converted Markdown content.
-pub struct TmarkWorld {
+pub struct MluxWorld {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
     fonts: Vec<FontSlot>,
@@ -18,8 +18,8 @@ pub struct TmarkWorld {
     main_source: Source,
 }
 
-impl TmarkWorld {
-    /// Create a new TmarkWorld.
+impl MluxWorld {
+    /// Create a new MluxWorld.
     ///
     /// - `theme_text`: contents of the theme.typ file
     /// - `content_text`: Typst markup converted from Markdown
@@ -33,7 +33,7 @@ impl TmarkWorld {
         Self::from_source(&main_text, true)
     }
 
-    /// Create a TmarkWorld from raw Typst source (no theme injection or width override).
+    /// Create a MluxWorld from raw Typst source (no theme injection or width override).
     pub fn new_raw(source: &str) -> Self {
         Self::from_source(source, false)
     }
@@ -70,7 +70,7 @@ impl TmarkWorld {
     }
 }
 
-impl World for TmarkWorld {
+impl World for MluxWorld {
     fn library(&self) -> &LazyHash<Library> {
         &self.library
     }

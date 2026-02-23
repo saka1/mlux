@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-tmark — Markdown to PNG renderer using Rust + Typst. Parses Markdown with pulldown-cmark,
+mlux — Markdown to PNG renderer using Rust + Typst. Parses Markdown with pulldown-cmark,
 converts to Typst markup, compiles via Typst's engine, and renders to PNG.
 Includes a terminal viewer using Kitty Graphics Protocol with strip-based lazy rendering.
 
 ## Architecture
 
-### Render pipeline (`tmark render`)
+### Render pipeline (`mlux render`)
 
 ```
 Markdown → pulldown-cmark → Event stream → convert.rs → Typst markup
@@ -18,7 +18,7 @@ Markdown → pulldown-cmark → Event stream → convert.rs → Typst markup
   → render.rs: typst::compile → PagedDocument → typst_render → PNG
 ```
 
-### Terminal viewer pipeline (`tmark <file>`)
+### Terminal viewer pipeline (`mlux <file>`)
 
 ```
 Markdown → convert.rs → Typst markup
@@ -34,14 +34,15 @@ keeping peak memory proportional to strip size, not document size.
 
 ## Key Files
 
+- `src/lib.rs` — Public module declarations (convert, render, strip, viewer, world)
 - `src/main.rs` — CLI entry point (clap subcommands: default=viewer, `render`=PNG output)
-- `src/convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler)
+- `src/convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, 20 unit tests inline)
 - `src/world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
 - `src/render.rs` — Typst compile + PNG render + debug dump utilities
 - `src/strip.rs` — Strip-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
 - `src/viewer.rs` — Terminal viewer using Kitty Graphics Protocol
 - `themes/catppuccin.typ` — Default dark theme (Catppuccin Mocha)
-- `tests/integration.rs` — Integration tests
+- `tests/integration.rs` — Integration tests (fixture-based: load md → convert → render → verify PNG)
 - `tests/fixtures/` — Test Markdown files
 - `docs/typst-api-notes.md` — Typst 0.14.2 API reference notes
 - `docs/paged-document-structure.md` — PagedDocument frame tree structure (実機ダンプ付き)
@@ -72,14 +73,19 @@ cargo test <test_name>
 
 # Check
 cargo check
+
+# Debug logging (viewer/strip internals)
+RUST_LOG=debug cargo run -- <input.md>
 ```
 
 ## Dependencies
 
 - typst 0.14, typst-render 0.14, typst-kit 0.14 (features: embed-fonts)
-- pulldown-cmark 0.12
+- pulldown-cmark 0.12 (options: ENABLE_TABLES, ENABLE_STRIKETHROUGH)
 - clap 4 (derive)
 - crossterm 0.28, base64 0.22 (for viewer)
+- comemo 0.5, ecow 0.2 (typst lazy hashing / compact strings)
+- anyhow 1 (error handling), log 0.4 + env_logger 0.11
 - Rust edition 2024
 
 ## Implementation Status
@@ -92,6 +98,15 @@ cargo check
   - Design doc: `docs/terminal-viewer-design.md`
   - Protocol spec: `docs/kitty-graphics-protocol.md`
 
+## Viewer Constants
+
+- PPI = 144.0 (fixed in viewer, configurable in `render` CLI)
+- Strip height = 500pt minimum (at least viewport height)
+- Scroll step = 3 terminal cells per j/k press
+- Frame budget = 32ms (~30fps)
+- Sidebar = 6 columns (fixed)
+- Kitty Protocol: all commands use `q=2` to suppress responses (avoids crossterm misparse)
+
 ## Notes
 
 - Theme is inlined into main.typ (not #include) because set-rule propagation
@@ -100,3 +115,5 @@ cargo check
 - FontBook uses lowercased family names for lookups
 - The `typst/` directory contains typst source for API reference only (not used as dependency)
 - typst-kit feature name is `embed-fonts` (not `embedded-fonts`)
+- convert.rs uses a Container enum + stack for nested markup state tracking
+- Viewer outer loop handles resize (rebuilds document); inner loop (thread::scope) handles scrolling with prefetch worker

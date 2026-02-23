@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use tmark::convert::markdown_to_typst;
-use tmark::render::{dump_document, render_to_png};
-use tmark::world::TmarkWorld;
+use mlux::convert::markdown_to_typst;
+use mlux::render::{dump_document, render_to_png};
+use mlux::world::MluxWorld;
 
 #[derive(Parser)]
-#[command(name = "tmark", about = "Markdown viewer and renderer powered by Typst")]
+#[command(name = "mlux", about = "Markdown viewer and renderer powered by Typst")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         None => {
             let input = cli.input
                 .ok_or_else(|| anyhow::anyhow!("input file required"))?;
-            tmark::viewer::run(input, cli.theme)
+            mlux::viewer::run(input, cli.theme)
         }
     }
 }
@@ -85,7 +85,7 @@ fn cmd_render(
     let content_text = markdown_to_typst(&markdown);
 
     // Create world and render
-    let world = TmarkWorld::new(&theme_text, &content_text, width);
+    let world = MluxWorld::new(&theme_text, &content_text, width);
     if dump {
         let warned = typst::compile::<typst::layout::PagedDocument>(&world);
         for w in &warned.warnings {

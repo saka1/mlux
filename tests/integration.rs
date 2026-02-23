@@ -1,8 +1,8 @@
 use std::fs;
 
-use tmark::convert::markdown_to_typst;
-use tmark::render::render_to_png;
-use tmark::world::TmarkWorld;
+use mlux::convert::markdown_to_typst;
+use mlux::render::render_to_png;
+use mlux::world::MluxWorld;
 
 fn load_theme() -> String {
     fs::read_to_string("themes/catppuccin.typ").expect("theme file should exist")
@@ -14,7 +14,7 @@ fn test_paragraph_ja_renders() {
         fs::read_to_string("tests/fixtures/01_paragraph_ja.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
-    let world = TmarkWorld::new(&theme, &content, 800.0);
+    let world = MluxWorld::new(&theme, &content, 800.0);
     let png_data = render_to_png(&world, 144.0).expect("rendering should succeed");
 
     // Check PNG magic bytes
@@ -32,7 +32,7 @@ fn test_paragraph_ja_renders() {
 fn test_empty_input() {
     let theme = load_theme();
     let content = markdown_to_typst("");
-    let world = TmarkWorld::new(&theme, &content, 800.0);
+    let world = MluxWorld::new(&theme, &content, 800.0);
     let png_data = render_to_png(&world, 144.0).expect("empty input should still render");
 
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n");
@@ -44,7 +44,7 @@ fn test_full_document_renders() {
         fs::read_to_string("tests/fixtures/07_full_document.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
-    let world = TmarkWorld::new(&theme, &content, 800.0);
+    let world = MluxWorld::new(&theme, &content, 800.0);
     let png_data = render_to_png(&world, 144.0).expect("rendering should succeed");
 
     // Check PNG magic bytes

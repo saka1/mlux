@@ -1,8 +1,8 @@
-# tmark
+# mlux
 
 Markdown to PNG renderer powered by Rust and [Typst](https://typst.app/).
 
-tmark parses Markdown with pulldown-cmark, converts it to Typst markup, and renders
+mlux parses Markdown with pulldown-cmark, converts it to Typst markup, and renders
 high-quality typeset output as a PNG image. It also includes a built-in terminal viewer
 that displays rendered documents inline using the Kitty Graphics Protocol.
 
@@ -21,13 +21,13 @@ that displays rendered documents inline using the Kitty Graphics Protocol.
 
 ```
 # View in terminal (default)
-tmark input.md
+mlux input.md
 
 # Render to PNG
-tmark render input.md -o output.png
+mlux render input.md -o output.png
 
 # Custom width, resolution, and theme
-tmark render input.md -o output.png --width 800 --ppi 144 --theme catppuccin
+mlux render input.md -o output.png --width 800 --ppi 144 --theme catppuccin
 ```
 
 ### Viewer keybindings

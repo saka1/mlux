@@ -1,6 +1,6 @@
 # Typst 0.14.2 API メモ
 
-tmark（Markdown→Typst→PNG パイプライン）実装時の知見。
+mlux（Markdown→Typst→PNG パイプライン）実装時の知見。
 将来の API バージョンアップ時の参照用。
 
 ## 公開版 vs 開発版 API
