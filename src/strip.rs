@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use anyhow::Result;
@@ -228,6 +228,9 @@ pub enum VisibleStrips {
 }
 
 /// A document split into renderable strips for lazy, bounded-memory rendering.
+///
+/// All methods take `&self` — rendering is pure (no internal caching).
+/// Use [`StripDocumentCache`] separately for caching rendered PNGs.
 pub struct StripDocument {
     strips: Vec<Frame>,
     page_fill: Smart<Option<Paint>>,
@@ -237,9 +240,6 @@ pub struct StripDocument {
     total_height_px: u32,
     page_height_pt: f64,
     pub visual_lines: Vec<VisualLine>,
-    cache: HashMap<usize, Vec<u8>>,
-    lru: VecDeque<usize>,
-    cache_size: usize,
 }
 
 impl StripDocument {
@@ -247,12 +247,10 @@ impl StripDocument {
     ///
     /// - `strip_height_pt`: height of each strip in typst points
     /// - `ppi`: rendering resolution
-    /// - `cache_size`: max cached strip PNGs (0 = no caching)
     pub fn new(
         document: &PagedDocument,
         strip_height_pt: f64,
         ppi: f32,
-        cache_size: usize,
     ) -> Self {
         assert!(!document.pages.is_empty(), "document has no pages");
         let page = &document.pages[0];
@@ -285,9 +283,6 @@ impl StripDocument {
             total_height_px,
             page_height_pt,
             visual_lines,
-            cache: HashMap::new(),
-            lru: VecDeque::new(),
-            cache_size,
         }
     }
 
@@ -322,19 +317,14 @@ impl StripDocument {
         (self.strips[idx].size().y.to_pt() * pixel_per_pt).ceil() as u32
     }
 
-    /// Render a single strip to PNG bytes (with optional LRU caching).
-    pub fn get_strip_png(&mut self, idx: usize) -> Result<&[u8]> {
+    /// Render a single strip to PNG bytes.
+    ///
+    /// This is a pure function — no internal caching.
+    /// Thread-safe: `Frame.items` uses `Arc`, `typst_render::render` is stateless.
+    pub fn render_strip(&self, idx: usize) -> Result<Vec<u8>> {
         assert!(idx < self.strips.len(), "strip index out of bounds");
 
-        if self.cache_size > 0 && self.cache.contains_key(&idx) {
-            // Move to front of LRU
-            self.lru.retain(|&i| i != idx);
-            self.lru.push_back(idx);
-            trace!("cache hit strip {}", idx);
-            return Ok(self.cache.get(&idx).unwrap());
-        }
-
-        trace!("cache miss strip {}, rendering", idx);
+        trace!("rendering strip {}", idx);
 
         // Build a Page from the sub-frame
         let page = Page {
@@ -359,23 +349,7 @@ impl StripDocument {
             png.len()
         );
 
-        if self.cache_size > 0 {
-            // Evict if at capacity
-            while self.lru.len() >= self.cache_size {
-                if let Some(evicted) = self.lru.pop_front() {
-                    self.cache.remove(&evicted);
-                    trace!("cache evict strip {}", evicted);
-                }
-            }
-            self.cache.insert(idx, png);
-            self.lru.push_back(idx);
-            Ok(self.cache.get(&idx).unwrap())
-        } else {
-            // No caching: store in slot 0, evicting previous
-            self.cache.clear();
-            self.cache.insert(idx, png);
-            Ok(self.cache.get(&idx).unwrap())
-        }
+        Ok(png)
     }
 
     /// Determine which strip(s) are visible at a given scroll offset.
@@ -437,5 +411,63 @@ impl StripDocument {
             }
         }
         best
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StripDocumentCache — external cache for rendered strip PNGs
+// ---------------------------------------------------------------------------
+
+/// Cache for rendered strip PNGs, separated from [`StripDocument`] to allow
+/// concurrent `&StripDocument` access (e.g., from a prefetch worker thread)
+/// while the main thread owns `&mut StripDocumentCache`.
+pub struct StripDocumentCache {
+    data: HashMap<usize, Vec<u8>>,
+}
+
+impl StripDocumentCache {
+    pub fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> Option<&[u8]> {
+        self.data.get(&idx).map(|v| v.as_slice())
+    }
+
+    pub fn contains(&self, idx: usize) -> bool {
+        self.data.contains_key(&idx)
+    }
+
+    pub fn insert(&mut self, idx: usize, png: Vec<u8>) {
+        self.data.insert(idx, png);
+    }
+
+    /// Get cached PNG or render synchronously and cache the result.
+    pub fn get_or_render(&mut self, doc: &StripDocument, idx: usize) -> Result<&[u8]> {
+        if !self.data.contains_key(&idx) {
+            let png = doc.render_strip(idx)?;
+            self.data.insert(idx, png);
+        }
+        Ok(self.data.get(&idx).unwrap())
+    }
+
+    /// Evict entries far from `center`, keeping only those within `keep_radius`.
+    pub fn evict_distant(&mut self, center: usize, keep_radius: usize) {
+        let to_evict: Vec<usize> = self
+            .data
+            .keys()
+            .filter(|&&k| (k as isize - center as isize).unsigned_abs() > keep_radius)
+            .copied()
+            .collect();
+        for k in to_evict {
+            self.data.remove(&k);
+            trace!("cache evict strip {}", k);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
     }
 }

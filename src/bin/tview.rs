@@ -25,11 +25,13 @@ use std::collections::HashMap;
 use std::io::{self, Write, stdout};
 use std::path::PathBuf;
 use std::process;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use tmark::convert::markdown_to_typst;
 use tmark::render::{compile_document, render_page_to_png};
-use tmark::strip::{StripDocument, VisibleStrips, generate_sidebar_typst};
+use tmark::strip::{StripDocument, StripDocumentCache, VisibleStrips, generate_sidebar_typst};
 use tmark::world::TmarkWorld;
 
 const CHUNK_SIZE: usize = 4096;
@@ -39,7 +41,6 @@ const FRAME_BUDGET: Duration = Duration::from_millis(32); // ~30fps max
 
 const PPI: f32 = 144.0;
 const DEFAULT_STRIP_HEIGHT_PT: f64 = 500.0;
-const DEFAULT_CACHE_SIZE: usize = 0; // Deterministic: no caching during development
 
 // ---------------------------------------------------------------------------
 // RawGuard — Drop で raw mode / alternate screen / 画像削除を確実に復元
@@ -93,7 +94,6 @@ struct Layout {
 
 struct ViewState {
     y_offset: u32,   // スクロールオフセット（ピクセル）
-    img_w: u32,      // ドキュメント幅（ピクセル）
     img_h: u32,      // ドキュメント高さ（ピクセル）
     vp_w: u32,       // ビューポート幅（ピクセル）
     vp_h: u32,       // ビューポート高さ（ピクセル）
@@ -234,7 +234,8 @@ impl LoadedStrips {
     /// Ensure a strip is loaded in the terminal. Returns its Kitty image ID.
     fn ensure_loaded(
         &mut self,
-        strip_doc: &mut StripDocument,
+        strip_doc: &StripDocument,
+        cache: &mut StripDocumentCache,
         idx: usize,
     ) -> anyhow::Result<u32> {
         if let Some(&id) = self.map.get(&idx) {
@@ -244,7 +245,7 @@ impl LoadedStrips {
         let id = self.next_id;
         self.next_id += 1;
 
-        let png = strip_doc.get_strip_png(idx)?;
+        let png = cache.get_or_render(strip_doc, idx)?;
         send_image(png, id)?;
         self.map.insert(idx, id);
 
@@ -279,7 +280,8 @@ impl LoadedStrips {
 /// Ordering: render + send FIRST, then delete old placements + place new ones.
 /// This keeps the old image visible during rendering, avoiding blank flashes.
 fn place_content_strips(
-    strip_doc: &mut StripDocument,
+    strip_doc: &StripDocument,
+    cache: &mut StripDocumentCache,
     loaded: &mut LoadedStrips,
     layout: &Layout,
     state: &ViewState,
@@ -290,13 +292,13 @@ fn place_content_strips(
     // Old placements remain visible during this potentially slow step.
     match &visible {
         VisibleStrips::Single { idx, .. } => {
-            loaded.ensure_loaded(strip_doc, *idx)?;
+            loaded.ensure_loaded(strip_doc, cache, *idx)?;
         }
         VisibleStrips::Split {
             top_idx, bot_idx, ..
         } => {
-            loaded.ensure_loaded(strip_doc, *top_idx)?;
-            loaded.ensure_loaded(strip_doc, *bot_idx)?;
+            loaded.ensure_loaded(strip_doc, cache, *top_idx)?;
+            loaded.ensure_loaded(strip_doc, cache, *bot_idx)?;
         }
     }
 
@@ -364,12 +366,13 @@ fn place_content_strips(
 
 /// Full redraw: content strips + sidebar + status bar.
 fn redraw(
-    strip_doc: &mut StripDocument,
+    strip_doc: &StripDocument,
+    cache: &mut StripDocumentCache,
     loaded: &mut LoadedStrips,
     layout: &Layout,
     state: &ViewState,
 ) -> anyhow::Result<()> {
-    place_content_strips(strip_doc, loaded, layout, state)?;
+    place_content_strips(strip_doc, cache, loaded, layout, state)?;
     place_sidebar(layout, state)?;
     draw_status_bar(layout, state)?;
     Ok(())
@@ -404,7 +407,6 @@ fn build_strip_document(
         &document,
         strip_height_pt,
         PPI,
-        DEFAULT_CACHE_SIZE,
     ))
 }
 
@@ -440,6 +442,32 @@ fn main() {
         // RawGuard の Drop が先に呼ばれるので、ここではターミナルは復元済み
         eprintln!("Error: {e:#}");
         process::exit(1);
+    }
+}
+
+/// Why the event loop exited the inner `thread::scope`.
+enum ExitReason {
+    Quit,
+    Resize { new_cols: u16, new_rows: u16 },
+}
+
+/// Request prefetch of strips adjacent to the current viewport.
+///
+/// Sends strip indices for 2 strips ahead and 1 behind the current position.
+/// The worker uses drain-to-latest, so rapid-fire requests are cheap.
+fn send_prefetch(
+    tx: &mpsc::Sender<usize>,
+    doc: &StripDocument,
+    cache: &StripDocumentCache,
+    y_offset: u32,
+) {
+    let current = (y_offset / doc.strip_height_px()) as usize;
+    // Forward 2 + backward 1
+    for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
+        if idx < doc.strip_count() && !cache.contains(idx) {
+            debug!("prefetch: requesting strip {idx} (current={current})");
+            let _ = tx.send(idx);
+        }
     }
 }
 
@@ -479,145 +507,188 @@ fn run() -> anyhow::Result<()> {
         );
     }
 
-    let mut layout = compute_layout(term_cols, term_rows, pixel_w, pixel_h);
-
-    // 3. Build StripDocument (compile + split, no full-size pixmap)
-    info!("building strip document...");
-    let mut strip_doc = build_strip_document(&theme_text, &content_text, &layout)?;
-
-    // 4. Build sidebar (full-height, but narrow → small memory)
-    let (sidebar_png, sidebar_w, sidebar_h) = build_sidebar(&strip_doc, &layout)?;
-
-    // 5. レイアウト + 初期状態
-    let img_w = strip_doc.width_px();
-    let img_h = strip_doc.total_height_px();
-    let (vp_w, vp_h) = vp_dims(&layout, img_w, img_h);
-    let mut state = ViewState {
-        y_offset: 0,
-        img_w,
-        img_h,
-        vp_w,
-        vp_h,
-        sidebar_w,
-        sidebar_h,
-        filename,
-    };
-
-    // 6. raw mode + alternate screen
+    // 3. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = RawGuard::enter()?;
 
-    // 7. サイドバー PNG を送信（コンテンツはオンデマンド）
-    send_image(&sidebar_png, SIDEBAR_IMAGE_ID)?;
-    let mut loaded = LoadedStrips::new();
+    let mut layout = compute_layout(term_cols, term_rows, pixel_w, pixel_h);
+    let mut y_offset_carry: u32 = 0;
 
-    // 8. 初回描画
-    redraw(&mut strip_doc, &mut loaded, &layout, &state)?;
+    // Outer loop: each iteration builds a new StripDocument (initial + resize)
+    'outer: loop {
+        // 4. Build StripDocument + sidebar
+        info!("building strip document...");
+        let strip_doc = build_strip_document(&theme_text, &content_text, &layout)?;
+        let (sidebar_png, sidebar_w, sidebar_h) = build_sidebar(&strip_doc, &layout)?;
 
-    // 9. イベントループ（フレーム予算ベースのスロットリング）
-    let mut dirty = false;
-    let mut resize_pending = false;
-    let mut last_render = Instant::now();
-
-    loop {
-        let timeout = if dirty || resize_pending {
-            FRAME_BUDGET.saturating_sub(last_render.elapsed())
-        } else {
-            Duration::from_secs(86400)
+        let img_w = strip_doc.width_px();
+        let img_h = strip_doc.total_height_px();
+        let (vp_w, vp_h) = vp_dims(&layout, img_w, img_h);
+        let mut state = ViewState {
+            y_offset: y_offset_carry.min(strip_doc.max_scroll(vp_h)),
+            img_h,
+            vp_w,
+            vp_h,
+            sidebar_w,
+            sidebar_h,
+            filename: filename.clone(),
         };
 
-        if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(KeyEvent { code, modifiers, .. }) => {
-                    let max_y = strip_doc.max_scroll(state.vp_h);
-                    let scroll_step = SCROLL_STEP_CELLS * layout.cell_h as u32;
-                    let half_page =
-                        (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
+        send_image(&sidebar_png, SIDEBAR_IMAGE_ID)?;
+        let mut cache = StripDocumentCache::new();
+        let mut loaded = LoadedStrips::new();
 
-                    match (code, modifiers) {
-                        // 終了
-                        (KeyCode::Char('q'), _)
-                        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+        // 5. thread::scope — prefetch worker + inner event loop
+        let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
+            let (req_tx, req_rx) = mpsc::channel::<usize>();
+            let (res_tx, res_rx) = mpsc::channel::<(usize, Vec<u8>)>();
 
-                        // 下スクロール
-                        (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
-                            state.y_offset = (state.y_offset + scroll_step).min(max_y);
-                            dirty = true;
+            // Prefetch worker: drain-to-latest pattern
+            let doc = &strip_doc;
+            s.spawn(move || {
+                debug!("prefetch worker: started");
+                while let Ok(mut idx) = req_rx.recv() {
+                    // Rapid scroll: only process the latest request
+                    let mut skipped = 0u32;
+                    while let Ok(newer) = req_rx.try_recv() {
+                        idx = newer;
+                        skipped += 1;
+                    }
+                    if skipped > 0 {
+                        debug!("prefetch worker: drained {skipped} stale, rendering strip {idx}");
+                    } else {
+                        debug!("prefetch worker: rendering strip {idx}");
+                    }
+                    match doc.render_strip(idx) {
+                        Ok(png) => {
+                            debug!("prefetch worker: strip {idx} done ({} bytes)", png.len());
+                            let _ = res_tx.send((idx, png));
                         }
-                        // 上スクロール
-                        (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
-                            state.y_offset = state.y_offset.saturating_sub(scroll_step);
-                            dirty = true;
+                        Err(e) => {
+                            log::error!("prefetch worker: strip {idx} failed: {e}");
                         }
-                        // 半画面下
-                        (KeyCode::Char('d'), _) => {
-                            state.y_offset = (state.y_offset + half_page).min(max_y);
-                            dirty = true;
+                    }
+                }
+                debug!("prefetch worker: channel closed, exiting");
+            });
+
+            // Initial redraw + prefetch
+            redraw(doc, &mut cache, &mut loaded, &layout, &state)?;
+            send_prefetch(&req_tx, doc, &cache, state.y_offset);
+
+            // Inner event loop
+            let mut dirty = false;
+            let mut last_render = Instant::now();
+
+            loop {
+                // Drain prefetch results into cache
+                while let Ok((idx, png)) = res_rx.try_recv() {
+                    debug!("main: received prefetched strip {idx} ({} bytes)", png.len());
+                    cache.insert(idx, png);
+                }
+
+                let timeout = if dirty {
+                    FRAME_BUDGET.saturating_sub(last_render.elapsed())
+                } else {
+                    Duration::from_secs(86400)
+                };
+
+                if event::poll(timeout)? {
+                    match event::read()? {
+                        Event::Key(KeyEvent { code, modifiers, .. }) => {
+                            let max_y = doc.max_scroll(state.vp_h);
+                            let scroll_step = SCROLL_STEP_CELLS * layout.cell_h as u32;
+                            let half_page =
+                                (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
+
+                            match (code, modifiers) {
+                                // 終了
+                                (KeyCode::Char('q'), _)
+                                | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                    return Ok(ExitReason::Quit);
+                                    // req_tx dropped → worker exits → scope joins
+                                }
+
+                                // 下スクロール
+                                (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+                                    state.y_offset = (state.y_offset + scroll_step).min(max_y);
+                                    dirty = true;
+                                }
+                                // 上スクロール
+                                (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+                                    state.y_offset =
+                                        state.y_offset.saturating_sub(scroll_step);
+                                    dirty = true;
+                                }
+                                // 半画面下
+                                (KeyCode::Char('d'), _) => {
+                                    state.y_offset = (state.y_offset + half_page).min(max_y);
+                                    dirty = true;
+                                }
+                                // 半画面上
+                                (KeyCode::Char('u'), _) => {
+                                    state.y_offset =
+                                        state.y_offset.saturating_sub(half_page);
+                                    dirty = true;
+                                }
+                                // 先頭
+                                (KeyCode::Char('g'), _) => {
+                                    state.y_offset = 0;
+                                    dirty = true;
+                                }
+                                // 末尾
+                                (KeyCode::Char('G'), _) => {
+                                    state.y_offset = max_y;
+                                    dirty = true;
+                                }
+
+                                _ => {}
+                            }
                         }
-                        // 半画面上
-                        (KeyCode::Char('u'), _) => {
-                            state.y_offset = state.y_offset.saturating_sub(half_page);
-                            dirty = true;
-                        }
-                        // 先頭
-                        (KeyCode::Char('g'), _) => {
-                            state.y_offset = 0;
-                            dirty = true;
-                        }
-                        // 末尾
-                        (KeyCode::Char('G'), _) => {
-                            state.y_offset = max_y;
-                            dirty = true;
+
+                        Event::Resize(new_cols, new_rows) => {
+                            return Ok(ExitReason::Resize { new_cols, new_rows });
+                            // req_tx dropped → worker exits → scope joins
                         }
 
                         _ => {}
                     }
+                    continue;
                 }
 
-                Event::Resize(new_cols, new_rows) => {
-                    let new_winsize = terminal::window_size()?;
-                    layout =
-                        compute_layout(new_cols, new_rows, new_winsize.width, new_winsize.height);
-                    resize_pending = true;
+                // poll timeout → frame budget elapsed, execute redraw
+                if dirty {
+                    redraw(doc, &mut cache, &mut loaded, &layout, &state)?;
+                    send_prefetch(&req_tx, doc, &cache, state.y_offset);
+                    cache.evict_distant(
+                        (state.y_offset / doc.strip_height_px()) as usize,
+                        4,
+                    );
+                    dirty = false;
                 }
-
-                _ => {}
+                last_render = Instant::now();
             }
-            continue;
-        }
+            // req_tx dropped here → worker recv() gets Err → worker exits → scope joins
+        })?;
 
-        // poll タイムアウト → フレーム予算消化、描画実行
-        if resize_pending {
-            debug!("resize: rebuilding strip document and sidebar");
-            // 全画像削除
-            {
+        match exit {
+            ExitReason::Quit => break 'outer,
+            ExitReason::Resize { new_cols, new_rows } => {
+                y_offset_carry = state.y_offset;
+                // Delete all images, then rebuild in next outer iteration
+                debug!("resize: rebuilding strip document and sidebar");
+                let new_winsize = terminal::window_size()?;
+                layout = compute_layout(
+                    new_cols,
+                    new_rows,
+                    new_winsize.width,
+                    new_winsize.height,
+                );
                 let mut out = stdout();
                 write!(out, "\x1b_Ga=d,d=A,q=1\x1b\\")?;
                 out.flush()?;
+                // continue 'outer → new strip_doc + new scope + new worker
             }
-            loaded = LoadedStrips::new();
-
-            // 再コンパイル
-            strip_doc = build_strip_document(&theme_text, &content_text, &layout)?;
-            let (new_sidebar_png, new_sidebar_w, new_sidebar_h) =
-                build_sidebar(&strip_doc, &layout)?;
-            send_image(&new_sidebar_png, SIDEBAR_IMAGE_ID)?;
-
-            state.img_w = strip_doc.width_px();
-            state.img_h = strip_doc.total_height_px();
-            state.sidebar_w = new_sidebar_w;
-            state.sidebar_h = new_sidebar_h;
-            (state.vp_w, state.vp_h) = vp_dims(&layout, state.img_w, state.img_h);
-            let new_max_y = strip_doc.max_scroll(state.vp_h);
-            state.y_offset = state.y_offset.min(new_max_y);
-
-            redraw(&mut strip_doc, &mut loaded, &layout, &state)?;
-            resize_pending = false;
-            dirty = false;
-        } else if dirty {
-            redraw(&mut strip_doc, &mut loaded, &layout, &state)?;
-            dirty = false;
         }
-        last_render = Instant::now();
     }
 
     guard.cleanup();
