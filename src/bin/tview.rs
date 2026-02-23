@@ -11,6 +11,13 @@
 //!   The document is compiled once with `height: auto`, then the Frame tree
 //!   is split into vertical strips. Only visible strips are rendered to PNG,
 //!   keeping peak memory proportional to strip size, not document size.
+//!
+//! Kitty response suppression:
+//!   All Kitty Graphics Protocol commands use `q=2` (suppress all responses).
+//!   Without this, error responses (e.g. ENOENT from oversized images) are
+//!   delivered as APC sequences that crossterm misparses as key events,
+//!   causing phantom scrolling. `q=2` suppresses both OK and error responses.
+//!   Since tview never reads Kitty responses, this is always safe.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::{
@@ -21,7 +28,7 @@ use crossterm::{
     terminal,
 };
 use log::{debug, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write, stdout};
 use std::path::PathBuf;
 use std::process;
@@ -30,12 +37,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tmark::convert::markdown_to_typst;
-use tmark::render::{compile_document, render_page_to_png};
-use tmark::strip::{StripDocument, StripDocumentCache, VisibleStrips, generate_sidebar_typst};
+use typst::layout::PagedDocument;
+
+use tmark::render::compile_document;
+use tmark::strip::{
+    StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
+    extract_visual_lines, generate_sidebar_typst,
+};
 use tmark::world::TmarkWorld;
 
 const CHUNK_SIZE: usize = 4096;
-const SIDEBAR_IMAGE_ID: u32 = 2;
 const SCROLL_STEP_CELLS: u32 = 3;
 const FRAME_BUDGET: Duration = Duration::from_millis(32); // ~30fps max
 
@@ -65,7 +76,7 @@ impl RawGuard {
         self.cleaned = true;
         let mut out = stdout();
         // 全画像+データ削除
-        let _ = write!(out, "\x1b_Ga=d,d=A,q=1\x1b\\");
+        let _ = write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\");
         let _ = out.execute(cursor::Show);
         let _ = out.execute(terminal::LeaveAlternateScreen);
         let _ = terminal::disable_raw_mode();
@@ -97,8 +108,6 @@ struct ViewState {
     img_h: u32,      // ドキュメント高さ（ピクセル）
     vp_w: u32,       // ビューポート幅（ピクセル）
     vp_h: u32,       // ビューポート高さ（ピクセル）
-    sidebar_w: u32,  // サイドバー画像幅（ピクセル）
-    sidebar_h: u32,  // サイドバー画像高さ（ピクセル）
     filename: String,
 }
 
@@ -120,22 +129,6 @@ fn vp_dims(layout: &Layout, img_w: u32, img_h: u32) -> (u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
-// PNG dimensions — IHDR からサイズ抽出
-// ---------------------------------------------------------------------------
-
-fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    if data.len() < 24 {
-        return None;
-    }
-    if &data[0..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
-    let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
-    let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
-    Some((w, h))
-}
-
-// ---------------------------------------------------------------------------
 // Kitty protocol helpers
 // ---------------------------------------------------------------------------
 
@@ -154,9 +147,9 @@ fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
         let m = if is_last { 0 } else { 1 };
         if i == 0 {
             // a=t: transfer only. a=p で別途配置する。
-            write!(out, "\x1b_Ga=t,f=100,i={image_id},t=d,q=1,m={m};{chunk}\x1b\\")?;
+            write!(out, "\x1b_Ga=t,f=100,i={image_id},t=d,q=2,m={m};{chunk}\x1b\\")?;
         } else {
-            write!(out, "\x1b_Gm={m},q=1;{chunk}\x1b\\")?;
+            write!(out, "\x1b_Gm={m},q=2;{chunk}\x1b\\")?;
         }
     }
     out.flush()
@@ -165,32 +158,72 @@ fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
 /// 画像データ+配置を削除
 fn delete_image(image_id: u32) -> io::Result<()> {
     let mut out = stdout();
-    write!(out, "\x1b_Ga=d,d=I,i={image_id},q=1\x1b\\")?;
+    write!(out, "\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")?;
     out.flush()
 }
 
-/// a=p でサイドバー画像を配置（同一 y_offset で同期スクロール）。
-fn place_sidebar(layout: &Layout, state: &ViewState) -> io::Result<()> {
+/// Parameters for placing strip images via Kitty Graphics Protocol.
+struct PlaceParams {
+    start_col: u16,   // terminal column where placement begins
+    num_cols: u16,    // number of terminal columns for the placement
+    img_width: u32,   // pixel width of the source image region
+}
+
+/// Place strip(s) using Kitty Graphics Protocol.
+///
+/// `get_id` selects which image ID to use from a `StripImageIds`.
+fn place_strips(
+    visible: &VisibleStrips,
+    loaded: &LoadedStrips,
+    layout: &Layout,
+    params: &PlaceParams,
+    get_id: fn(&StripImageIds) -> u32,
+) -> io::Result<()> {
     let mut out = stdout();
-    out.queue(cursor::MoveTo(0, 0))?;
-    // サイドバーはコンテンツと同じ高さの画像。同一 y_offset でクロップ。
-    let sidebar_vp_h = (layout.image_rows as u32 * layout.cell_h as u32).min(state.sidebar_h);
-    let sidebar_y = state.y_offset.min(state.sidebar_h.saturating_sub(sidebar_vp_h));
-    // ドキュメントがターミナルより短い場合、実際のピクセル高さに応じた行数にする
-    let sidebar_rows = ((sidebar_vp_h as f64) / (layout.cell_h as f64))
-        .ceil()
-        .min(layout.image_rows as f64) as u16;
-    let sidebar_rows = sidebar_rows.max(1);
-    write!(
-        out,
-        "\x1b_Ga=p,i={id},x=0,y={src_y},w={src_w},h={src_h},c={cols},r={rows},C=1,q=1\x1b\\",
-        id = SIDEBAR_IMAGE_ID,
-        src_y = sidebar_y,
-        src_w = state.sidebar_w,
-        src_h = sidebar_vp_h,
-        cols = layout.sidebar_cols,
-        rows = sidebar_rows,
-    )?;
+    let w = params.img_width;
+    let cols = params.num_cols;
+
+    match visible {
+        VisibleStrips::Single { idx, src_y, src_h } => {
+            let id = get_id(loaded.map.get(idx).unwrap());
+            let rows = ((*src_h as f64) / (layout.cell_h as f64))
+                .ceil()
+                .min(layout.image_rows as f64) as u16;
+            let rows = rows.max(1);
+            out.queue(cursor::MoveTo(params.start_col, 0))?;
+            write!(
+                out,
+                "\x1b_Ga=p,i={id},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,q=2\x1b\\",
+            )?;
+        }
+        VisibleStrips::Split {
+            top_idx,
+            top_src_y,
+            top_src_h,
+            bot_idx,
+            bot_src_h,
+        } => {
+            let top_id = get_id(loaded.map.get(top_idx).unwrap());
+            let bot_id = get_id(loaded.map.get(bot_idx).unwrap());
+
+            let top_rows = (*top_src_h as f64 / layout.cell_h as f64).round() as u16;
+            let top_rows = top_rows.clamp(1, layout.image_rows.saturating_sub(1));
+            let bot_rows = layout.image_rows.saturating_sub(top_rows);
+
+            out.queue(cursor::MoveTo(params.start_col, 0))?;
+            write!(
+                out,
+                "\x1b_Ga=p,i={id},x=0,y={top_src_y},w={w},h={top_src_h},c={cols},r={top_rows},C=1,q=2\x1b\\",
+                id = top_id,
+            )?;
+            out.queue(cursor::MoveTo(params.start_col, top_rows))?;
+            write!(
+                out,
+                "\x1b_Ga=p,i={id},x=0,y=0,w={w},h={bot_src_h},c={cols},r={bot_rows},C=1,q=2\x1b\\",
+                id = bot_id,
+            )?;
+        }
+    }
     out.flush()
 }
 
@@ -221,10 +254,16 @@ fn draw_status_bar(layout: &Layout, state: &ViewState) -> io::Result<()> {
 // Strip-aware content display
 // ---------------------------------------------------------------------------
 
+/// Kitty image IDs for a content + sidebar strip pair.
+struct StripImageIds {
+    content_id: u32,
+    sidebar_id: u32,
+}
+
 /// Track which strip PNGs are loaded in the terminal, keyed by strip index.
 struct LoadedStrips {
-    /// strip_index → Kitty image_id
-    map: HashMap<usize, u32>,
+    /// strip_index → Kitty image IDs (content + sidebar)
+    map: HashMap<usize, StripImageIds>,
     next_id: u32,
 }
 
@@ -232,27 +271,29 @@ impl LoadedStrips {
     fn new() -> Self {
         Self {
             map: HashMap::new(),
-            next_id: 100, // Reserve 1-99 for sidebar etc.
+            next_id: 100, // Reserve 1-99 for future use
         }
     }
 
-    /// Ensure a strip is loaded in the terminal. Returns its Kitty image ID.
+    /// Ensure a strip (content + sidebar) is loaded in the terminal.
     fn ensure_loaded(
         &mut self,
         strip_doc: &StripDocument,
         cache: &mut StripDocumentCache,
         idx: usize,
-    ) -> anyhow::Result<u32> {
-        if let Some(&id) = self.map.get(&idx) {
-            return Ok(id);
+    ) -> anyhow::Result<()> {
+        if self.map.contains_key(&idx) {
+            return Ok(());
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
+        let content_id = self.next_id;
+        let sidebar_id = self.next_id + 1;
+        self.next_id += 2;
 
-        let png = cache.get_or_render(strip_doc, idx)?;
-        send_image(png, id)?;
-        self.map.insert(idx, id);
+        let pngs = cache.get_or_render(strip_doc, idx)?;
+        send_image(&pngs.content, content_id)?;
+        send_image(&pngs.sidebar, sidebar_id)?;
+        self.map.insert(idx, StripImageIds { content_id, sidebar_id });
 
         // Evict strips far from current viewport to bound terminal memory
         let to_evict: Vec<usize> = self
@@ -262,29 +303,70 @@ impl LoadedStrips {
             .copied()
             .collect();
         for k in to_evict {
-            if let Some(old_id) = self.map.remove(&k) {
-                let _ = delete_image(old_id);
+            if let Some(ids) = self.map.remove(&k) {
+                let _ = delete_image(ids.content_id);
+                let _ = delete_image(ids.sidebar_id);
             }
         }
 
-        Ok(id)
+        Ok(())
     }
 
-    /// Delete all content strip placements (keep image data).
+    /// Delete all strip placements (content + sidebar, keep image data).
     fn delete_placements(&self) -> io::Result<()> {
         let mut out = stdout();
-        for &id in self.map.values() {
-            write!(out, "\x1b_Ga=d,d=i,i={id},q=1\x1b\\")?;
+        for ids in self.map.values() {
+            write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", ids.content_id)?;
+            write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", ids.sidebar_id)?;
         }
         out.flush()
     }
 }
 
 /// Place content strip(s) based on visible_strips result.
-///
-/// Ordering: render + send FIRST, then delete old placements + place new ones.
-/// This keeps the old image visible during rendering, avoiding blank flashes.
 fn place_content_strips(
+    visible: &VisibleStrips,
+    loaded: &LoadedStrips,
+    layout: &Layout,
+    state: &ViewState,
+) -> io::Result<()> {
+    place_strips(
+        visible,
+        loaded,
+        layout,
+        &PlaceParams {
+            start_col: layout.image_col,
+            num_cols: layout.image_cols,
+            img_width: state.vp_w,
+        },
+        |ids| ids.content_id,
+    )
+}
+
+/// Place sidebar strip(s) based on the same visible_strips as content.
+fn place_sidebar_strips(
+    visible: &VisibleStrips,
+    loaded: &LoadedStrips,
+    strip_doc: &StripDocument,
+    layout: &Layout,
+) -> io::Result<()> {
+    place_strips(
+        visible,
+        loaded,
+        layout,
+        &PlaceParams {
+            start_col: 0,
+            num_cols: layout.sidebar_cols,
+            img_width: strip_doc.sidebar_width_px(),
+        },
+        |ids| ids.sidebar_id,
+    )
+}
+
+/// Full redraw: content strips + sidebar + status bar.
+///
+/// Ordering: ensure loaded (slow) → delete placements → place new (fast).
+fn redraw(
     strip_doc: &StripDocument,
     cache: &mut StripDocumentCache,
     loaded: &mut LoadedStrips,
@@ -299,86 +381,18 @@ fn place_content_strips(
         VisibleStrips::Single { idx, .. } => {
             loaded.ensure_loaded(strip_doc, cache, *idx)?;
         }
-        VisibleStrips::Split {
-            top_idx, bot_idx, ..
-        } => {
+        VisibleStrips::Split { top_idx, bot_idx, .. } => {
             loaded.ensure_loaded(strip_doc, cache, *top_idx)?;
             loaded.ensure_loaded(strip_doc, cache, *bot_idx)?;
         }
     }
 
-    // Phase 2: Delete old placements and place new ones atomically.
-    // All image data is already in the terminal, so this is instantaneous.
+    // Phase 2: Delete old placements atomically, then place new ones.
     loaded.delete_placements()?;
-    let mut out = stdout();
-    write!(out, "\x1b_Ga=d,d=i,i={},q=1\x1b\\", SIDEBAR_IMAGE_ID)?;
 
-    match visible {
-        VisibleStrips::Single { idx, src_y, src_h } => {
-            let id = *loaded.map.get(&idx).unwrap();
-            // Compute rows from pixel height to maintain 1:1 scale.
-            // At document end, src_h < vp_h → fewer rows (background shows below).
-            let rows = ((src_h as f64) / (layout.cell_h as f64))
-                .ceil()
-                .min(layout.image_rows as f64) as u16;
-            let rows = rows.max(1);
-            out.queue(cursor::MoveTo(layout.image_col, 0))?;
-            write!(
-                out,
-                "\x1b_Ga=p,i={id},x=0,y={src_y},w={vp_w},h={src_h},c={cols},r={rows},C=1,q=1\x1b\\",
-                vp_w = state.vp_w,
-                cols = layout.image_cols,
-            )?;
-        }
-        VisibleStrips::Split {
-            top_idx,
-            top_src_y,
-            top_src_h,
-            bot_idx,
-            bot_src_h,
-        } => {
-            let top_id = *loaded.map.get(&top_idx).unwrap();
-            let bot_id = *loaded.map.get(&bot_idx).unwrap();
-
-            // Compute rows from pixel heights for correct 1:1 scaling.
-            // round() minimizes scaling error; clamp avoids r=0 (Kitty auto-size).
-            let top_rows = (top_src_h as f64 / layout.cell_h as f64).round() as u16;
-            let top_rows = top_rows.clamp(1, layout.image_rows.saturating_sub(1));
-            let bot_rows = layout.image_rows.saturating_sub(top_rows);
-
-            // Top strip
-            out.queue(cursor::MoveTo(layout.image_col, 0))?;
-            write!(
-                out,
-                "\x1b_Ga=p,i={top_id},x=0,y={top_src_y},w={vp_w},h={top_src_h},c={cols},r={top_rows},C=1,q=1\x1b\\",
-                vp_w = state.vp_w,
-                cols = layout.image_cols,
-            )?;
-            // Bottom strip
-            out.queue(cursor::MoveTo(layout.image_col, top_rows))?;
-            write!(
-                out,
-                "\x1b_Ga=p,i={bot_id},x=0,y=0,w={vp_w},h={bot_src_h},c={cols},r={bot_rows},C=1,q=1\x1b\\",
-                vp_w = state.vp_w,
-                cols = layout.image_cols,
-            )?;
-        }
-    }
-    out.flush()?;
-
-    Ok(())
-}
-
-/// Full redraw: content strips + sidebar + status bar.
-fn redraw(
-    strip_doc: &StripDocument,
-    cache: &mut StripDocumentCache,
-    loaded: &mut LoadedStrips,
-    layout: &Layout,
-    state: &ViewState,
-) -> anyhow::Result<()> {
-    place_content_strips(strip_doc, cache, loaded, layout, state)?;
-    place_sidebar(layout, state)?;
+    // Phase 3: Place content + sidebar + status bar
+    place_content_strips(&visible, loaded, layout, state)?;
+    place_sidebar_strips(&visible, loaded, strip_doc, layout)?;
     draw_status_bar(layout, state)?;
     Ok(())
 }
@@ -405,35 +419,41 @@ fn build_strip_document(
         strip_height_pt, vp_height_pt, DEFAULT_STRIP_HEIGHT_PT
     );
 
+    // 1. Compile content document
     let content_world = TmarkWorld::new(theme_text, content_text, width_pt);
     let document = compile_document(&content_world)?;
 
+    // 2. Extract visual lines (needed for sidebar generation)
+    let visual_lines = extract_visual_lines(&document, PPI);
+    let page_height_pt = document.pages[0].frame.size().y.to_pt();
+
+    // 3. Compile sidebar document using visual lines
+    let sidebar_doc = build_sidebar_doc(&visual_lines, layout, page_height_pt)?;
+
+    // 4. Build StripDocument with both content + sidebar
     Ok(StripDocument::new(
         &document,
+        &sidebar_doc,
+        visual_lines,
         strip_height_pt,
         PPI,
     ))
 }
 
-fn build_sidebar(
-    strip_doc: &StripDocument,
+fn build_sidebar_doc(
+    visual_lines: &[VisualLine],
     layout: &Layout,
-) -> anyhow::Result<(Vec<u8>, u32, u32)> {
+    page_height_pt: f64,
+) -> anyhow::Result<PagedDocument> {
     let sidebar_width_pt = layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / PPI as f64;
     let sidebar_source = generate_sidebar_typst(
-        &strip_doc.visual_lines,
+        visual_lines,
         sidebar_width_pt,
-        strip_doc.page_height_pt(),
+        page_height_pt,
     );
 
     let sidebar_world = TmarkWorld::new_raw(&sidebar_source);
-    let sidebar_doc = compile_document(&sidebar_world)?;
-    let sidebar_png = render_page_to_png(&sidebar_doc, PPI)?;
-
-    let (w, h) = png_dimensions(&sidebar_png)
-        .ok_or_else(|| anyhow::anyhow!("rendered sidebar PNG has invalid IHDR"))?;
-
-    Ok((sidebar_png, w, h))
+    compile_document(&sidebar_world)
 }
 
 // ---------------------------------------------------------------------------
@@ -459,19 +479,34 @@ enum ExitReason {
 /// Request prefetch of strips adjacent to the current viewport.
 ///
 /// Sends strip indices for 2 strips ahead and 1 behind the current position.
-/// The worker uses drain-to-latest, so rapid-fire requests are cheap.
+///
+/// ## in_flight による二重レンダリング防止
+///
+/// `cache` だけでは TOCTOU (Time-of-Check-to-Time-of-Use) が発生する:
+///   1. worker がストリップ N をレンダリング完了 → `res_tx.send()` で結果送信
+///   2. main thread の `send_prefetch()` が `cache.contains(N)` を検査 → false
+///      (結果は mpsc チャネル内にあるが、まだ `cache.insert()` されていない)
+///   3. ストリップ N を再リクエスト → worker が同じストリップを二重レンダリング
+///
+/// `in_flight` は「送信済み・未受信」のストリップ index を追跡し、この隙間を埋める:
+///   - `send_prefetch()`: `in_flight` に insert してからリクエスト送信
+///   - `res_rx.try_recv()`: 結果受信時に `in_flight` から remove
+///
+/// `in_flight` は main thread 専用。worker thread はアクセスしない。
 fn send_prefetch(
     tx: &mpsc::Sender<usize>,
     doc: &StripDocument,
     cache: &StripDocumentCache,
+    in_flight: &mut HashSet<usize>,
     y_offset: u32,
 ) {
     let current = (y_offset / doc.strip_height_px()) as usize;
     // Forward 2 + backward 1
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
-        if idx < doc.strip_count() && !cache.contains(idx) {
+        if idx < doc.strip_count() && !cache.contains(idx) && !in_flight.contains(&idx) {
             debug!("prefetch: requesting strip {idx} (current={current})");
             let _ = tx.send(idx);
+            in_flight.insert(idx);
         }
     }
 }
@@ -520,10 +555,9 @@ fn run() -> anyhow::Result<()> {
 
     // Outer loop: each iteration builds a new StripDocument (initial + resize)
     'outer: loop {
-        // 4. Build StripDocument + sidebar
+        // 4. Build StripDocument (content + sidebar compiled & split)
         info!("building strip document...");
         let strip_doc = build_strip_document(&theme_text, &content_text, &layout)?;
-        let (sidebar_png, sidebar_w, sidebar_h) = build_sidebar(&strip_doc, &layout)?;
 
         let img_w = strip_doc.width_px();
         let img_h = strip_doc.total_height_px();
@@ -533,42 +567,37 @@ fn run() -> anyhow::Result<()> {
             img_h,
             vp_w,
             vp_h,
-            sidebar_w,
-            sidebar_h,
             filename: filename.clone(),
         };
 
-        send_image(&sidebar_png, SIDEBAR_IMAGE_ID)?;
         let mut cache = StripDocumentCache::new();
         let mut loaded = LoadedStrips::new();
 
         // 5. thread::scope — prefetch worker + inner event loop
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
             let (req_tx, req_rx) = mpsc::channel::<usize>();
-            let (res_tx, res_rx) = mpsc::channel::<(usize, Vec<u8>)>();
+            let (res_tx, res_rx) = mpsc::channel::<(usize, StripPngs)>();
 
-            // Prefetch worker: drain-to-latest pattern
+            // Prefetch worker: FIFO — process each request in order.
+            //
+            // 各リクエストを受信順に処理する。drain-to-latest は使わない:
+            // send_prefetch() は [current+1, current+2, current-1] の独立した
+            // 複数リクエストを送るため、最後だけ残すと手前のストリップが
+            // プリフェッチされず、メインスレッドで同期レンダリングが発生する。
+            //
+            // worker → main の結果は res_tx/res_rx チャネル経由。
+            // main thread が res_rx.try_recv() で受信し cache に格納する。
             let doc = &strip_doc;
             s.spawn(move || {
                 debug!("prefetch worker: started");
-                while let Ok(mut idx) = req_rx.recv() {
-                    // Rapid scroll: only process the latest request
-                    let mut skipped = 0u32;
-                    while let Ok(newer) = req_rx.try_recv() {
-                        idx = newer;
-                        skipped += 1;
-                    }
-                    if skipped > 0 {
-                        debug!("prefetch worker: drained {skipped} stale, rendering strip {idx}");
-                    } else {
-                        debug!("prefetch worker: rendering strip {idx}");
-                    }
-                    match doc.render_strip(idx) {
-                        Ok(png) => {
-                            debug!("prefetch worker: strip {idx} done ({} bytes)", png.len());
-                            let _ = res_tx.send((idx, png));
+                while let Ok(idx) = req_rx.recv() {
+                    debug!("prefetch worker: rendering strip {idx}");
+                    match (doc.render_strip(idx), doc.render_sidebar_strip(idx)) {
+                        (Ok(content), Ok(sidebar)) => {
+                            debug!("prefetch worker: strip {idx} done (content={}, sidebar={} bytes)", content.len(), sidebar.len());
+                            let _ = res_tx.send((idx, StripPngs { content, sidebar }));
                         }
-                        Err(e) => {
+                        (Err(e), _) | (_, Err(e)) => {
                             log::error!("prefetch worker: strip {idx} failed: {e}");
                         }
                     }
@@ -576,19 +605,28 @@ fn run() -> anyhow::Result<()> {
                 debug!("prefetch worker: channel closed, exiting");
             });
 
+            // in_flight: 「worker に送信済みだが結果未受信」のストリップ index 集合。
+            // main thread 専用（worker はアクセスしない）。
+            // send_prefetch() で insert、res_rx.try_recv() で remove。
+            // cache と合わせてチェックすることで二重レンダリングを防ぐ。
+            let mut in_flight: HashSet<usize> = HashSet::new();
+
             // Initial redraw + prefetch
             redraw(doc, &mut cache, &mut loaded, &layout, &state)?;
-            send_prefetch(&req_tx, doc, &cache, state.y_offset);
+            send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
 
             // Inner event loop
             let mut dirty = false;
             let mut last_render = Instant::now();
 
             loop {
-                // Drain prefetch results into cache
-                while let Ok((idx, png)) = res_rx.try_recv() {
-                    debug!("main: received prefetched strip {idx} ({} bytes)", png.len());
-                    cache.insert(idx, png);
+                // Drain prefetch results into cache.
+                // worker が res_tx.send() した結果をノンブロッキングで回収し、
+                // cache に格納 + in_flight から除去する。
+                while let Ok((idx, pngs)) = res_rx.try_recv() {
+                    debug!("main: received prefetched strip {idx} (content={}, sidebar={} bytes)", pngs.content.len(), pngs.sidebar.len());
+                    in_flight.remove(&idx);
+                    cache.insert(idx, pngs);
                 }
 
                 let timeout = if dirty {
@@ -598,7 +636,9 @@ fn run() -> anyhow::Result<()> {
                 };
 
                 if event::poll(timeout)? {
-                    match event::read()? {
+                    let ev = event::read()?;
+                    debug!("event: {:?}", ev);
+                    match ev {
                         Event::Key(KeyEvent { code, modifiers, .. }) => {
                             let max_y = doc.max_scroll(state.vp_h);
                             let scroll_step = SCROLL_STEP_CELLS * layout.cell_h as u32;
@@ -615,34 +655,46 @@ fn run() -> anyhow::Result<()> {
 
                                 // 下スクロール
                                 (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+                                    let old = state.y_offset;
                                     state.y_offset = (state.y_offset + scroll_step).min(max_y);
+                                    debug!("scroll down: y_offset {} → {} (step={scroll_step}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 上スクロール
                                 (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+                                    let old = state.y_offset;
                                     state.y_offset =
                                         state.y_offset.saturating_sub(scroll_step);
+                                    debug!("scroll up: y_offset {} → {} (step={scroll_step}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 半画面下
                                 (KeyCode::Char('d'), _) => {
+                                    let old = state.y_offset;
                                     state.y_offset = (state.y_offset + half_page).min(max_y);
+                                    debug!("scroll half-down: y_offset {} → {} (step={half_page}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 半画面上
                                 (KeyCode::Char('u'), _) => {
+                                    let old = state.y_offset;
                                     state.y_offset =
                                         state.y_offset.saturating_sub(half_page);
+                                    debug!("scroll half-up: y_offset {} → {} (step={half_page}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 先頭
                                 (KeyCode::Char('g'), _) => {
+                                    let old = state.y_offset;
                                     state.y_offset = 0;
+                                    debug!("scroll top: y_offset {} → 0", old);
                                     dirty = true;
                                 }
                                 // 末尾
                                 (KeyCode::Char('G'), _) => {
+                                    let old = state.y_offset;
                                     state.y_offset = max_y;
+                                    debug!("scroll bottom: y_offset {} → {} (max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
 
@@ -662,8 +714,16 @@ fn run() -> anyhow::Result<()> {
 
                 // poll timeout → frame budget elapsed, execute redraw
                 if dirty {
+                    // redraw 直前に追加 drain: event::poll() のブロック中に worker が
+                    // 完了した結果を回収し、redraw での同期レンダリングを回避する。
+                    // これにより send_prefetch の TOCTOU ウィンドウも縮小する。
+                    while let Ok((idx, pngs)) = res_rx.try_recv() {
+                        debug!("main: received prefetched strip {idx} (content={}, sidebar={} bytes, pre-redraw)", pngs.content.len(), pngs.sidebar.len());
+                        in_flight.remove(&idx);
+                        cache.insert(idx, pngs);
+                    }
                     redraw(doc, &mut cache, &mut loaded, &layout, &state)?;
-                    send_prefetch(&req_tx, doc, &cache, state.y_offset);
+                    send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
                     cache.evict_distant(
                         (state.y_offset / doc.strip_height_px()) as usize,
                         4,
@@ -689,7 +749,7 @@ fn run() -> anyhow::Result<()> {
                     new_winsize.height,
                 );
                 let mut out = stdout();
-                write!(out, "\x1b_Ga=d,d=A,q=1\x1b\\")?;
+                write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
                 out.flush()?;
                 // continue 'outer → new strip_doc + new scope + new worker
             }

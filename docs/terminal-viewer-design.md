@@ -68,8 +68,8 @@ Phase 4（Kitty Graphics Protocol 表示）および Phase 5（Vimライクナ�
 
 **解決策**: キャッシュを `StripDocument` から分離し、`StripDocument` を完全 immutable（全メソッド `&self`）にする。
 
-- `StripDocument`: ストリップ Frame 群 + メタデータ。`render_strip(&self, idx) -> Vec<u8>` で純関数的にレンダリング。
-- `StripDocumentCache`: `HashMap<usize, Vec<u8>>` ベースのキャッシュ。main thread 専用（`&mut`）。
+- `StripDocument`: コンテンツ+サイドバーの Frame 群 + メタデータ。`render_strip()` / `render_sidebar_strip()` で純関数的にレンダリング。
+- `StripDocumentCache`: `HashMap<usize, StripPngs>` ベースのキャッシュ（`StripPngs` = content + sidebar PNG のペア）。main thread 専用（`&mut`）。
 
 ```
 worker thread: &StripDocument  ──┐
@@ -81,18 +81,52 @@ main thread:   &StripDocument  ──┘
 ### スレッド間データフロー
 
 ```
-                    mpsc::channel::<usize>        (prefetch request)
+                    mpsc::channel::<usize>             (prefetch request)
 Main thread ─────────────────────────────────→ Worker thread
              ←───────────────────────────────
-                mpsc::channel::<(usize, Vec<u8>)> (rendered PNG)
+                mpsc::channel::<(usize, StripPngs)>    (rendered content+sidebar PNG pair)
 
 Main thread:                          Worker thread:
   redraw → cache.get_or_render()        req_rx.recv() (ブロック待ち)
-  send_prefetch → req_tx.send(idx)      drain-to-latest (最新のみ処理)
-  res_rx.try_recv() → cache.insert()    doc.render_strip(idx) → res_tx.send()
+  send_prefetch → req_tx.send(idx)      FIFO 順に各リクエストを処理
+  res_rx.try_recv() → cache.insert()    render_strip(idx) + render_sidebar_strip(idx) → res_tx.send()
 ```
 
-Worker は drain-to-latest パターンを使用: 急速スクロール時はキュー内の古いリクエストをスキップし、最新のインデックスのみレンダリングする。
+Worker は FIFO 順に各リクエストを処理する。`send_prefetch()` は `[current+1, current+2, current-1]` の独立した複数リクエストを送るため、drain-to-latest（最後だけ処理）だと手前のストリップがプリフェッチされず、メインスレッドで同期レンダリングが発生する。
+
+### in_flight による二重レンダリング防止
+
+`cache.contains()` だけでは TOCTOU (Time-of-Check-to-Time-of-Use) が発生する:
+
+```
+時刻  Worker thread                    Main thread
+ T1   render_strip(2) 完了
+      res_tx.send((2, png))
+ T2                                    send_prefetch():
+                                         cache.contains(2) → false  ← 結果はチャネル内、未 drain
+                                         req_tx.send(2)             ← 二重リクエスト！
+ T3                                    res_rx.try_recv() → cache.insert(2)
+ T4   render_strip(2) 再実行           ← 無駄なレンダリング
+```
+
+**解決策**: `HashSet<usize>` の `in_flight` で「送信済み・未受信」の index を追跡する。
+
+- `send_prefetch()`: `cache.contains()` **と** `in_flight.contains()` の両方を検査
+- `send_prefetch()`: リクエスト送信時に `in_flight.insert(idx)`
+- `res_rx.try_recv()`: 結果受信時に `in_flight.remove(idx)`
+- `in_flight` は main thread 専用。worker thread はアクセスしない
+
+```
+Main thread 所有の状態:
+  cache     : HashMap<usize, StripPngs>  — レンダリング済み content+sidebar PNG ペア
+  in_flight : HashSet<usize>             — 送信済み・未受信の index
+  ────────────────────────────────────────────────────────
+  strip が cache にも in_flight にもなければ → リクエスト送信可能
+  strip が in_flight にあれば             → worker が処理中、待つ
+  strip が cache にあれば                 → レンダリング済み、即利用可能
+```
+
+追加で、`redraw()` 直前にも `res_rx.try_recv()` を実行し、`event::poll()` のブロック中に worker が完了した結果を回収する。これにより TOCTOU ウィンドウをさらに縮小する。
 
 ### イベントループ構造
 
@@ -102,12 +136,16 @@ Worker は drain-to-latest パターンを使用: 急速スクロール時はキ
     cache = StripDocumentCache::new()
 
     thread::scope(|s| {
-        s.spawn(worker)  ← prefetch worker
+        s.spawn(worker)  ← prefetch worker (FIFO)
+        in_flight = HashSet::new()
 
         loop {  ← inner event loop
-            res_rx.try_recv() → cache.insert()  // drain prefetch results
+            res_rx.try_recv() → in_flight.remove + cache.insert  // drain
             event::poll() → handle key/resize
-            if dirty → redraw() + send_prefetch()
+            if dirty {
+                res_rx.try_recv() → drain (追加: TOCTOU 縮小)
+                redraw() + send_prefetch(cache, in_flight)
+            }
         }
         // req_tx drop → worker の recv() が Err → worker 終了
     })  // ← scope が worker の join を待つ
@@ -254,11 +292,45 @@ struct WinSize {
 
 spike_kitty (`src/bin/spike_kitty.rs`) での実機検証で判明した Ghostty の挙動:
 
-1. **`\x1b[2J` 禁止（唯一の地雷）**: 画像データごと消える。配置の削除は `a=d,d=i,i=ID,q=1`（小文字 `i` = データ保持）を使う。
+1. **`\x1b[2J` 禁止（唯一の地雷）**: 画像データごと消える。配置の削除は `a=d,d=i,i=ID`（小文字 `i` = データ保持）を使う。
 2. **`a=T` / `a=t` どちらもOK**: `a=T` でも `i=` 付きならキャッシュされ `a=p` で参照可能。
 3. **スクロール手順**: `a=d,d=i` → `a=p` の繰り返し。画像再送信は不要。
 
 詳細は `docs/kitty-graphics-protocol.md` の「Ghostty 固有の注意点」セクションを参照。
+
+### `q=2` による Kitty レスポンス全抑制
+
+Kitty Graphics Protocol の `q` パラメータ:
+
+| 値 | 挙動 |
+|---|---|
+| `q=1` | OK 応答を抑制、エラー応答は送信 |
+| `q=2` | OK・エラー両方の応答を抑制 |
+
+tview は全コマンドで `q=2` を使用する。
+
+**理由**: `q=1` ではエラー応答（例: 画像サイズ上限超過時の ENOENT）が APC シーケンスとして端末に返される。crossterm はこれをキーイベントとして誤解析し、`g`/`G`/`d`/`u` 等のファントムキー入力が発生してスクロールが暴走する（Bug 3）。tview は Kitty レスポンスを処理するコードを持たないため、`q=2` で全応答を抑制しても機能上の影響はない。
+
+### サイドバーのストリップ分割
+
+サイドバー（行番号画像）はコンテンツと同じストリップ境界で分割される。
+
+**問題**: サイドバーを全ドキュメント高さの1枚画像として送信すると、Ghostty の画像サイズ上限を超えてアップロード失敗する。エラーレスポンスが crossterm にファントムキーイベントとして流入し、スクロール暴走を引き起こす（上記 `q=2` の項を参照）。
+
+**解決策**:
+
+```
+content_doc  = compile_document(theme + content)     // コンテンツ Typst コンパイル
+visual_lines = extract_visual_lines(content_doc)     // 行番号抽出
+sidebar_doc  = build_sidebar_doc(visual_lines, ...)  // サイドバー Typst コンパイル（1回だけ）
+strip_doc    = StripDocument::new(content_doc, sidebar_doc, ...)  // 両方を同じ境界で分割
+```
+
+- サイドバーの Typst ソースは初期化時に1回だけコンパイル
+- コンテンツと同じ `split_frame()` で Frame を分割
+- worker は `render_strip()` + `render_sidebar_strip()` をセットで実行
+- `StripPngs { content, sidebar }` としてキャッシュ
+- 配置時はコンテンツとサイドバーそれぞれに Kitty image ID を割り当て、同じ `visible_strips` 結果で配置
 
 ### ファーストビュー最適化
 

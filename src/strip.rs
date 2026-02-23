@@ -233,9 +233,12 @@ pub enum VisibleStrips {
 /// Use [`StripDocumentCache`] separately for caching rendered PNGs.
 pub struct StripDocument {
     strips: Vec<Frame>,
+    sidebar_strips: Vec<Frame>,
+    sidebar_fill: Smart<Option<Paint>>,
     page_fill: Smart<Option<Paint>>,
     ppi: f32,
     width_px: u32,
+    sidebar_width_px: u32,
     strip_height_px: u32,
     total_height_px: u32,
     page_height_pt: f64,
@@ -243,12 +246,16 @@ pub struct StripDocument {
 }
 
 impl StripDocument {
-    /// Build a StripDocument from a compiled PagedDocument.
+    /// Build a StripDocument from a compiled content + sidebar PagedDocument.
     ///
+    /// - `sidebar_doc`: compiled sidebar document (same page height as content)
+    /// - `visual_lines`: pre-extracted visual line positions (avoids redundant extraction)
     /// - `strip_height_pt`: height of each strip in typst points
     /// - `ppi`: rendering resolution
     pub fn new(
         document: &PagedDocument,
+        sidebar_doc: &PagedDocument,
+        visual_lines: Vec<VisualLine>,
         strip_height_pt: f64,
         ppi: f32,
     ) -> Self {
@@ -263,12 +270,20 @@ impl StripDocument {
             page.frame.items().count()
         );
 
-        let visual_lines = extract_visual_lines(document, ppi);
-        info!("extracted {} visual lines", visual_lines.len());
-
         let strips = split_frame(&page.frame, strip_height_pt);
 
+        // Split sidebar with the same strip boundaries
+        assert!(!sidebar_doc.pages.is_empty(), "sidebar document has no pages");
+        let sidebar_page = &sidebar_doc.pages[0];
+        let sidebar_strips = split_frame(&sidebar_page.frame, strip_height_pt);
         let pixel_per_pt = ppi as f64 / 72.0;
+        let sidebar_width_px = (sidebar_page.frame.size().x.to_pt() * pixel_per_pt).ceil() as u32;
+        info!(
+            "sidebar: {} strips, {}px wide",
+            sidebar_strips.len(),
+            sidebar_width_px
+        );
+
         let width_px = (page_size.x.to_pt() * pixel_per_pt).ceil() as u32;
         let strip_height_px = (strip_height_pt * pixel_per_pt).ceil() as u32;
         let total_height_px = (page_size.y.to_pt() * pixel_per_pt).ceil() as u32;
@@ -276,9 +291,12 @@ impl StripDocument {
 
         Self {
             strips,
+            sidebar_strips,
+            sidebar_fill: sidebar_page.fill.clone(),
             page_fill: page.fill.clone(),
             ppi,
             width_px,
+            sidebar_width_px,
             strip_height_px,
             total_height_px,
             page_height_pt,
@@ -294,6 +312,11 @@ impl StripDocument {
     /// Document width in pixels.
     pub fn width_px(&self) -> u32 {
         self.width_px
+    }
+
+    /// Sidebar width in pixels.
+    pub fn sidebar_width_px(&self) -> u32 {
+        self.sidebar_width_px
     }
 
     /// Height of one standard strip in pixels.
@@ -317,19 +340,33 @@ impl StripDocument {
         (self.strips[idx].size().y.to_pt() * pixel_per_pt).ceil() as u32
     }
 
-    /// Render a single strip to PNG bytes.
+    /// Render a single content strip to PNG bytes.
     ///
-    /// This is a pure function — no internal caching.
+    /// This is a pure function -- no internal caching.
     /// Thread-safe: `Frame.items` uses `Arc`, `typst_render::render` is stateless.
     pub fn render_strip(&self, idx: usize) -> Result<Vec<u8>> {
-        assert!(idx < self.strips.len(), "strip index out of bounds");
+        self.render_frame(idx, &self.strips, &self.page_fill, "content")
+    }
 
-        trace!("rendering strip {}", idx);
+    /// Render a single sidebar strip to PNG bytes.
+    pub fn render_sidebar_strip(&self, idx: usize) -> Result<Vec<u8>> {
+        self.render_frame(idx, &self.sidebar_strips, &self.sidebar_fill, "sidebar")
+    }
 
-        // Build a Page from the sub-frame
+    /// Render a frame from `strips` at `idx` to PNG bytes.
+    fn render_frame(
+        &self,
+        idx: usize,
+        strips: &[Frame],
+        fill: &Smart<Option<Paint>>,
+        label: &str,
+    ) -> Result<Vec<u8>> {
+        assert!(idx < strips.len(), "{label} strip index out of bounds");
+        trace!("rendering {label} strip {idx}");
+
         let page = Page {
-            frame: self.strips[idx].clone(),
-            fill: self.page_fill.clone(),
+            frame: strips[idx].clone(),
+            fill: fill.clone(),
             numbering: None,
             supplement: typst::foundations::Content::empty(),
             number: 0,
@@ -339,11 +376,10 @@ impl StripDocument {
         let pixmap = typst_render::render(&page, pixel_per_pt);
         let png = pixmap
             .encode_png()
-            .map_err(|e| anyhow::anyhow!("PNG encoding failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("{label} PNG encoding failed: {e}"))?;
 
         debug!(
-            "render strip {}: {}x{}px, {} bytes PNG",
-            idx,
+            "render {label} strip {idx}: {}x{}px, {} bytes PNG",
             pixmap.width(),
             pixmap.height(),
             png.len()
@@ -418,11 +454,17 @@ impl StripDocument {
 // StripDocumentCache — external cache for rendered strip PNGs
 // ---------------------------------------------------------------------------
 
+/// A pair of rendered PNGs: content + sidebar for the same strip index.
+pub struct StripPngs {
+    pub content: Vec<u8>,
+    pub sidebar: Vec<u8>,
+}
+
 /// Cache for rendered strip PNGs, separated from [`StripDocument`] to allow
 /// concurrent `&StripDocument` access (e.g., from a prefetch worker thread)
 /// while the main thread owns `&mut StripDocumentCache`.
 pub struct StripDocumentCache {
-    data: HashMap<usize, Vec<u8>>,
+    data: HashMap<usize, StripPngs>,
 }
 
 impl StripDocumentCache {
@@ -432,23 +474,24 @@ impl StripDocumentCache {
         }
     }
 
-    pub fn get(&self, idx: usize) -> Option<&[u8]> {
-        self.data.get(&idx).map(|v| v.as_slice())
+    pub fn get(&self, idx: usize) -> Option<&StripPngs> {
+        self.data.get(&idx)
     }
 
     pub fn contains(&self, idx: usize) -> bool {
         self.data.contains_key(&idx)
     }
 
-    pub fn insert(&mut self, idx: usize, png: Vec<u8>) {
-        self.data.insert(idx, png);
+    pub fn insert(&mut self, idx: usize, pngs: StripPngs) {
+        self.data.insert(idx, pngs);
     }
 
-    /// Get cached PNG or render synchronously and cache the result.
-    pub fn get_or_render(&mut self, doc: &StripDocument, idx: usize) -> Result<&[u8]> {
+    /// Get cached PNGs or render synchronously and cache the result.
+    pub fn get_or_render(&mut self, doc: &StripDocument, idx: usize) -> Result<&StripPngs> {
         if !self.data.contains_key(&idx) {
-            let png = doc.render_strip(idx)?;
-            self.data.insert(idx, png);
+            let content = doc.render_strip(idx)?;
+            let sidebar = doc.render_sidebar_strip(idx)?;
+            self.data.insert(idx, StripPngs { content, sidebar });
         }
         Ok(self.data.get(&idx).unwrap())
     }
