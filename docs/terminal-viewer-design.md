@@ -288,9 +288,9 @@ struct WinSize {
 
 ## 残課題と将来の改良
 
-### Ghostty 固有の制約（spike_kitty で検証済み）
+### Ghostty 固有の制約（spike_kitty で検証済み、spike_kitty は削除済み）
 
-spike_kitty (`src/bin/spike_kitty.rs`) での実機検証で判明した Ghostty の挙動:
+Phase 4 初期の技術検証用スパイク (spike_kitty) での実機検証で判明した Ghostty の挙動:
 
 1. **`\x1b[2J` 禁止（唯一の地雷）**: 画像データごと消える。配置の削除は `a=d,d=i,i=ID`（小文字 `i` = データ保持）を使う。
 2. **`a=T` / `a=t` どちらもOK**: `a=T` でも `i=` 付きならキャッシュされ `a=p` で参照可能。

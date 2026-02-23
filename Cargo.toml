@@ -3,10 +3,6 @@ name = "tmark"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "tmark"
-path = "src/main.rs"
-
 [dependencies]
 typst = "0.14"
 typst-render = "0.14"

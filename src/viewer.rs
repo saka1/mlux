@@ -1,6 +1,4 @@
-//! tview — TUI Markdown viewer with Kitty Graphics Protocol
-//!
-//! Usage: cargo run --bin tview -- <markdown_path>
+//! Terminal Markdown viewer with Kitty Graphics Protocol
 //!
 //! Layout:
 //!   col 0..sidebar_cols : sidebar image (pixel-precise line numbers)
@@ -17,7 +15,7 @@
 //!   Without this, error responses (e.g. ENOENT from oversized images) are
 //!   delivered as APC sequences that crossterm misparses as key events,
 //!   causing phantom scrolling. `q=2` suppresses both OK and error responses.
-//!   Since tview never reads Kitty responses, this is always safe.
+//!   Since the viewer never reads Kitty responses, this is always safe.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::{
@@ -31,20 +29,19 @@ use log::{debug, info};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write, stdout};
 use std::path::PathBuf;
-use std::process;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tmark::convert::markdown_to_typst;
+use crate::convert::markdown_to_typst;
 use typst::layout::PagedDocument;
 
-use tmark::render::compile_document;
-use tmark::strip::{
+use crate::render::compile_document;
+use crate::strip::{
     StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
     extract_visual_lines, generate_sidebar_typst,
 };
-use tmark::world::TmarkWorld;
+use crate::world::TmarkWorld;
 
 const CHUNK_SIZE: usize = 4096;
 const SCROLL_STEP_CELLS: u32 = 3;
@@ -457,18 +454,8 @@ fn build_sidebar_doc(
 }
 
 // ---------------------------------------------------------------------------
-// main
+// Event loop
 // ---------------------------------------------------------------------------
-
-fn main() {
-    env_logger::init();
-
-    if let Err(e) = run() {
-        // RawGuard の Drop が先に呼ばれるので、ここではターミナルは復元済み
-        eprintln!("Error: {e:#}");
-        process::exit(1);
-    }
-}
 
 /// Why the event loop exited the inner `thread::scope`.
 enum ExitReason {
@@ -511,13 +498,11 @@ fn send_prefetch(
     }
 }
 
-fn run() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <markdown_path>", args[0]);
-        process::exit(1);
-    }
-    let md_path = PathBuf::from(&args[1]);
+/// Run the terminal viewer.
+///
+/// `md_path` is the Markdown file to display.
+/// `theme` is a theme name (loaded from `themes/{theme}.typ`).
+pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
     let filename = md_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -528,7 +513,7 @@ fn run() -> anyhow::Result<()> {
     let markdown = std::fs::read_to_string(&md_path)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", md_path.display()))?;
 
-    let theme_path = PathBuf::from("themes/catppuccin.typ");
+    let theme_path = PathBuf::from(format!("themes/{}.typ", theme));
     let theme_text = std::fs::read_to_string(&theme_path)
         .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
 
