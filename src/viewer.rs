@@ -498,6 +498,19 @@ fn send_prefetch(
     }
 }
 
+fn check_tty() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
+        anyhow::bail!(
+            "mlux viewer requires an interactive terminal.\n\
+             \n\
+             Supported terminals: Kitty, Ghostty, WezTerm\n\
+             To render to a file, use: mlux render <input.md> -o output.png"
+        );
+    }
+    Ok(())
+}
+
 /// Run the terminal viewer.
 ///
 /// `md_path` is the Markdown file to display.
@@ -508,6 +521,8 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
+
+    check_tty()?;
 
     // 1. Markdownとテーマを読み込み
     let markdown = std::fs::read_to_string(&md_path)
