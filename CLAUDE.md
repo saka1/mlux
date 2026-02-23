@@ -26,6 +26,9 @@ Markdown → pulldown-cmark → Event stream → convert.rs → Typst markup
 - `tests/integration.rs` — Integration tests
 - `tests/fixtures/` — Test Markdown files
 - `docs/typst-api-notes.md` — Typst 0.14.2 API reference notes
+- `docs/paged-document-structure.md` — PagedDocument frame tree structure (実機ダンプ付き)
+- `docs/kitty-graphics-protocol.md` — Kitty Graphics Protocol full spec reference
+- `docs/terminal-viewer-design.md` — Terminal viewer design decisions and architecture
 
 ## Commands
 
@@ -35,6 +38,9 @@ cargo build
 
 # Run
 cargo run -- <input.md> -o <output.png> [--width 800] [--ppi 144] [--theme catppuccin]
+
+# Dump PagedDocument frame tree (debug)
+cargo run -- <input.md> --dump
 
 # Test
 cargo test
@@ -52,10 +58,12 @@ cargo check
 
 ## Implementation Status
 
-- Phase 1 (current): Paragraph text only. Japanese typography verified.
-- Phase 2 (planned): Block elements (headings, code blocks, tables, lists, quotes)
+- Phase 1 (complete): Paragraph text only. Japanese typography verified.
+- Phase 2 (complete): Block elements (headings, code blocks, tables, lists, quotes)
 - Phase 3 (planned): Edge cases and conversion quality
 - Phase 4 (planned): Kitty Graphics Protocol terminal display
+  - Design doc: `docs/terminal-viewer-design.md`
+  - Protocol spec: `docs/kitty-graphics-protocol.md`
 
 ## Notes
 

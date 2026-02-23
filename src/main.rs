@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use tmark::convert::markdown_to_typst;
-use tmark::render::render_to_png;
+use tmark::render::{dump_document, render_to_png};
 use tmark::world::TmarkWorld;
 
 #[derive(Parser)]
@@ -29,6 +29,10 @@ struct Cli {
     /// Theme name (loaded from themes/{name}.typ)
     #[arg(long, default_value = "catppuccin")]
     theme: String,
+
+    /// Dump the compiled document frame tree to stderr
+    #[arg(long)]
+    dump: bool,
 }
 
 fn main() -> Result<()> {
@@ -48,6 +52,21 @@ fn main() -> Result<()> {
 
     // Create world and render
     let world = TmarkWorld::new(&theme_text, &content_text, cli.width);
+    if cli.dump {
+        let warned = typst::compile::<typst::layout::PagedDocument>(&world);
+        for w in &warned.warnings {
+            eprintln!("typst warning: {}", w.message);
+        }
+        match warned.output {
+            Ok(doc) => dump_document(&doc),
+            Err(errors) => {
+                for e in &errors {
+                    eprintln!("typst error: {}", e.message);
+                }
+            }
+        }
+        return Ok(());
+    }
     let png_data = render_to_png(&world, cli.ppi)?;
 
     // Write output
