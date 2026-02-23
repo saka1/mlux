@@ -176,6 +176,11 @@ fn place_sidebar(layout: &Layout, state: &ViewState) -> io::Result<()> {
     // サイドバーはコンテンツと同じ高さの画像。同一 y_offset でクロップ。
     let sidebar_vp_h = (layout.image_rows as u32 * layout.cell_h as u32).min(state.sidebar_h);
     let sidebar_y = state.y_offset.min(state.sidebar_h.saturating_sub(sidebar_vp_h));
+    // ドキュメントがターミナルより短い場合、実際のピクセル高さに応じた行数にする
+    let sidebar_rows = ((sidebar_vp_h as f64) / (layout.cell_h as f64))
+        .ceil()
+        .min(layout.image_rows as f64) as u16;
+    let sidebar_rows = sidebar_rows.max(1);
     write!(
         out,
         "\x1b_Ga=p,i={id},x=0,y={src_y},w={src_w},h={src_h},c={cols},r={rows},C=1,q=1\x1b\\",
@@ -184,7 +189,7 @@ fn place_sidebar(layout: &Layout, state: &ViewState) -> io::Result<()> {
         src_w = state.sidebar_w,
         src_h = sidebar_vp_h,
         cols = layout.sidebar_cols,
-        rows = layout.image_rows,
+        rows = sidebar_rows,
     )?;
     out.flush()
 }
