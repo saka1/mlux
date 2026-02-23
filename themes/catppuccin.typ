@@ -3,11 +3,11 @@
 #set par(leading: 1em, justify: true, first-line-indent: 0pt)
 
 // 見出し
-#show heading.where(level: 1): it => block(below: 0.8em, above: 1.8em,
+#show heading.where(level: 1): it => block(below: 1.2em, above: 1.8em,
   text(24pt, weight: "bold", fill: rgb("#cba6f7"), it.body))
-#show heading.where(level: 2): it => block(below: 0.6em, above: 1.5em,
+#show heading.where(level: 2): it => block(below: 1.0em, above: 1.5em,
   text(20pt, weight: "bold", fill: rgb("#f5c2e7"), it.body))
-#show heading.where(level: 3): it => block(below: 0.5em, above: 1.2em,
+#show heading.where(level: 3): it => block(below: 0.8em, above: 1.2em,
   text(16pt, weight: "bold", fill: rgb("#f5e0dc"), it.body))
 
 // コードブロック

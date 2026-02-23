@@ -48,7 +48,7 @@ pub fn render_page_to_png(document: &PagedDocument, ppi: f32) -> Result<Vec<u8>>
 /// Extract visual line positions from the frame tree.
 ///
 /// Walks all TextItem nodes, collects their absolute Y coordinates,
-/// deduplicates with 0.5pt tolerance, and returns sorted VisualLines.
+/// deduplicates with some tolerance, and returns sorted VisualLines.
 pub fn extract_visual_lines(document: &PagedDocument, ppi: f32) -> Vec<VisualLine> {
     if document.pages.is_empty() {
         return Vec::new();
