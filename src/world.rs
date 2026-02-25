@@ -16,6 +16,8 @@ pub struct MluxWorld {
     fonts: Vec<FontSlot>,
     main_id: FileId,
     main_source: Source,
+    /// Byte offset where content_text begins within main.typ.
+    content_offset: usize,
 }
 
 impl MluxWorld {
@@ -26,16 +28,28 @@ impl MluxWorld {
     /// - `width`: page width in pt
     pub fn new(theme_text: &str, content_text: &str, width: f64) -> Self {
         // Inline theme + width override + content into a single source
-        let main_text = format!(
-            "{theme_text}\n#set page(width: {width}pt)\n{content_text}\n"
-        );
+        let prefix = format!("{theme_text}\n#set page(width: {width}pt)\n");
+        let content_offset = prefix.len();
+        let main_text = format!("{prefix}{content_text}\n");
 
-        Self::from_source(&main_text, true)
+        let mut world = Self::from_source(&main_text, true);
+        world.content_offset = content_offset;
+        world
     }
 
     /// Create a MluxWorld from raw Typst source (no theme injection or width override).
     pub fn new_raw(source: &str) -> Self {
         Self::from_source(source, false)
+    }
+
+    /// Get a reference to the main Source (for Span resolution).
+    pub fn main_source(&self) -> &Source {
+        &self.main_source
+    }
+
+    /// Byte offset where content_text begins within main.typ.
+    pub fn content_offset(&self) -> usize {
+        self.content_offset
     }
 
     fn from_source(main_text: &str, check_cjk: bool) -> Self {
@@ -66,6 +80,7 @@ impl MluxWorld {
             fonts,
             main_id,
             main_source,
+            content_offset: 0,
         }
     }
 }

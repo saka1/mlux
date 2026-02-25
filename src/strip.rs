@@ -5,28 +5,56 @@ use anyhow::Result;
 use log::{debug, info, trace};
 use typst::foundations::Smart;
 use typst::layout::{Abs, Axes, Frame, FrameItem, Page, PagedDocument, Point};
+use typst::syntax::{Source, Span};
 use typst::visualize::{Geometry, Paint};
+
+use crate::convert::SourceMap;
 
 /// A visual line extracted from the PagedDocument frame tree.
 #[derive(Debug, Clone)]
 pub struct VisualLine {
     pub y_pt: f64, // Absolute Y coordinate of the text baseline (pt)
     pub y_px: u32, // Pixel Y coordinate (after ppi conversion)
+    /// Markdown source line range (1-based, inclusive). None for theme-derived text.
+    pub md_line_range: Option<(usize, usize)>,
 }
 
-/// Extract visual line positions from the frame tree.
+/// Extract visual line positions from the frame tree (without source mapping).
 ///
-/// Walks all TextItem nodes, collects their absolute Y coordinates,
-/// deduplicates with some tolerance, and returns sorted VisualLines.
+/// Compatibility wrapper — delegates to `extract_visual_lines_with_map` with
+/// no source mapping, producing `md_line_range = None` for all lines.
 pub fn extract_visual_lines(document: &PagedDocument, ppi: f32) -> Vec<VisualLine> {
+    extract_visual_lines_with_map(document, ppi, None)
+}
+
+/// Parameters for source mapping during visual line extraction.
+pub struct SourceMappingParams<'a> {
+    pub source: &'a Source,
+    pub content_offset: usize,
+    pub source_map: &'a SourceMap,
+    pub md_source: &'a str,
+}
+
+/// Extract visual line positions from the frame tree, optionally with source mapping.
+///
+/// Walks all TextItem nodes, collects their absolute Y coordinates and (optionally)
+/// representative Span from the first glyph. Deduplicates with tolerance, then
+/// resolves each line's Span through the source mapping chain to get the
+/// corresponding Markdown source line range.
+pub fn extract_visual_lines_with_map(
+    document: &PagedDocument,
+    ppi: f32,
+    mapping: Option<&SourceMappingParams>,
+) -> Vec<VisualLine> {
     if document.pages.is_empty() {
         return Vec::new();
     }
 
-    let mut y_coords: Vec<f64> = Vec::new();
-    collect_text_y(&document.pages[0].frame, Point::zero(), &mut y_coords);
+    // Collect (Y coordinate, representative Span) from all TextItem nodes.
+    let mut entries: Vec<(f64, Option<Span>)> = Vec::new();
+    collect_text_y_span(&document.pages[0].frame, Point::zero(), &mut entries);
 
-    // Sort and deduplicate.
+    // Sort and deduplicate by Y coordinate.
     //
     // Tolerance is 5pt: within a single visual line, different font sizes
     // (e.g., 12pt body vs 10pt inline code) produce baseline offsets of
@@ -35,38 +63,177 @@ pub fn extract_visual_lines(document: &PagedDocument, ppi: f32) -> Vec<VisualLin
     // intra-line variants without collapsing separate lines.
     const TOLERANCE_PT: f64 = 5.0;
 
-    y_coords.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mut deduped: Vec<f64> = Vec::new();
-    for y in y_coords {
-        if deduped.last().map_or(true, |prev| (y - prev).abs() > TOLERANCE_PT) {
-            deduped.push(y);
+    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut deduped: Vec<(f64, Option<Span>)> = Vec::new();
+    for (y, span) in entries {
+        if deduped
+            .last()
+            .map_or(true, |(prev_y, _)| (y - prev_y).abs() > TOLERANCE_PT)
+        {
+            deduped.push((y, span));
+        } else if let Some(last) = deduped.last_mut() {
+            // Within tolerance — prefer a non-detached span over a detached one
+            if let Some(s) = span {
+                if !s.is_detached() && last.1.map_or(true, |ls| ls.is_detached()) {
+                    last.1 = Some(s);
+                }
+            }
         }
     }
 
     let pixel_per_pt = ppi as f64 / 72.0;
-    deduped
+    let lines: Vec<VisualLine> = deduped
         .into_iter()
-        .map(|y_pt| VisualLine {
-            y_pt,
-            y_px: (y_pt * pixel_per_pt).round() as u32,
+        .enumerate()
+        .map(|(i, (y_pt, span))| {
+            trace!("visual_line[{i}]: y={y_pt:.1}pt, span={}", span.map_or("none".to_string(), |s| if s.is_detached() { "detached".to_string() } else { "attached".to_string() }));
+            let md_line_range = mapping
+                .and_then(|m| resolve_md_line_range(span?, m));
+            VisualLine {
+                y_pt,
+                y_px: (y_pt * pixel_per_pt).round() as u32,
+                md_line_range,
+            }
         })
-        .collect()
+        .collect();
+
+    if mapping.is_some() {
+        let mapped = lines.iter().filter(|l| l.md_line_range.is_some()).count();
+        debug!(
+            "extract_visual_lines: {} lines ({} mapped, {} unmapped)",
+            lines.len(),
+            mapped,
+            lines.len() - mapped
+        );
+        for (i, vl) in lines.iter().enumerate() {
+            if let Some((s, e)) = vl.md_line_range {
+                let preview: String = mapping.unwrap().md_source
+                    .lines()
+                    .nth(s - 1)
+                    .unwrap_or("")
+                    .chars()
+                    .take(60)
+                    .collect();
+                debug!(
+                    "  vl[{i}] y={:.1}pt → md L{s}-{e}: {:?}",
+                    vl.y_pt, preview
+                );
+            } else {
+                debug!("  vl[{i}] y={:.1}pt → (unmapped)", vl.y_pt);
+            }
+        }
+    }
+
+    lines
 }
 
-/// Recursively collect absolute Y coordinates of all TextItem nodes.
-fn collect_text_y(frame: &Frame, parent_offset: Point, out: &mut Vec<f64>) {
+/// Resolve a Span to a Markdown line range via the source mapping chain.
+///
+/// Chain: Span → Source::range() → subtract content_offset → SourceMap lookup → md line range
+fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<(usize, usize)> {
+    if span.is_detached() {
+        trace!("  span detached, skipping");
+        return None;
+    }
+
+    // Resolve Span to byte range in main.typ
+    let main_range = params.source.range(span)?;
+
+    // Convert to content_text offset
+    if main_range.start < params.content_offset {
+        trace!("  span in prefix (main_range={:?}, content_offset={})", main_range, params.content_offset);
+        return None; // Within theme/prefix, not content
+    }
+    let content_offset = main_range.start - params.content_offset;
+
+    // Look up in SourceMap
+    let block = params.source_map.find_by_typst_offset(content_offset)?;
+
+    // Convert md_byte_range to line numbers (1-based)
+    let start_line = byte_offset_to_line(params.md_source, block.md_byte_range.start);
+    let end_line = byte_offset_to_line(
+        params.md_source,
+        block.md_byte_range.end.saturating_sub(1).max(block.md_byte_range.start),
+    );
+
+    trace!(
+        "  span resolved: main={:?} → content_off={} → typst_block={:?} → md_block={:?} → lines {}-{}",
+        main_range, content_offset, block.typst_byte_range, block.md_byte_range, start_line, end_line
+    );
+
+    Some((start_line, end_line))
+}
+
+/// Convert a byte offset within a string to a 1-based line number.
+fn byte_offset_to_line(source: &str, offset: usize) -> usize {
+    let offset = offset.min(source.len());
+    source[..offset].bytes().filter(|&b| b == b'\n').count() + 1
+}
+
+/// Recursively collect (absolute Y, representative Span) from all TextItem nodes.
+fn collect_text_y_span(
+    frame: &Frame,
+    parent_offset: Point,
+    out: &mut Vec<(f64, Option<Span>)>,
+) {
     for (pos, item) in frame.items() {
         let abs = parent_offset + *pos;
         match item {
-            FrameItem::Text(_) => {
-                out.push(abs.y.to_pt());
+            FrameItem::Text(text) => {
+                let span = text.glyphs.first().map(|g| g.span.0);
+                out.push((abs.y.to_pt(), span));
             }
             FrameItem::Group(group) => {
-                collect_text_y(&group.frame, abs, out);
+                collect_text_y_span(&group.frame, abs, out);
             }
             _ => {}
         }
     }
+}
+
+/// Extract Markdown source lines corresponding to a range of visual lines.
+///
+/// Collects `md_line_range` from each visual line in `[start_vl..=end_vl]`,
+/// takes the union of all ranges, and returns the corresponding Markdown lines.
+pub fn yank_lines(
+    md_source: &str,
+    visual_lines: &[VisualLine],
+    start_vl: usize,
+    end_vl: usize,
+) -> String {
+    let end_vl = end_vl.min(visual_lines.len().saturating_sub(1));
+    if start_vl > end_vl {
+        return String::new();
+    }
+
+    // Collect all md_line_range values from the selected visual lines
+    let mut min_line = usize::MAX;
+    let mut max_line = 0usize;
+    let mut found = false;
+
+    for vl in &visual_lines[start_vl..=end_vl] {
+        if let Some((start, end)) = vl.md_line_range {
+            min_line = min_line.min(start);
+            max_line = max_line.max(end);
+            found = true;
+        }
+    }
+
+    if !found {
+        return String::new();
+    }
+
+    // Extract lines min_line..=max_line (1-based) from md_source
+    let lines: Vec<&str> = md_source.lines().collect();
+    let start_idx = min_line.saturating_sub(1); // Convert to 0-based
+    let end_idx = max_line.min(lines.len());     // 1-based end → exclusive 0-based
+
+    if start_idx >= lines.len() {
+        return String::new();
+    }
+
+    lines[start_idx..end_idx].join("\n")
 }
 
 /// Generate Typst source for the sidebar image.

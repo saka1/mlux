@@ -1,7 +1,8 @@
 use std::fs;
 
-use mlux::convert::markdown_to_typst;
-use mlux::render::render_to_png;
+use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
+use mlux::render::{compile_document, render_to_png};
+use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, yank_lines};
 use mlux::world::MluxWorld;
 
 fn load_theme() -> String {
@@ -64,4 +65,211 @@ fn test_convert_escapes_typst_chars() {
     let typst = markdown_to_typst(md);
     assert!(typst.contains("\\$100"), "$ should be escaped");
     assert!(typst.contains("\\#hashtag"), "# should be escaped");
+}
+
+// ---------------------------------------------------------------------------
+// Source mapping integration tests
+// ---------------------------------------------------------------------------
+
+const PPI: f32 = 144.0;
+const WIDTH_PT: f64 = 400.0;
+
+/// Run the full source mapping pipeline for a given Markdown string.
+///
+/// Returns (visual_lines, md_source) for use in yank_lines.
+fn source_map_pipeline(md: &str) -> Vec<mlux::strip::VisualLine> {
+    let _ = env_logger::try_init();
+    let theme = load_theme();
+    let (content, source_map) = markdown_to_typst_with_map(md);
+    let world = MluxWorld::new(&theme, &content, WIDTH_PT);
+    let document = compile_document(&world).expect("compilation should succeed");
+
+    let params = SourceMappingParams {
+        source: world.main_source(),
+        content_offset: world.content_offset(),
+        source_map: &source_map,
+        md_source: md,
+    };
+    extract_visual_lines_with_map(&document, PPI, Some(&params))
+}
+
+#[test]
+fn test_source_map_heading() {
+    let md = "# Heading\n\nParagraph.\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        vlines.len() >= 2,
+        "expected at least 2 visual lines, got {}",
+        vlines.len()
+    );
+
+    // Yank the first visual line (heading)
+    let yanked = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(yanked, "# Heading");
+}
+
+#[test]
+fn test_source_map_paragraph() {
+    let md = "# H\n\nThis is a long paragraph that will wrap across multiple lines in the rendered output.\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        vlines.len() >= 2,
+        "expected at least 2 visual lines, got {}",
+        vlines.len()
+    );
+
+    // Find a visual line that belongs to the paragraph (not heading)
+    // The heading is visual line 0; paragraph starts at visual line 1+
+    let yanked = yank_lines(md, &vlines, 1, 1);
+    assert_eq!(
+        yanked,
+        "This is a long paragraph that will wrap across multiple lines in the rendered output."
+    );
+}
+
+#[test]
+fn test_source_map_code_block() {
+    let md = "# H\n\n```rust\nfn main() {}\n```\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        vlines.len() >= 2,
+        "expected at least 2 visual lines, got {}",
+        vlines.len()
+    );
+
+    // Find a visual line inside the code block
+    // Heading is vline 0, code block content starts after
+    let code_vl = vlines
+        .iter()
+        .position(|vl| {
+            vl.md_line_range
+                .map_or(false, |(s, _)| s >= 3) // code block starts at line 3
+        })
+        .expect("should find a visual line for the code block");
+    let yanked = yank_lines(md, &vlines, code_vl, code_vl);
+    assert_eq!(yanked, "```rust\nfn main() {}\n```");
+}
+
+#[test]
+fn test_source_map_multi_block_yank() {
+    let md = "# Heading\n\nParagraph.\n\n## Sub\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        vlines.len() >= 3,
+        "expected at least 3 visual lines, got {}",
+        vlines.len()
+    );
+
+    // Yank from first to last visual line
+    let last = vlines.len() - 1;
+    let yanked = yank_lines(md, &vlines, 0, last);
+    assert_eq!(yanked, "# Heading\n\nParagraph.\n\n## Sub");
+}
+
+#[test]
+fn test_source_map_list() {
+    let md = "- Item 1\n- Item 2\n- Item 3\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        !vlines.is_empty(),
+        "expected at least 1 visual line for list"
+    );
+
+    // Yank any visual line from the list — should get the whole list
+    let yanked = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(yanked, "- Item 1\n- Item 2\n- Item 3");
+}
+
+#[test]
+fn test_source_map_table() {
+    let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        !vlines.is_empty(),
+        "expected at least 1 visual line for table"
+    );
+
+    // Yank any visual line from the table — should get the whole table
+    let yanked = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(yanked, "| A | B |\n|---|---|\n| 1 | 2 |");
+}
+
+#[test]
+fn test_source_map_blockquote() {
+    let md = "> Quote line 1\n> Quote line 2\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        !vlines.is_empty(),
+        "expected at least 1 visual line for blockquote"
+    );
+
+    let yanked = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(yanked, "> Quote line 1\n> Quote line 2");
+}
+
+#[test]
+fn test_source_map_full_document() {
+    let md =
+        fs::read_to_string("tests/fixtures/07_full_document.md").expect("fixture should exist");
+    let vlines = source_map_pipeline(&md);
+
+    // Full document should have many visual lines
+    assert!(
+        vlines.len() > 10,
+        "expected >10 visual lines for full document, got {}",
+        vlines.len()
+    );
+
+    // First visual line should be the heading
+    let yanked_first = yank_lines(&md, &vlines, 0, 0);
+    assert_eq!(yanked_first, "# Rustにおけるエラーハンドリング");
+
+    // Every visual line with md_line_range should produce valid yank output
+    for (i, vl) in vlines.iter().enumerate() {
+        if vl.md_line_range.is_some() {
+            let yanked = yank_lines(&md, &vlines, i, i);
+            assert!(
+                !yanked.is_empty(),
+                "visual line {i} has md_line_range {:?} but yank produced empty string",
+                vl.md_line_range
+            );
+        }
+    }
+}
+
+#[test]
+fn test_source_map_inline_formatting_preserved() {
+    let md = "Text with **bold** and [link](http://example.com).\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        !vlines.is_empty(),
+        "expected at least 1 visual line"
+    );
+
+    let yanked = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(
+        yanked,
+        "Text with **bold** and [link](http://example.com)."
+    );
+}
+
+#[test]
+fn test_visual_line_count() {
+    // Simple document: heading + paragraph = at least 2 visual lines
+    let md = "# Title\n\nA paragraph.\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        vlines.len() >= 2,
+        "expected at least 2 visual lines for heading + paragraph, got {}",
+        vlines.len()
+    );
+
+    // Each visual line should have an md_line_range (no theme-only lines expected)
+    for (i, vl) in vlines.iter().enumerate() {
+        assert!(
+            vl.md_line_range.is_some(),
+            "visual line {i} should have md_line_range, y_pt={:.1}",
+            vl.y_pt
+        );
+    }
 }

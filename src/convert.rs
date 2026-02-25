@@ -1,4 +1,42 @@
+use std::ops::Range;
+
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+/// Markdown source line → Typst output byte range mapping for a single block.
+#[derive(Debug, Clone)]
+pub struct BlockMapping {
+    /// Byte range within the Typst output (content_text).
+    pub typst_byte_range: Range<usize>,
+    /// Byte range within the original Markdown source.
+    pub md_byte_range: Range<usize>,
+}
+
+/// Mapping from Typst output positions back to Markdown source positions.
+#[derive(Debug, Clone)]
+pub struct SourceMap {
+    /// Block mappings sorted by `typst_byte_range.start` ascending.
+    pub blocks: Vec<BlockMapping>,
+}
+
+impl SourceMap {
+    /// Find the BlockMapping whose typst_byte_range contains `typst_offset`.
+    pub fn find_by_typst_offset(&self, typst_offset: usize) -> Option<&BlockMapping> {
+        // Binary search for the block whose range contains the offset.
+        let idx = self
+            .blocks
+            .binary_search_by(|b| {
+                if typst_offset < b.typst_byte_range.start {
+                    std::cmp::Ordering::Greater
+                } else if typst_offset >= b.typst_byte_range.end {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .ok()?;
+        Some(&self.blocks[idx])
+    }
+}
 
 /// State tracking for nested containers during conversion.
 #[derive(Debug)]
@@ -18,8 +56,16 @@ enum Container {
     TableCell,
 }
 
-/// Convert Markdown text to Typst markup.
+/// Convert Markdown text to Typst markup (compatibility wrapper).
 pub fn markdown_to_typst(markdown: &str) -> String {
+    markdown_to_typst_with_map(markdown).0
+}
+
+/// Convert Markdown text to Typst markup with source mapping.
+///
+/// Returns the Typst markup string and a `SourceMap` that maps Typst byte
+/// ranges back to the original Markdown byte ranges (block-level granularity).
+pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -34,10 +80,21 @@ pub fn markdown_to_typst(markdown: &str) -> String {
     let mut table_cells: Vec<String> = Vec::new();
     let mut table_col_count: usize = 0;
 
-    for event in parser {
+    // Source mapping: track top-level block boundaries
+    let mut source_map_blocks: Vec<BlockMapping> = Vec::new();
+    // Stack of (typst_start, md_range) for open top-level blocks
+    let mut block_starts: Vec<(usize, Range<usize>)> = Vec::new();
+    // Depth counter for block-level nesting (only record at depth 0)
+    let mut block_depth: usize = 0;
+
+    for (event, md_range) in parser.into_offset_iter() {
         match event {
             // === Block-level Start tags ===
             Event::Start(Tag::Paragraph) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                block_depth += 1;
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -46,6 +103,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 }
             }
             Event::Start(Tag::Heading { level, .. }) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                block_depth += 1;
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -58,6 +119,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 stack.push(Container::Heading);
             }
             Event::Start(Tag::BlockQuote(_)) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                block_depth += 1;
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -68,6 +133,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 stack.push(Container::BlockQuote);
             }
             Event::Start(Tag::CodeBlock(kind)) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                block_depth += 1;
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -85,6 +154,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 stack.push(Container::CodeBlock);
             }
             Event::Start(Tag::List(start)) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                block_depth += 1;
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -113,6 +186,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 stack.push(Container::Item);
             }
             Event::Start(Tag::Table(alignments)) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                block_depth += 1;
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -162,12 +239,30 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 if !output.ends_with('\n') {
                     output.push('\n');
                 }
+                block_depth -= 1;
+                if block_depth == 0 {
+                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
             }
             Event::End(TagEnd::Heading(_)) => {
                 if !output.ends_with('\n') {
                     output.push('\n');
                 }
                 pop_expect(&mut stack, "Heading");
+                block_depth -= 1;
+                if block_depth == 0 {
+                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
             }
             Event::End(TagEnd::BlockQuote(_)) => {
                 // Trim trailing whitespace inside the quote
@@ -175,6 +270,15 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 output.truncate(trimmed);
                 output.push_str("]\n");
                 pop_expect(&mut stack, "BlockQuote");
+                block_depth -= 1;
+                if block_depth == 0 {
+                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
@@ -184,9 +288,27 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 }
                 output.push_str("```\n");
                 pop_expect(&mut stack, "CodeBlock");
+                block_depth -= 1;
+                if block_depth == 0 {
+                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
             }
             Event::End(TagEnd::List(_)) => {
                 pop_expect(&mut stack, "List");
+                block_depth -= 1;
+                if block_depth == 0 {
+                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
             }
             Event::End(TagEnd::Item) => {
                 if !output.ends_with('\n') {
@@ -196,6 +318,11 @@ pub fn markdown_to_typst(markdown: &str) -> String {
             }
             Event::End(TagEnd::Table) => {
                 // Emit the entire table
+                // For tables, typst_start is recorded at Start(Table) but the
+                // actual Typst output is emitted here at End(Table).
+                // We need to update the typst_start to the current position
+                // before emitting so the range covers the actual output.
+                let table_typst_start = output.len();
                 output.push_str(&format!("#table(columns: {table_col_count},\n"));
                 for cell in &table_cells {
                     output.push_str(&format!("  [{cell}],\n"));
@@ -203,6 +330,15 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 output.push_str(")\n");
                 table_cells.clear();
                 pop_expect(&mut stack, "Table");
+                block_depth -= 1;
+                if block_depth == 0 {
+                    if let Some((_typst_start, md_range_start)) = block_starts.pop() {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: table_typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
             }
             Event::End(TagEnd::TableHead) => {
                 pop_expect(&mut stack, "TableHead");
@@ -262,6 +398,7 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                 push_to_target(&mut output, &mut cell_buf, "\\ \n");
             }
             Event::Rule => {
+                let rule_start = output.len();
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
                 }
@@ -269,6 +406,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
                     output.push('\n');
                 }
                 output.push_str("#line(length: 100%)\n");
+                source_map_blocks.push(BlockMapping {
+                    typst_byte_range: rule_start..output.len(),
+                    md_byte_range: md_range,
+                });
             }
             _ => {}
         }
@@ -278,7 +419,10 @@ pub fn markdown_to_typst(markdown: &str) -> String {
         output.push('\n');
     }
 
-    output
+    let source_map = SourceMap {
+        blocks: source_map_blocks,
+    };
+    (output, source_map)
 }
 
 /// Push string to the cell buffer if active, otherwise to the main output.
