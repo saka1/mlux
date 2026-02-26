@@ -1,5 +1,7 @@
 use std::ops::Range;
+use std::time::Instant;
 
+use log::info;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 /// Markdown source line → Typst output byte range mapping for a single block.
@@ -66,6 +68,7 @@ pub fn markdown_to_typst(markdown: &str) -> String {
 /// Returns the Typst markup string and a `SourceMap` that maps Typst byte
 /// ranges back to the original Markdown byte ranges (block-level granularity).
 pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
+    let start = Instant::now();
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -443,6 +446,12 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
     let source_map = SourceMap {
         blocks: source_map_blocks,
     };
+    info!(
+        "convert: completed in {:.1}ms (input: {} bytes, output: {} bytes)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        markdown.len(),
+        output.len()
+    );
     (output, source_map)
 }
 

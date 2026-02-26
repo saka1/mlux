@@ -1,3 +1,6 @@
+use std::time::Instant;
+
+use log::info;
 use typst::diag::FileResult;
 use typst::foundations::{Bytes, Datetime};
 use typst::syntax::{FileId, Source, VirtualPath};
@@ -27,6 +30,7 @@ impl MluxWorld {
     /// - `content_text`: Typst markup converted from Markdown
     /// - `width`: page width in pt
     pub fn new(theme_text: &str, content_text: &str, width: f64) -> Self {
+        let start = Instant::now();
         // Inline theme + width override + content into a single source
         let prefix = format!("{theme_text}\n#set page(width: {width}pt)\n");
         let content_offset = prefix.len();
@@ -34,6 +38,7 @@ impl MluxWorld {
 
         let mut world = Self::from_source(&main_text, true);
         world.content_offset = content_offset;
+        info!("world: new() completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
         world
     }
 
@@ -57,9 +62,11 @@ impl MluxWorld {
         let main_id = FileId::new(None, vpath);
         let main_source = Source::new(main_id, main_text.to_string());
 
+        let font_start = Instant::now();
         let Fonts { book, fonts } = FontSearcher::new()
             .include_system_fonts(true)
             .search();
+        info!("world: font search completed in {:.1}ms", font_start.elapsed().as_secs_f64() * 1000.0);
 
         if check_cjk {
             // Check if any CJK font is available

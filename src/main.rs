@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use log::info;
 
 use mlux::convert::markdown_to_typst;
 use mlux::render::{compile_document, dump_document, format_diagnostic, render_frame_to_png};
@@ -78,6 +80,8 @@ fn cmd_render(
     strip_height: f64,
     dump: bool,
 ) -> Result<()> {
+    let pipeline_start = Instant::now();
+
     // Read input markdown
     let markdown = fs::read_to_string(&input)
         .with_context(|| format!("failed to read {}", input.display()))?;
@@ -141,6 +145,11 @@ fn cmd_render(
             .with_context(|| format!("failed to write {}", path.display()))?;
         files.push((filename, png_data.len()));
     }
+
+    info!(
+        "cmd_render: total pipeline completed in {:.1}ms",
+        pipeline_start.elapsed().as_secs_f64() * 1000.0
+    );
 
     eprintln!("rendered {} -> {} strip(s):", input.display(), strips.len());
     for (filename, size) in &files {

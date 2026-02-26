@@ -495,6 +495,7 @@ fn build_strip_document(
     source_map: &SourceMap,
     layout: &Layout,
 ) -> anyhow::Result<StripDocument> {
+    let start = Instant::now();
     let viewport_px_w = layout.image_cols as f64 * layout.cell_w as f64;
     let width_pt = viewport_px_w * 72.0 / PPI as f64;
 
@@ -530,13 +531,15 @@ fn build_strip_document(
     let sidebar_doc = build_sidebar_doc(&visual_lines, layout, page_height_pt)?;
 
     // 4. Build StripDocument with both content + sidebar
-    Ok(StripDocument::new(
+    let strip_doc = StripDocument::new(
         &document,
         &sidebar_doc,
         visual_lines,
         strip_height_pt,
         PPI,
-    ))
+    );
+    info!("viewer: build_strip_document completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
+    Ok(strip_doc)
 }
 
 fn build_sidebar_doc(
@@ -694,9 +697,10 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                 debug!("prefetch worker: started");
                 while let Ok(idx) = req_rx.recv() {
                     debug!("prefetch worker: rendering strip {idx}");
+                    let render_start = Instant::now();
                     match (doc.render_strip(idx), doc.render_sidebar_strip(idx)) {
                         (Ok(content), Ok(sidebar)) => {
-                            debug!("prefetch worker: strip {idx} done (content={}, sidebar={} bytes)", content.len(), sidebar.len());
+                            debug!("prefetch worker: strip {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, content.len(), sidebar.len());
                             let _ = res_tx.send((idx, StripPngs { content, sidebar }));
                         }
                         (Err(e), _) | (_, Err(e)) => {

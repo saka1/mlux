@@ -1,4 +1,7 @@
+use std::time::Instant;
+
 use anyhow::{Result, bail};
+use log::info;
 use typst::diag::{SourceDiagnostic, Severity, Tracepoint};
 use typst::foundations::Smart;
 use typst::layout::{Frame, FrameItem, Page, PagedDocument, Point};
@@ -54,6 +57,7 @@ pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld) -> String {
 
 /// Compile Typst sources into a PagedDocument (no rendering).
 pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
+    let start = Instant::now();
     let warned = typst::compile::<PagedDocument>(world);
 
     for warning in &warned.warnings {
@@ -61,7 +65,10 @@ pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
     }
 
     match warned.output {
-        Ok(doc) => Ok(doc),
+        Ok(doc) => {
+            info!("render: typst::compile completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
+            Ok(doc)
+        }
         Err(errors) => {
             let mut detail = String::new();
             for err in &errors {
@@ -76,6 +83,7 @@ pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
 ///
 /// Wraps the frame in a Page, renders at the given PPI, and encodes to PNG.
 pub fn render_frame_to_png(frame: &Frame, fill: &Smart<Option<Paint>>, ppi: f32) -> Result<Vec<u8>> {
+    let start = Instant::now();
     let page = Page {
         frame: frame.clone(),
         fill: fill.clone(),
@@ -87,9 +95,17 @@ pub fn render_frame_to_png(frame: &Frame, fill: &Smart<Option<Paint>>, ppi: f32)
     let pixel_per_pt = ppi / 72.0;
     let pixmap = typst_render::render(&page, pixel_per_pt);
 
-    pixmap
+    let png = pixmap
         .encode_png()
-        .map_err(|e| anyhow::anyhow!("PNG encoding failed: {e}"))
+        .map_err(|e| anyhow::anyhow!("PNG encoding failed: {e}"))?;
+    info!(
+        "render: render_frame_to_png completed in {:.1}ms ({}x{}px, {} bytes)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        pixmap.width(),
+        pixmap.height(),
+        png.len()
+    );
+    Ok(png)
 }
 
 /// Dump the PagedDocument frame tree to stderr for debugging.

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::time::Instant;
 
 use anyhow::Result;
 use log::{debug, info, trace};
@@ -54,6 +55,7 @@ pub fn extract_visual_lines_with_map(
     ppi: f32,
     mapping: Option<&SourceMappingParams>,
 ) -> Vec<VisualLine> {
+    let start = Instant::now();
     if document.pages.is_empty() {
         return Vec::new();
     }
@@ -107,6 +109,11 @@ pub fn extract_visual_lines_with_map(
         })
         .collect();
 
+    info!(
+        "strip: extract_visual_lines completed in {:.1}ms ({} lines)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        lines.len()
+    );
     if mapping.is_some() {
         let mapped = lines.iter().filter(|l| l.md_line_range.is_some()).count();
         debug!(
@@ -389,6 +396,7 @@ fn item_bounding_height(item: &FrameItem) -> f64 {
 /// Items spanning a strip boundary are cloned into both strips.
 /// tiny-skia clips drawing outside the canvas, so the visual result is correct.
 pub fn split_frame(frame: &Frame, strip_height_pt: f64) -> Vec<Frame> {
+    let start = Instant::now();
     let total_height = frame.size().y.to_pt();
     let strip_count = (total_height / strip_height_pt).ceil().max(1.0) as usize;
     let orig_width = frame.size().x;
@@ -434,8 +442,10 @@ pub fn split_frame(frame: &Frame, strip_height_pt: f64) -> Vec<Frame> {
     }
 
     info!(
-        "split into {} strips (height={}pt)",
-        strip_count, strip_height_pt
+        "strip: split_frame completed in {:.1}ms ({} strips, height={}pt)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        strip_count,
+        strip_height_pt
     );
     strips
 }
@@ -599,6 +609,7 @@ impl StripDocument {
     ) -> Result<Vec<u8>> {
         assert!(idx < strips.len(), "{label} strip index out of bounds");
         trace!("rendering {label} strip {idx}");
+        let start = Instant::now();
 
         let page = Page {
             frame: strips[idx].clone(),
@@ -615,10 +626,11 @@ impl StripDocument {
             .map_err(|e| anyhow::anyhow!("{label} PNG encoding failed: {e}"))?;
 
         debug!(
-            "render {label} strip {idx}: {}x{}px, {} bytes PNG",
+            "render {label} strip {idx}: {}x{}px, {} bytes PNG in {:.1}ms",
             pixmap.width(),
             pixmap.height(),
-            png.len()
+            png.len(),
+            start.elapsed().as_secs_f64() * 1000.0
         );
 
         Ok(png)
