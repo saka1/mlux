@@ -74,6 +74,9 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
     let mut output = String::new();
     let mut stack: Vec<Container> = Vec::new();
     let mut in_code_block = false;
+    // Buffer for collecting code block content (deferred fence writing)
+    let mut code_block_buf = String::new();
+    let mut code_block_lang = String::new();
     // Buffer for collecting table cell content
     let mut cell_buf: Option<String> = None;
     // Collected cells for current table
@@ -144,13 +147,11 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     output.push('\n');
                 }
                 in_code_block = true;
-                let lang = match &kind {
-                    CodeBlockKind::Fenced(lang) if !lang.is_empty() => lang.as_ref(),
-                    _ => "",
+                code_block_lang = match &kind {
+                    CodeBlockKind::Fenced(lang) if !lang.is_empty() => lang.to_string(),
+                    _ => String::new(),
                 };
-                output.push_str("```");
-                output.push_str(lang);
-                output.push('\n');
+                code_block_buf.clear();
                 stack.push(Container::CodeBlock);
             }
             Event::Start(Tag::List(start)) => {
@@ -282,11 +283,20 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
-                // Ensure the closing backticks are on their own line
-                if !output.ends_with('\n') {
-                    output.push('\n');
+                // Use a fence longer than any backtick run in the content
+                let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
+                let fence: String = "`".repeat(fence_len);
+                push_to_target(&mut output, &mut cell_buf, &fence);
+                push_to_target(&mut output, &mut cell_buf, &code_block_lang);
+                push_to_target(&mut output, &mut cell_buf, "\n");
+                push_to_target(&mut output, &mut cell_buf, &code_block_buf);
+                if !code_block_buf.ends_with('\n') {
+                    push_to_target(&mut output, &mut cell_buf, "\n");
                 }
-                output.push_str("```\n");
+                push_to_target(&mut output, &mut cell_buf, &fence);
+                push_to_target(&mut output, &mut cell_buf, "\n");
+                code_block_buf.clear();
+                code_block_lang.clear();
                 pop_expect(&mut stack, "CodeBlock");
                 block_depth -= 1;
                 if block_depth == 0 {
@@ -375,7 +385,7 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     // Insert a space on blank lines so Typst generates a TextItem
                     // (needed for visual line extraction in the sidebar).
                     let text = fill_blank_lines(&text);
-                    push_to_target(&mut output, &mut cell_buf, &text);
+                    code_block_buf.push_str(&text);
                 } else if cell_buf.is_some() {
                     let escaped = escape_typst(&text);
                     cell_buf.as_mut().unwrap().push_str(&escaped);
@@ -396,7 +406,7 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
             }
             Event::SoftBreak => {
                 if in_code_block {
-                    push_to_target(&mut output, &mut cell_buf, "\n");
+                    code_block_buf.push('\n');
                 } else {
                     push_to_target(&mut output, &mut cell_buf, "\n");
                 }
@@ -464,6 +474,23 @@ fn pop_expect(stack: &mut Vec<Container>, expected: &str) {
             "Expected {expected}, got {container:?}"
         );
     }
+}
+
+/// Find the longest consecutive run of backticks in a string.
+fn max_backtick_run(s: &str) -> usize {
+    let mut max = 0;
+    let mut current = 0;
+    for ch in s.chars() {
+        if ch == '`' {
+            current += 1;
+            if current > max {
+                max = current;
+            }
+        } else {
+            current = 0;
+        }
+    }
+    max
 }
 
 /// Replace blank lines with space-only lines in code block text.
@@ -702,6 +729,31 @@ mod tests {
             typst.contains("line1\n \n \nline4"),
             "Multiple blank lines should each be filled, got: {typst}"
         );
+    }
+
+    #[test]
+    fn test_code_block_containing_backtick_fence() {
+        let md = "````\n```rust\nfn main() {}\n```\n````";
+        let typst = markdown_to_typst(md);
+        // The generated fence must be longer than the 3-backtick run inside
+        assert!(
+            typst.contains("````"),
+            "fence should be at least 4 backticks, got: {typst}"
+        );
+        assert!(
+            typst.contains("```rust\nfn main() {}\n```"),
+            "content should be preserved verbatim, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_max_backtick_run() {
+        assert_eq!(max_backtick_run(""), 0);
+        assert_eq!(max_backtick_run("no backticks"), 0);
+        assert_eq!(max_backtick_run("a`b"), 1);
+        assert_eq!(max_backtick_run("```"), 3);
+        assert_eq!(max_backtick_run("a```b``c"), 3);
+        assert_eq!(max_backtick_run("``````"), 6);
     }
 
     #[test]
