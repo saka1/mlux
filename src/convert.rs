@@ -519,7 +519,7 @@ fn escape_typst(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
-            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' => {
+            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' => {
                 escaped.push('\\');
                 escaped.push(ch);
             }
@@ -545,6 +545,42 @@ mod tests {
         assert_eq!(escape_typst("#hello"), "\\#hello");
         assert_eq!(escape_typst("a * b"), "a \\* b");
         assert_eq!(escape_typst("$100"), "\\$100");
+        assert_eq!(escape_typst("foo(bar)"), "foo\\(bar\\)");
+    }
+
+    #[test]
+    fn test_emph_followed_by_paren() {
+        // crash-e263b8df: **Note*(: → \*#emph[Note](: → Typst が関数呼び出しと誤解釈
+        let md = "**Note*(: text";
+        let typst = markdown_to_typst(md);
+        assert!(
+            !typst.contains("]("),
+            "'](' は Typst が関数引数と解釈するため不可: {typst}"
+        );
+        assert!(
+            typst.contains("]\\("),
+            "']' の直後の '(' は '\\(' にエスケープされるべき: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_parens_in_text() {
+        let md = "関数 foo(x, y) を呼ぶ";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("foo\\(x, y\\)"),
+            "テキスト中の括弧はエスケープされるべき: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_strong_followed_by_paren() {
+        let md = "**bold** (note)";
+        let typst = markdown_to_typst(md);
+        assert!(
+            !typst.contains("]("),
+            "'](' は Typst が関数引数と解釈するため不可: {typst}"
+        );
     }
 
     #[test]
