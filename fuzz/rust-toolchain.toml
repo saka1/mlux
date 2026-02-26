@@ -1,0 +1,10 @@
+[toolchain]
+# resvg 0.45.1 fails to compile on nightly-2026-02-21 (rustc 1.95.0)
+# due to Rgba<u8> → [u8] coercion breakage. Pin to a known-good nightly.
+#
+# NOTE: cargo fuzz runs from the project root, so this file is NOT
+# automatically picked up. Use explicit +toolchain:
+#   cargo +nightly-2025-11-01 fuzz build
+#   cargo +nightly-2025-11-01 fuzz run fuzz_convert -- -max_total_time=10
+#   cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30 -max_len=4096
+channel = "nightly-2025-11-01"

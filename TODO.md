@@ -50,3 +50,22 @@
 テーマ由来のテキスト（ページ番号等）は `md_line_range = None` になる。
 ヤンク範囲に含まれても `yank_lines()` がスキップするので動作は正しいが、
 ビジュアルモードでの表示（選択不可マーク等）は検討の余地がある。
+
+---
+
+## アイデア・メモ
+
+### convert.rs の fuzzing
+
+- `cargo-fuzz` (libFuzzer) でランダムな Markdown を convert → typst compile に通す
+- 目標: どんな入力でも convert.rs が valid Typst を出力することを保証する
+- fuzz target: `Markdown → convert() → typst::compile()` でコンパイルエラーなら fail
+- 見つかったクラッシュケースはそのまま回帰テストに追加
+- pulldown-cmark 自体は十分 fuzz されているので、mlux 固有の変換ロジックが対象
+- 背景: 内部で Typst 変換をしている都合上、エラーメッセージがユーザーにとって意味不明になりやすい。
+  壊れた Markdown も寛容に受け付けて valid Typst を出力し、「見た目がおかしい」という形で伝えるのが理想。
+
+### fuzz カバレッジ拡大
+
+- render コマンドを複数 PNG 出力（strip 分割）に対応させれば、viewer と同じ strip パスを通るようになり、fuzz で strip 分割ロジックもカバーできる
+- 現状の fuzz は convert → compile までで、strip 分割は対象外
