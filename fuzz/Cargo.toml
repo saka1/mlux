@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+comemo = "0.5"
 [dependencies.mlux]
 path = ".."
 

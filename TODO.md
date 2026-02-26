@@ -87,6 +87,13 @@ render あり/なし比較:
 フルパイプライン fuzz は本質的に遅いが、INIT さえ越えればミューテーションは回る。
 `-max_total_time=1800`（30分）程度で実行するのが現実的。
 
+OOM artifact の調査:
+- `oom-69bebf6b...` (362バイト、日本語テキスト) を通常ビルドで実行 → compile, render ともに正常完了
+- ページサイズ 660x319pt、出力 PNG 119KB — 入力自体は無害
+- OOM は fuzzer プロセス内の RSS 累積（INIT 完了時点で 2140MB）が原因
+- typst/comemo のメモ化キャッシュがプロセス内に蓄積し、RSS が単調増加する構造
+- 個別入力の問題ではなく、fuzzer の長時間実行で必然的に発生する
+
 実行コマンド:
 ```bash
 cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=1800 -max_len=4096 -rss_limit_mb=4096

@@ -31,4 +31,9 @@ fuzz_target!(|data: &[u8]| {
             panic!("render failed:\n{e}");
         }
     }
+
+    // typst/comemo のメモ化キャッシュをクリア。
+    // fuzzer は毎回異なるドキュメントをコンパイルするため、キャッシュが
+    // 再利用されずに蓄積し RSS が単調増加 → OOM になる。
+    comemo::evict(0);
 });

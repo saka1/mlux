@@ -216,11 +216,11 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
 
             // === Inline Start tags ===
             Event::Start(Tag::Strong) => {
-                push_to_target(&mut output, &mut cell_buf, "*");
+                push_to_target(&mut output, &mut cell_buf, "#strong[");
                 stack.push(Container::Strong);
             }
             Event::Start(Tag::Emphasis) => {
-                push_to_target(&mut output, &mut cell_buf, "_");
+                push_to_target(&mut output, &mut cell_buf, "#emph[");
                 stack.push(Container::Emphasis);
             }
             Event::Start(Tag::Strikethrough) => {
@@ -363,11 +363,11 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 pop_expect(&mut stack, "TableCell");
             }
             Event::End(TagEnd::Strong) => {
-                push_to_target(&mut output, &mut cell_buf, "*");
+                push_to_target(&mut output, &mut cell_buf, "]");
                 pop_expect(&mut stack, "Strong");
             }
             Event::End(TagEnd::Emphasis) => {
-                push_to_target(&mut output, &mut cell_buf, "_");
+                push_to_target(&mut output, &mut cell_buf, "]");
                 pop_expect(&mut stack, "Emphasis");
             }
             Event::End(TagEnd::Strikethrough) => {
@@ -587,8 +587,25 @@ mod tests {
     fn test_bold_italic() {
         let md = "**bold** and *italic*";
         let typst = markdown_to_typst(md);
-        assert!(typst.contains("*bold*"));
-        assert!(typst.contains("_italic_"));
+        assert!(typst.contains("#strong[bold]"));
+        assert!(typst.contains("#emph[italic]"));
+    }
+
+    #[test]
+    fn test_emphasis_function_syntax() {
+        // fuzzer crash-301940: **Note*ks*: with delimiter syntax produced
+        // \*\*Note_ks_: causing "unclosed delimiter" in Typst.
+        // Function syntax (#emph[...]) avoids this class of bugs.
+        let md = "**Note*ks*: hello";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("#emph[ks]"),
+            "should use #emph[] function syntax, got: {typst}"
+        );
+        assert!(
+            !typst.contains("_ks_"),
+            "should not produce _..._ delimiters, got: {typst}"
+        );
     }
 
     #[test]

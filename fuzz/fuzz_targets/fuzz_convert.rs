@@ -50,4 +50,7 @@ fuzz_target!(|data: &[u8]| {
             pair[1].typst_byte_range,
         );
     }
+
+    // typst/comemo のメモ化キャッシュをクリア（RSS 蓄積防止）
+    comemo::evict(0);
 });

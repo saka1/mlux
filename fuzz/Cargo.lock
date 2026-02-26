@@ -1513,6 +1513,7 @@ dependencies = [
 name = "mlux-fuzz"
 version = "0.0.0"
 dependencies = [
+ "comemo",
  "libfuzzer-sys",
  "mlux",
 ]
