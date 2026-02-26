@@ -523,7 +523,7 @@ fn escape_typst(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
-            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' => {
+            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' | '[' | ']' => {
                 escaped.push('\\');
                 escaped.push(ch);
             }
@@ -550,6 +550,7 @@ mod tests {
         assert_eq!(escape_typst("a * b"), "a \\* b");
         assert_eq!(escape_typst("$100"), "\\$100");
         assert_eq!(escape_typst("foo(bar)"), "foo\\(bar\\)");
+        assert_eq!(escape_typst("foo[bar]"), "foo\\[bar\\]");
     }
 
     #[test]
@@ -564,6 +565,46 @@ mod tests {
         assert!(
             typst.contains("]\\("),
             "']' の直後の '(' は '\\(' にエスケープされるべき: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_bracket_in_heading() {
+        // crash-b305e5d4: ## text](url) → ] が Typst の unexpected closing bracket
+        let md = "## エanguage](https://doc.rust-lang.org/book/) を参照。";
+        let typst = markdown_to_typst(md);
+        assert!(
+            !typst.contains("]("),
+            "'](' は Typst がコンテントブロック閉じと解釈するため不可: {typst}"
+        );
+        assert!(
+            typst.contains("\\]"),
+            "テキスト中の ']' は '\\]' にエスケープされるべき: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_brackets_in_text() {
+        let md = "配列 arr[0] と [注釈] を含む文";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("arr\\[0\\]"),
+            "テキスト中の角括弧はエスケープされるべき: {typst}"
+        );
+        assert!(
+            typst.contains("\\[注釈\\]"),
+            "テキスト中の角括弧はエスケープされるべき: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_link_text_with_bracket() {
+        let md = "[foo]bar](https://example.com)";
+        let typst = markdown_to_typst(md);
+        // 構造的な ] は convert.rs が直接 push、テキスト中の ] は escape される
+        assert!(
+            !typst.contains("bar]("),
+            "リンクテキスト内の ']' は '\\]' にエスケープされるべき: {typst}"
         );
     }
 
