@@ -17,6 +17,14 @@ pub struct VisualLine {
     pub y_px: u32, // Pixel Y coordinate (after ppi conversion)
     /// Markdown source line range (1-based, inclusive). None for theme-derived text.
     pub md_line_range: Option<(usize, usize)>,
+    /// Precise 1-based MD line for code blocks (y yank). None for non-code blocks.
+    pub md_line_exact: Option<usize>,
+}
+
+/// Result of resolving a Span to Markdown line information.
+struct MdLineInfo {
+    range: (usize, usize),
+    exact: Option<usize>,
 }
 
 /// Extract visual line positions from the frame tree (without source mapping).
@@ -88,12 +96,13 @@ pub fn extract_visual_lines_with_map(
         .enumerate()
         .map(|(i, (y_pt, span))| {
             trace!("visual_line[{i}]: y={y_pt:.1}pt, span={}", span.map_or("none".to_string(), |s| if s.is_detached() { "detached".to_string() } else { "attached".to_string() }));
-            let md_line_range = mapping
+            let info = mapping
                 .and_then(|m| resolve_md_line_range(span?, m));
             VisualLine {
                 y_pt,
                 y_px: (y_pt * pixel_per_pt).round() as u32,
-                md_line_range,
+                md_line_range: info.as_ref().map(|i| i.range),
+                md_line_exact: info.as_ref().and_then(|i| i.exact),
             }
         })
         .collect();
@@ -131,7 +140,10 @@ pub fn extract_visual_lines_with_map(
 /// Resolve a Span to a Markdown line range via the source mapping chain.
 ///
 /// Chain: Span → Source::range() → subtract content_offset → SourceMap lookup → md line range
-fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<(usize, usize)> {
+///
+/// For code blocks, also computes `exact`: the precise 1-based MD line
+/// corresponding to this span position within the block.
+fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdLineInfo> {
     if span.is_detached() {
         trace!("  span detached, skipping");
         return None;
@@ -157,12 +169,46 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<(us
         block.md_byte_range.end.saturating_sub(1).max(block.md_byte_range.start),
     );
 
+    // Compute exact line for code blocks.
+    // Code blocks in Markdown start with "```"; their Typst output preserves
+    // the same line structure (fill_blank_lines inserts spaces but keeps newline count).
+    // We count newlines in the Typst text before the span position to find the
+    // exact source line within the block.
+    let md_block_text = &params.md_source[block.md_byte_range.clone()];
+    let exact = if md_block_text.starts_with("```") {
+        let typst_local_offset = content_offset - block.typst_byte_range.start;
+        let typst_block_text = params.source.text().get(
+            (block.typst_byte_range.start + params.content_offset)
+                ..(block.typst_byte_range.end + params.content_offset),
+        );
+        if let Some(typst_text) = typst_block_text {
+            let clamped = typst_local_offset.min(typst_text.len());
+            let newlines_before = typst_text[..clamped]
+                .bytes()
+                .filter(|&b| b == b'\n')
+                .count();
+            // start_line is the "```" fence line; content starts at start_line + 1
+            let exact_line = start_line + 1 + newlines_before;
+            // Clamp to not exceed end_line - 1 (closing fence)
+            let exact_line = exact_line.min(end_line.saturating_sub(1)).max(start_line + 1);
+            trace!("  code block exact: typst_local_off={}, newlines={}, exact_line={}", typst_local_offset, newlines_before, exact_line);
+            Some(exact_line)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     trace!(
-        "  span resolved: main={:?} → content_off={} → typst_block={:?} → md_block={:?} → lines {}-{}",
-        main_range, content_offset, block.typst_byte_range, block.md_byte_range, start_line, end_line
+        "  span resolved: main={:?} → content_off={} → typst_block={:?} → md_block={:?} → lines {}-{} exact={:?}",
+        main_range, content_offset, block.typst_byte_range, block.md_byte_range, start_line, end_line, exact
     );
 
-    Some((start_line, end_line))
+    Some(MdLineInfo {
+        range: (start_line, end_line),
+        exact,
+    })
 }
 
 /// Convert a byte offset within a string to a 1-based line number.
@@ -234,6 +280,29 @@ pub fn yank_lines(
     }
 
     lines[start_idx..end_idx].join("\n")
+}
+
+/// Extract the precise Markdown source line for a visual line.
+///
+/// For code blocks, returns the single line indicated by `md_line_exact`.
+/// For other blocks (paragraphs, headings, etc.), falls back to block-level
+/// yank via `yank_lines`.
+pub fn yank_exact(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> String {
+    if vl_idx >= visual_lines.len() {
+        return String::new();
+    }
+    let vl = &visual_lines[vl_idx];
+    if let Some(exact_line) = vl.md_line_exact {
+        // Return the single exact line (1-based)
+        md_source
+            .lines()
+            .nth(exact_line - 1)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        // Fallback to block yank
+        yank_lines(md_source, visual_lines, vl_idx, vl_idx)
+    }
 }
 
 /// Generate Typst source for the sidebar image.

@@ -2,7 +2,7 @@ use std::fs;
 
 use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
 use mlux::render::{compile_document, render_to_png};
-use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, yank_lines};
+use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, yank_exact, yank_lines};
 use mlux::world::MluxWorld;
 
 fn load_theme() -> String {
@@ -272,4 +272,102 @@ fn test_visual_line_count() {
             vl.y_pt
         );
     }
+}
+
+#[test]
+fn test_yank_exact_code_block_line() {
+    let md = "# H\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n";
+    let vlines = source_map_pipeline(md);
+
+    // Find visual lines inside the code block (md_line_range starting at line 3+)
+    let code_vls: Vec<usize> = vlines
+        .iter()
+        .enumerate()
+        .filter(|(_, vl)| vl.md_line_range.map_or(false, |(s, _)| s >= 3))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        !code_vls.is_empty(),
+        "should find visual lines for code block"
+    );
+
+    // Each code block visual line should have md_line_exact set
+    for &idx in &code_vls {
+        assert!(
+            vlines[idx].md_line_exact.is_some(),
+            "code block visual line {idx} should have md_line_exact, got None"
+        );
+    }
+
+    // yank_exact should return a single line, not the whole block
+    for &idx in &code_vls {
+        let exact = yank_exact(md, &vlines, idx);
+        assert!(
+            !exact.contains('\n'),
+            "yank_exact for code block vl {idx} should be a single line, got: {:?}",
+            exact
+        );
+        // The exact line should be one of the code block content lines
+        let exact_line = vlines[idx].md_line_exact.unwrap();
+        let expected = md.lines().nth(exact_line - 1).unwrap();
+        assert_eq!(exact, expected, "yank_exact vl {idx} should match md line {exact_line}");
+    }
+}
+
+#[test]
+fn test_yank_exact_falls_back_for_paragraph() {
+    let md = "# H\n\nA simple paragraph.\n";
+    let vlines = source_map_pipeline(md);
+
+    // Find the paragraph visual line (not heading)
+    let para_idx = vlines
+        .iter()
+        .position(|vl| vl.md_line_range.map_or(false, |(s, _)| s >= 3))
+        .expect("should find paragraph visual line");
+
+    // Paragraph should NOT have md_line_exact
+    assert!(
+        vlines[para_idx].md_line_exact.is_none(),
+        "paragraph visual line should have md_line_exact = None"
+    );
+
+    // yank_exact should fall back to block yank
+    let exact = yank_exact(md, &vlines, para_idx);
+    let block = yank_lines(md, &vlines, para_idx, para_idx);
+    assert_eq!(exact, block, "yank_exact should fall back to yank_lines for paragraphs");
+}
+
+#[test]
+fn test_yank_exact_vs_block_for_code() {
+    let md = "# H\n\n```\nline1\nline2\nline3\n```\n";
+    let vlines = source_map_pipeline(md);
+
+    // Find a code block visual line
+    let code_vl = vlines
+        .iter()
+        .position(|vl| vl.md_line_exact.is_some())
+        .expect("should find a code block visual line with md_line_exact");
+
+    let exact = yank_exact(md, &vlines, code_vl);
+    let block = yank_lines(md, &vlines, code_vl, code_vl);
+
+    // exact should be a single line from the code block
+    assert!(
+        !exact.contains('\n'),
+        "yank_exact should return a single line: {:?}",
+        exact
+    );
+
+    // block should contain the entire code block (with fences)
+    assert!(
+        block.contains("```"),
+        "yank_lines should return the whole code block including fences: {:?}",
+        block
+    );
+
+    // They should differ
+    assert_ne!(
+        exact, block,
+        "yank_exact and yank_lines should differ for code blocks"
+    );
 }

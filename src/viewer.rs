@@ -39,7 +39,7 @@ use typst::layout::PagedDocument;
 use crate::render::compile_document;
 use crate::strip::{
     SourceMappingParams, StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
-    extract_visual_lines_with_map, generate_sidebar_typst, yank_lines,
+    extract_visual_lines_with_map, generate_sidebar_typst, yank_exact, yank_lines,
 };
 use crate::world::MluxWorld;
 
@@ -324,7 +324,7 @@ fn draw_status_bar(
             state.filename, state.y_offset, state.img_h, pct)
     } else {
         format!(
-            " {} | y={}/{} px  {}%  [Ny:yank NY:block Ng:goto j/k d/u q:quit]",
+            " {} | y={}/{} px  {}%  [Ny:line NY:block Ng:goto j/k d/u q:quit]",
             state.filename, state.y_offset, state.img_h, pct
         )
     };
@@ -842,11 +842,42 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                                     dirty = true;
                                 }
 
-                                // ヤンク (line / block)
-                                (KeyCode::Char('y'), _) | (KeyCode::Char('Y'), _) => {
+                                // 精密ヤンク (y): コードブロックでは1行、他はブロック全体
+                                (KeyCode::Char('y'), _) => {
                                     match acc.take() {
                                         None => {
                                             flash_msg = Some("Type Ny to yank line N".into());
+                                            draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                        }
+                                        Some(n) => {
+                                            let vl_idx = (n as usize).saturating_sub(1);
+                                            if vl_idx >= doc.visual_lines.len() {
+                                                flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
+                                                draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                            } else {
+                                                let text = yank_exact(&markdown, &doc.visual_lines, vl_idx);
+                                                if text.is_empty() {
+                                                    flash_msg = Some(format!("L{n}: no source mapping"));
+                                                    draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                                } else {
+                                                    let line_count = text.lines().count();
+                                                    if let Err(e) = send_osc52(&text) {
+                                                        debug!("OSC 52 failed: {e}");
+                                                    }
+                                                    flash_msg = Some(format!("Yanked L{n} ({line_count} line{})", if line_count > 1 { "s" } else { "" }));
+                                                    debug!("yank exact L{n}: {} bytes, {line_count} lines", text.len());
+                                                    draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ブロックヤンク (Y): 常にブロック全体
+                                (KeyCode::Char('Y'), _) => {
+                                    match acc.take() {
+                                        None => {
+                                            flash_msg = Some("Type NY to yank block N".into());
                                             draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
                                         }
                                         Some(n) => {
@@ -864,8 +895,8 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                                                     if let Err(e) = send_osc52(&text) {
                                                         debug!("OSC 52 failed: {e}");
                                                     }
-                                                    flash_msg = Some(format!("Yanked L{n} ({line_count} lines)"));
-                                                    debug!("yanked L{n}: {} bytes, {line_count} lines", text.len());
+                                                    flash_msg = Some(format!("Yanked L{n} block ({line_count} lines)"));
+                                                    debug!("yank block L{n}: {} bytes, {line_count} lines", text.len());
                                                     draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
                                                 }
                                             }
