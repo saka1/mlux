@@ -1,6 +1,8 @@
 use anyhow::{Result, bail};
 use typst::diag::{SourceDiagnostic, Severity, Tracepoint};
-use typst::layout::{Frame, FrameItem, PagedDocument, Point};
+use typst::foundations::Smart;
+use typst::layout::{Frame, FrameItem, Page, PagedDocument, Point};
+use typst::visualize::Paint;
 use typst::{World, WorldExt};
 
 use crate::world::MluxWorld;
@@ -70,24 +72,24 @@ pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
     }
 }
 
-/// Render a PagedDocument's first page to PNG bytes.
-pub fn render_page_to_png(document: &PagedDocument, ppi: f32) -> Result<Vec<u8>> {
-    if document.pages.is_empty() {
-        bail!("typst produced no pages");
-    }
+/// Render a single Frame to PNG bytes (used for strip-based rendering).
+///
+/// Wraps the frame in a Page, renders at the given PPI, and encodes to PNG.
+pub fn render_frame_to_png(frame: &Frame, fill: &Smart<Option<Paint>>, ppi: f32) -> Result<Vec<u8>> {
+    let page = Page {
+        frame: frame.clone(),
+        fill: fill.clone(),
+        numbering: None,
+        supplement: typst::foundations::Content::empty(),
+        number: 0,
+    };
 
     let pixel_per_pt = ppi / 72.0;
-    let pixmap = typst_render::render(&document.pages[0], pixel_per_pt);
+    let pixmap = typst_render::render(&page, pixel_per_pt);
 
     pixmap
         .encode_png()
         .map_err(|e| anyhow::anyhow!("PNG encoding failed: {e}"))
-}
-
-/// Compile Typst sources and render to PNG bytes (convenience wrapper).
-pub fn render_to_png(world: &MluxWorld, ppi: f32) -> Result<Vec<u8>> {
-    let document = compile_document(world)?;
-    render_page_to_png(&document, ppi)
 }
 
 /// Dump the PagedDocument frame tree to stderr for debugging.

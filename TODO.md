@@ -65,7 +65,29 @@
 - 背景: 内部で Typst 変換をしている都合上、エラーメッセージがユーザーにとって意味不明になりやすい。
   壊れた Markdown も寛容に受け付けて valid Typst を出力し、「見た目がおかしい」という形で伝えるのが理想。
 
-### fuzz カバレッジ拡大
+### fuzz_pipeline のパフォーマンス問題
 
-- render コマンドを複数 PNG 出力（strip 分割）に対応させれば、viewer と同じ strip パスを通るようになり、fuzz で strip 分割ロジックもカバーできる
-- 現状の fuzz は convert → compile までで、strip 分割は対象外
+`fuzz_pipeline` に `split_frame` + `render_frame_to_png` を追加してフルパイプラインをファジング対象にした。
+ビルド・動作は正常だが、実用的な速度で回せていない。
+
+観察結果:
+
+- seed corpus 167ファイルの INIT だけで `-max_total_time=30` を超過、ミューテーション 0回
+- `-rss_limit_mb=4096` で OOM 回避（デフォルト 2048MB では seed corpus 内の日本語テキストで OOM）
+
+render あり/なし比較:
+
+| | compile + split + render | compile + split のみ |
+|---|---|---|
+| exec/s | 2 | 3 |
+| INIT 所要時間 | 156秒 | 95秒 |
+| RSS | 2140MB | 2153MB |
+
+ボトルネックは typst compile（全体の ~60%）。render は ~40%。
+フルパイプライン fuzz は本質的に遅いが、INIT さえ越えればミューテーションは回る。
+`-max_total_time=1800`（30分）程度で実行するのが現実的。
+
+実行コマンド:
+```bash
+cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=1800 -max_len=4096 -rss_limit_mb=4096
+```

@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use mlux::convert::markdown_to_typst;
-use mlux::render::{dump_document, format_diagnostic, render_to_png};
+use mlux::render::{compile_document, dump_document, format_diagnostic, render_frame_to_png};
+use mlux::strip::split_frame;
 use mlux::world::MluxWorld;
 
 #[derive(Parser)]
@@ -42,6 +43,10 @@ enum Command {
         #[arg(long, default_value_t = 144.0)]
         ppi: f32,
 
+        /// Strip height in pt
+        #[arg(long, default_value_t = 500.0)]
+        strip_height: f64,
+
         /// Dump frame tree to stderr
         #[arg(long)]
         dump: bool,
@@ -53,8 +58,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Command::Render { input, output, width, ppi, dump }) => {
-            cmd_render(input, cli.theme, output, width, ppi, dump)
+        Some(Command::Render { input, output, width, ppi, strip_height, dump }) => {
+            cmd_render(input, cli.theme, output, width, ppi, strip_height, dump)
         }
         None => {
             let input = cli.input
@@ -70,6 +75,7 @@ fn cmd_render(
     output: PathBuf,
     width: f64,
     ppi: f32,
+    strip_height: f64,
     dump: bool,
 ) -> Result<()> {
     // Read input markdown
@@ -84,7 +90,7 @@ fn cmd_render(
     // Convert markdown to typst
     let content_text = markdown_to_typst(&markdown);
 
-    // Create world and render
+    // Create world and compile
     let world = MluxWorld::new(&theme_text, &content_text, width);
     if dump {
         // Dump generated Typst source
@@ -110,21 +116,36 @@ fn cmd_render(
         }
         return Ok(());
     }
-    let png_data = render_to_png(&world, ppi)?;
 
-    // Write output
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent).ok();
+    let document = compile_document(&world)?;
+    if document.pages.is_empty() {
+        anyhow::bail!("typst produced no pages");
     }
-    fs::write(&output, &png_data)
-        .with_context(|| format!("failed to write {}", output.display()))?;
+    let page = &document.pages[0];
 
-    eprintln!(
-        "rendered {} -> {} ({} bytes)",
-        input.display(),
-        output.display(),
-        png_data.len()
-    );
+    // Split into strips and render each
+    let strips = split_frame(&page.frame, strip_height);
+    let fill = &page.fill;
+
+    let stem = output.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let ext = output.extension().unwrap_or_default().to_string_lossy().to_string();
+    let parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(parent).ok();
+
+    let mut files = Vec::new();
+    for (i, strip) in strips.iter().enumerate() {
+        let png_data = render_frame_to_png(strip, fill, ppi)?;
+        let filename = format!("{}-{:03}.{}", stem, i, ext);
+        let path = parent.join(&filename);
+        fs::write(&path, &png_data)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        files.push((filename, png_data.len()));
+    }
+
+    eprintln!("rendered {} -> {} strip(s):", input.display(), strips.len());
+    for (filename, size) in &files {
+        eprintln!("  {} ({} bytes)", filename, size);
+    }
 
     Ok(())
 }

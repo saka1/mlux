@@ -1,8 +1,8 @@
 use std::fs;
 
 use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
-use mlux::render::{compile_document, render_to_png};
-use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, yank_exact, yank_lines};
+use mlux::render::{compile_document, render_frame_to_png};
+use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines};
 use mlux::world::MluxWorld;
 
 fn load_theme() -> String {
@@ -16,7 +16,10 @@ fn test_paragraph_ja_renders() {
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
     let world = MluxWorld::new(&theme, &content, 800.0);
-    let png_data = render_to_png(&world, 144.0).expect("rendering should succeed");
+    let document = compile_document(&world).expect("compilation should succeed");
+    let strips = split_frame(&document.pages[0].frame, 500.0);
+    let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
+        .expect("rendering should succeed");
 
     // Check PNG magic bytes
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n", "output should be valid PNG");
@@ -34,7 +37,10 @@ fn test_empty_input() {
     let theme = load_theme();
     let content = markdown_to_typst("");
     let world = MluxWorld::new(&theme, &content, 800.0);
-    let png_data = render_to_png(&world, 144.0).expect("empty input should still render");
+    let document = compile_document(&world).expect("compilation should succeed");
+    let strips = split_frame(&document.pages[0].frame, 500.0);
+    let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
+        .expect("empty input should still render");
 
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n");
 }
@@ -46,15 +52,24 @@ fn test_full_document_renders() {
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
     let world = MluxWorld::new(&theme, &content, 800.0);
-    let png_data = render_to_png(&world, 144.0).expect("rendering should succeed");
+    let document = compile_document(&world).expect("compilation should succeed");
+    let strips = split_frame(&document.pages[0].frame, 500.0);
 
-    // Check PNG magic bytes
+    // Should produce multiple strips for a full document
+    assert!(
+        !strips.is_empty(),
+        "should produce at least one strip"
+    );
+
+    // Check first strip renders to valid PNG
+    let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
+        .expect("rendering should succeed");
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n", "output should be valid PNG");
 
-    // Full document should produce a substantial image
+    // First strip of full document should produce a substantial image
     assert!(
         png_data.len() > 5000,
-        "PNG should be larger than 5KB for full document, got {} bytes",
+        "PNG should be larger than 5KB for full document strip, got {} bytes",
         png_data.len()
     );
 }

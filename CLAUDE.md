@@ -38,7 +38,7 @@ keeping peak memory proportional to strip size, not document size.
 - `src/main.rs` — CLI entry point (clap subcommands: default=viewer, `render`=PNG output)
 - `src/convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, 20 unit tests inline)
 - `src/world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
-- `src/render.rs` — Typst compile + PNG render + debug dump utilities
+- `src/render.rs` — Typst compile (`compile_document`) + strip PNG render (`render_frame_to_png`) + debug dump
 - `src/strip.rs` — Strip-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
 - `src/viewer.rs` — Terminal viewer using Kitty Graphics Protocol
 - `themes/catppuccin.typ` — Default dark theme (Catppuccin Mocha)
@@ -59,13 +59,13 @@ cargo build
 # View in terminal (default mode, requires Kitty Graphics Protocol support)
 cargo run -- <input.md>
 
-# Render to PNG
-cargo run -- render <input.md> -o <output.png> [--width 800] [--ppi 144] [--theme catppuccin]
+# Render to PNG strips (outputs output-000.png, output-001.png, ...)
+cargo run -- render <input.md> -o <output.png> [--width 800] [--ppi 144] [--strip-height 500] [--theme catppuccin]
 
 # Dump PagedDocument frame tree (debug)
 cargo run -- render <input.md> --dump
 
-# Test (all 25 tests)
+# Test (26 unit tests in convert.rs + 17 integration tests)
 cargo test
 
 # Run a single test
@@ -76,6 +76,10 @@ cargo check
 
 # Debug logging (viewer/strip internals)
 RUST_LOG=debug cargo run -- <input.md>
+
+# Fuzz testing (requires nightly-2025-11-01; newer nightlies may break libfuzzer-sys)
+cargo +nightly-2025-11-01 fuzz run fuzz_convert -- -max_total_time=30
+cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
 ```
 
 ## Dependencies
