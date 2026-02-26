@@ -1,23 +1,71 @@
 use anyhow::{Result, bail};
+use typst::diag::{SourceDiagnostic, Severity, Tracepoint};
 use typst::layout::{Frame, FrameItem, PagedDocument, Point};
+use typst::{World, WorldExt};
 
 use crate::world::MluxWorld;
+
+/// Format a SourceDiagnostic with source location, hints, and trace.
+pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+
+    let level = match diag.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+    };
+
+    // Try to resolve source location and source line
+    let location = diag.span.id()
+        .and_then(|id| {
+            let source = world.source(id).ok()?;
+            let range = world.range(diag.span)?;
+            let (line, col) = source.lines().byte_to_line_column(range.start)?;
+            let source_line = source.text().lines().nth(line).map(String::from);
+            Some((line + 1, col + 1, source_line)) // 0-indexed → 1-indexed
+        });
+
+    let _ = writeln!(out, "{level}: {}", diag.message);
+    if let Some((line, col, source_line)) = &location {
+        let _ = writeln!(out, "  --> main.typ:{line}:{col}");
+        if let Some(src) = source_line {
+            let _ = writeln!(out, "  {line:>4} | {src}");
+        }
+    }
+
+    for hint in &diag.hints {
+        let _ = writeln!(out, "  hint: {hint}");
+    }
+
+    for entry in &diag.trace {
+        let trace_msg = match &entry.v {
+            Tracepoint::Call(Some(name)) => format!("in call to '{name}'"),
+            Tracepoint::Call(None) => "in call".to_string(),
+            Tracepoint::Show(name) => format!("in show rule for '{name}'"),
+            Tracepoint::Import => "in import".to_string(),
+        };
+        let _ = writeln!(out, "  trace: {trace_msg}");
+    }
+
+    out
+}
 
 /// Compile Typst sources into a PagedDocument (no rendering).
 pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
     let warned = typst::compile::<PagedDocument>(world);
 
     for warning in &warned.warnings {
-        eprintln!("typst warning: {}", warning.message);
+        eprint!("{}", format_diagnostic(warning, world));
     }
 
     match warned.output {
         Ok(doc) => Ok(doc),
         Err(errors) => {
+            let mut detail = String::new();
             for err in &errors {
-                eprintln!("typst error: {}", err.message);
+                detail.push_str(&format_diagnostic(err, world));
             }
-            bail!("typst compilation failed with {} error(s)", errors.len());
+            bail!("typst compilation failed with {} error(s)\n{detail}", errors.len());
         }
     }
 }

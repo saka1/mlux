@@ -384,7 +384,14 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 }
             }
             Event::Code(code) => {
-                let s = format!("`{code}`");
+                let s = if code.contains('`') {
+                    // Can't use backtick delimiters when code contains backticks;
+                    // use #raw() function call instead.
+                    let escaped = code.replace('\\', "\\\\").replace('"', "\\\"");
+                    format!("#raw(\"{}\")", escaped)
+                } else {
+                    format!("`{code}`")
+                };
                 push_to_target(&mut output, &mut cell_buf, &s);
             }
             Event::SoftBreak => {
@@ -569,6 +576,43 @@ mod tests {
         let md = "Use `Result<T, E>` type";
         let typst = markdown_to_typst(md);
         assert!(typst.contains("`Result<T, E>`"));
+    }
+
+    #[test]
+    fn test_inline_code_with_backticks() {
+        // pulldown-cmark parses `` ` `` as Code("`")
+        let md = "Use `` ` `` in code";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("#raw(\"`\")"),
+            "expected #raw() call for backtick-containing code, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_inline_code_with_triple_backticks() {
+        // pulldown-cmark parses `` ` ``` ` `` as Code("```")
+        let md = "` ``` `";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("#raw(\"```\")"),
+            "expected #raw() for triple backticks, got: {typst}"
+        );
+        assert!(
+            !typst.contains("`````"),
+            "should not produce raw backtick delimiters, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_inline_code_with_backticks_in_table() {
+        let md = "| Header |\n|--------|\n| `` ` `` |";
+        let typst = markdown_to_typst(md);
+        assert!(typst.contains("#table("), "expected table markup, got: {typst}");
+        assert!(
+            typst.contains("#raw(\"`\")"),
+            "expected #raw() in table cell, got: {typst}"
+        );
     }
 
     #[test]

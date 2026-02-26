@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use mlux::convert::markdown_to_typst;
-use mlux::render::{dump_document, render_to_png};
+use mlux::render::{dump_document, format_diagnostic, render_to_png};
 use mlux::world::MluxWorld;
 
 #[derive(Parser)]
@@ -87,15 +87,24 @@ fn cmd_render(
     // Create world and render
     let world = MluxWorld::new(&theme_text, &content_text, width);
     if dump {
+        // Dump generated Typst source
+        let source_text = world.main_source().text();
+        eprintln!("=== Generated main.typ ({} lines) ===", source_text.lines().count());
+        for (i, line) in source_text.lines().enumerate() {
+            eprintln!("{:>4} | {}", i + 1, line);
+        }
+        eprintln!();
+
+        // Compile and dump frame tree (or show errors)
         let warned = typst::compile::<typst::layout::PagedDocument>(&world);
         for w in &warned.warnings {
-            eprintln!("typst warning: {}", w.message);
+            eprint!("{}", format_diagnostic(w, &world));
         }
         match warned.output {
             Ok(doc) => dump_document(&doc),
             Err(errors) => {
                 for e in &errors {
-                    eprintln!("typst error: {}", e.message);
+                    eprint!("{}", format_diagnostic(e, &world));
                 }
             }
         }
