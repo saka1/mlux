@@ -33,13 +33,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::convert::markdown_to_typst;
+use crate::convert::{SourceMap, markdown_to_typst_with_map};
 use typst::layout::PagedDocument;
 
 use crate::render::compile_document;
 use crate::strip::{
-    StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
-    extract_visual_lines, generate_sidebar_typst,
+    SourceMappingParams, StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
+    extract_visual_lines_with_map, generate_sidebar_typst, yank_lines,
 };
 use crate::world::MluxWorld;
 
@@ -106,6 +106,76 @@ struct ViewState {
     vp_w: u32,       // ビューポート幅（ピクセル）
     vp_h: u32,       // ビューポート高さ（ピクセル）
     filename: String,
+}
+
+// ---------------------------------------------------------------------------
+// Number prefix accumulator (less/vim style)
+// ---------------------------------------------------------------------------
+
+const MAX_LINE_NUM: u32 = 999_999;
+
+/// Accumulated numeric prefix for vim/less-style commands.
+///
+/// Users type digits then a command character: `56g` jumps to line 56,
+/// `10j` scrolls 10 steps down, `56y` yanks line 56.
+struct InputAccumulator {
+    count: Option<u32>,
+}
+
+impl InputAccumulator {
+    fn new() -> Self {
+        Self { count: None }
+    }
+
+    /// Feed a digit character ('0'..='9'). Returns false if overflow would occur.
+    fn push_digit(&mut self, d: u32) -> bool {
+        let current = self.count.unwrap_or(0);
+        let new = current.saturating_mul(10).saturating_add(d);
+        if new > MAX_LINE_NUM {
+            return false; // ignore further digits
+        }
+        self.count = Some(new);
+        true
+    }
+
+    /// Take the accumulated count, resetting to None.
+    fn take(&mut self) -> Option<u32> {
+        self.count.take()
+    }
+
+    /// Peek at the current accumulated count without consuming it.
+    fn peek(&self) -> Option<u32> {
+        self.count
+    }
+
+    fn reset(&mut self) {
+        self.count = None;
+    }
+
+    fn is_active(&self) -> bool {
+        self.count.is_some()
+    }
+}
+
+/// Jump scroll offset so that the given 1-based visual line is near the top of the viewport.
+fn jump_to_visual_line(
+    state: &mut ViewState,
+    visual_lines: &[VisualLine],
+    max_scroll: u32,
+    line_num: u32,
+) {
+    let idx = (line_num as usize).saturating_sub(1); // 1-based to 0-based
+    if idx < visual_lines.len() {
+        state.y_offset = visual_lines[idx].y_px.min(max_scroll);
+    }
+}
+
+/// Send text to the system clipboard via OSC 52.
+fn send_osc52(text: &str) -> io::Result<()> {
+    let encoded = BASE64.encode(text.as_bytes());
+    let mut out = stdout();
+    write!(out, "\x1b]52;c;{encoded}\x1b\\")?;
+    out.flush()
 }
 
 fn compute_layout(term_cols: u16, term_rows: u16, pixel_w: u16, pixel_h: u16) -> Layout {
@@ -225,7 +295,15 @@ fn place_strips(
 }
 
 /// ステータスバーをターミナル最終行に描画。
-fn draw_status_bar(layout: &Layout, state: &ViewState) -> io::Result<()> {
+///
+/// `accumulator`: 数字蓄積中なら `:56_` のように表示
+/// `flash`: ヤンク成功等の一時メッセージ（次のキー入力でクリア）
+fn draw_status_bar(
+    layout: &Layout,
+    state: &ViewState,
+    accumulator: &InputAccumulator,
+    flash: Option<&str>,
+) -> io::Result<()> {
     let mut out = stdout();
     out.queue(cursor::MoveTo(0, layout.status_row))?;
 
@@ -237,11 +315,21 @@ fn draw_status_bar(layout: &Layout, state: &ViewState) -> io::Result<()> {
     };
 
     let total_cols = layout.sidebar_cols + layout.image_cols;
-    let status = format!(
-        " {} | y={}/{} px  {}%  [j/k:scroll  d/u:half  g/G:top/bottom  q:quit]",
-        state.filename, state.y_offset, state.img_h, pct
-    );
-    let padded = format!("{:<width$}", status, width = total_cols as usize);
+
+    let middle = if let Some(msg) = flash {
+        format!(" {} | {} | y={}/{} px  {}%",
+            state.filename, msg, state.y_offset, state.img_h, pct)
+    } else if let Some(n) = accumulator.peek() {
+        format!(" {} | :{n}_ | y={}/{} px  {}%",
+            state.filename, state.y_offset, state.img_h, pct)
+    } else {
+        format!(
+            " {} | y={}/{} px  {}%  [Ny:yank NY:block Ng:goto j/k d/u q:quit]",
+            state.filename, state.y_offset, state.img_h, pct
+        )
+    };
+
+    let padded = format!("{:<width$}", middle, width = total_cols as usize);
     write!(out, "{}", padded.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
     out.flush()
@@ -369,6 +457,8 @@ fn redraw(
     loaded: &mut LoadedStrips,
     layout: &Layout,
     state: &ViewState,
+    accumulator: &InputAccumulator,
+    flash: Option<&str>,
 ) -> anyhow::Result<()> {
     let visible = strip_doc.visible_strips(state.y_offset, state.vp_h);
 
@@ -390,7 +480,7 @@ fn redraw(
     // Phase 3: Place content + sidebar + status bar
     place_content_strips(&visible, loaded, layout, state)?;
     place_sidebar_strips(&visible, loaded, strip_doc, layout)?;
-    draw_status_bar(layout, state)?;
+    draw_status_bar(layout, state, accumulator, flash)?;
     Ok(())
 }
 
@@ -401,6 +491,8 @@ fn redraw(
 fn build_strip_document(
     theme_text: &str,
     content_text: &str,
+    md_source: &str,
+    source_map: &SourceMap,
     layout: &Layout,
 ) -> anyhow::Result<StripDocument> {
     let viewport_px_w = layout.image_cols as f64 * layout.cell_w as f64;
@@ -420,9 +512,19 @@ fn build_strip_document(
     let content_world = MluxWorld::new(theme_text, content_text, width_pt);
     let document = compile_document(&content_world)?;
 
-    // 2. Extract visual lines (needed for sidebar generation)
-    let visual_lines = extract_visual_lines(&document, PPI);
+    // 2. Extract visual lines with source mapping
+    let mapping_params = SourceMappingParams {
+        source: content_world.main_source(),
+        content_offset: content_world.content_offset(),
+        source_map,
+        md_source,
+    };
+    let visual_lines = extract_visual_lines_with_map(&document, PPI, Some(&mapping_params));
     let page_height_pt = document.pages[0].frame.size().y.to_pt();
+
+    let mapped = visual_lines.iter().filter(|vl| vl.md_line_range.is_some()).count();
+    let unmapped = visual_lines.len() - mapped;
+    info!("extract_visual_lines: {} lines ({} mapped, {} unmapped)", visual_lines.len(), mapped, unmapped);
 
     // 3. Compile sidebar document using visual lines
     let sidebar_doc = build_sidebar_doc(&visual_lines, layout, page_height_pt)?;
@@ -532,7 +634,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
     let theme_text = std::fs::read_to_string(&theme_path)
         .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
 
-    let content_text = markdown_to_typst(&markdown);
+    let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
 
     // 2. ターミナルサイズを先に取得してビューポート幅を確定
     let winsize = terminal::window_size()
@@ -557,7 +659,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
     'outer: loop {
         // 4. Build StripDocument (content + sidebar compiled & split)
         info!("building strip document...");
-        let strip_doc = build_strip_document(&theme_text, &content_text, &layout)?;
+        let strip_doc = build_strip_document(&theme_text, &content_text, &markdown, &source_map, &layout)?;
 
         let img_w = strip_doc.width_px();
         let img_h = strip_doc.total_height_px();
@@ -611,8 +713,13 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
             // cache と合わせてチェックすることで二重レンダリングを防ぐ。
             let mut in_flight: HashSet<usize> = HashSet::new();
 
+            // Vim-style number prefix accumulator
+            let mut acc = InputAccumulator::new();
+            // Flash message (e.g., "Yanked L56"), cleared on next keypress
+            let mut flash_msg: Option<String> = None;
+
             // Initial redraw + prefetch
-            redraw(doc, &mut cache, &mut loaded, &layout, &state)?;
+            redraw(doc, &mut cache, &mut loaded, &layout, &state, &acc, None)?;
             send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
 
             // Inner event loop
@@ -638,6 +745,11 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                 if event::poll(timeout)? {
                     let ev = event::read()?;
                     debug!("event: {:?}", ev);
+
+                    // Clear flash message on any keypress
+                    let had_flash = flash_msg.is_some();
+                    flash_msg = None;
+
                     match ev {
                         Event::Key(KeyEvent { code, modifiers, .. }) => {
                             let max_y = doc.max_scroll(state.vp_h);
@@ -646,59 +758,130 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                                 (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
 
                             match (code, modifiers) {
-                                // 終了
+                                // 終了 (always immediate)
                                 (KeyCode::Char('q'), _)
                                 | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                                     return Ok(ExitReason::Quit);
-                                    // req_tx dropped → worker exits → scope joins
+                                }
+
+                                // Esc: cancel pending input
+                                (KeyCode::Esc, _) => {
+                                    acc.reset();
+                                    draw_status_bar(&layout, &state, &acc, None)?;
+                                }
+
+                                // Digits: accumulate
+                                (KeyCode::Char(c @ '0'..='9'), KeyModifiers::NONE) => {
+                                    let d = c as u32 - '0' as u32;
+                                    acc.push_digit(d);
+                                    draw_status_bar(&layout, &state, &acc, None)?;
                                 }
 
                                 // 下スクロール
                                 (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+                                    let count = acc.take().unwrap_or(1);
                                     let old = state.y_offset;
-                                    state.y_offset = (state.y_offset + scroll_step).min(max_y);
-                                    debug!("scroll down: y_offset {} → {} (step={scroll_step}, max={max_y})", old, state.y_offset);
+                                    state.y_offset = (state.y_offset + count * scroll_step).min(max_y);
+                                    debug!("scroll down: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 上スクロール
                                 (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+                                    let count = acc.take().unwrap_or(1);
                                     let old = state.y_offset;
                                     state.y_offset =
-                                        state.y_offset.saturating_sub(scroll_step);
-                                    debug!("scroll up: y_offset {} → {} (step={scroll_step}, max={max_y})", old, state.y_offset);
+                                        state.y_offset.saturating_sub(count * scroll_step);
+                                    debug!("scroll up: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 半画面下
                                 (KeyCode::Char('d'), _) => {
+                                    let count = acc.take().unwrap_or(1);
                                     let old = state.y_offset;
-                                    state.y_offset = (state.y_offset + half_page).min(max_y);
-                                    debug!("scroll half-down: y_offset {} → {} (step={half_page}, max={max_y})", old, state.y_offset);
+                                    state.y_offset = (state.y_offset + count * half_page).min(max_y);
+                                    debug!("scroll half-down: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
                                 // 半画面上
                                 (KeyCode::Char('u'), _) => {
+                                    let count = acc.take().unwrap_or(1);
                                     let old = state.y_offset;
                                     state.y_offset =
-                                        state.y_offset.saturating_sub(half_page);
-                                    debug!("scroll half-up: y_offset {} → {} (step={half_page}, max={max_y})", old, state.y_offset);
+                                        state.y_offset.saturating_sub(count * half_page);
+                                    debug!("scroll half-up: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
                                     dirty = true;
                                 }
-                                // 先頭
+                                // 先頭 / ジャンプ
                                 (KeyCode::Char('g'), _) => {
                                     let old = state.y_offset;
-                                    state.y_offset = 0;
-                                    debug!("scroll top: y_offset {} → 0", old);
+                                    match acc.take() {
+                                        None => {
+                                            state.y_offset = 0;
+                                            debug!("scroll top: y_offset {} → 0", old);
+                                        }
+                                        Some(n) => {
+                                            jump_to_visual_line(&mut state, &doc.visual_lines, max_y, n);
+                                            debug!("jump to line {n}: y_offset {} → {}", old, state.y_offset);
+                                        }
+                                    }
                                     dirty = true;
                                 }
-                                // 末尾
+                                // 末尾 / ジャンプ
                                 (KeyCode::Char('G'), _) => {
                                     let old = state.y_offset;
-                                    state.y_offset = max_y;
-                                    debug!("scroll bottom: y_offset {} → {} (max={max_y})", old, state.y_offset);
+                                    match acc.take() {
+                                        None => {
+                                            state.y_offset = max_y;
+                                            debug!("scroll bottom: y_offset {} → {} (max={max_y})", old, state.y_offset);
+                                        }
+                                        Some(n) => {
+                                            jump_to_visual_line(&mut state, &doc.visual_lines, max_y, n);
+                                            debug!("jump to line {n}: y_offset {} → {}", old, state.y_offset);
+                                        }
+                                    }
                                     dirty = true;
                                 }
 
-                                _ => {}
+                                // ヤンク (line / block)
+                                (KeyCode::Char('y'), _) | (KeyCode::Char('Y'), _) => {
+                                    match acc.take() {
+                                        None => {
+                                            flash_msg = Some("Type Ny to yank line N".into());
+                                            draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                        }
+                                        Some(n) => {
+                                            let vl_idx = (n as usize).saturating_sub(1);
+                                            if vl_idx >= doc.visual_lines.len() {
+                                                flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
+                                                draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                            } else {
+                                                let text = yank_lines(&markdown, &doc.visual_lines, vl_idx, vl_idx);
+                                                if text.is_empty() {
+                                                    flash_msg = Some(format!("L{n}: no source mapping"));
+                                                    draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                                } else {
+                                                    let line_count = text.lines().count();
+                                                    if let Err(e) = send_osc52(&text) {
+                                                        debug!("OSC 52 failed: {e}");
+                                                    }
+                                                    flash_msg = Some(format!("Yanked L{n} ({line_count} lines)"));
+                                                    debug!("yanked L{n}: {} bytes, {line_count} lines", text.len());
+                                                    draw_status_bar(&layout, &state, &acc, flash_msg.as_deref())?;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                _ => {
+                                    // Unknown key: reset accumulator
+                                    if acc.is_active() {
+                                        acc.reset();
+                                        draw_status_bar(&layout, &state, &acc, None)?;
+                                    } else if had_flash {
+                                        draw_status_bar(&layout, &state, &acc, None)?;
+                                    }
+                                }
                             }
                         }
 
@@ -722,7 +905,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                         in_flight.remove(&idx);
                         cache.insert(idx, pngs);
                     }
-                    redraw(doc, &mut cache, &mut loaded, &layout, &state)?;
+                    redraw(doc, &mut cache, &mut loaded, &layout, &state, &acc, flash_msg.as_deref())?;
                     send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
                     cache.evict_distant(
                         (state.y_offset / doc.strip_height_px()) as usize,
