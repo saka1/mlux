@@ -1,0 +1,51 @@
+# Markdown fuzzer dictionary
+# libFuzzer recommended tokens (text/Markdown relevant only)
+" \x0a##"
+"\xe3\x81\xaf"
+"\xe2\x80\xa8"
+"www."
+"\x0a \x0a"
+
+# Markdown block elements
+"# "
+"## "
+"### "
+"#### "
+"- "
+"* "
+"1. "
+"> "
+"```"
+"~~~"
+"---"
+"==="
+"| "
+" | "
+
+# Markdown inline elements
+"**"
+"__"
+"*"
+"_"
+"`"
+"~~"
+"["
+"]("
+")"
+"!["
+
+# Typst special chars (should be escaped by convert.rs)
+"#"
+"@"
+"$"
+"("
+")"
+"<"
+">"
+"~"
+"/"
+
+# Unicode edge cases (em-dash, left/right double quote)
+"\xe2\x80\x94"
+"\xe2\x80\x9c"
+"\xe2\x80\x9d"

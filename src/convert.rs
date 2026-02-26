@@ -423,10 +423,14 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     output.push('\n');
                 }
                 output.push_str("#line(length: 100%)\n");
-                source_map_blocks.push(BlockMapping {
-                    typst_byte_range: rule_start..output.len(),
-                    md_byte_range: md_range,
-                });
+                // Only record a top-level source mapping; inside a list or other
+                // block the enclosing block's range already covers this rule.
+                if block_depth == 0 {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: rule_start..output.len(),
+                        md_byte_range: md_range,
+                    });
+                }
             }
             _ => {}
         }
@@ -738,6 +742,29 @@ mod tests {
         let md = "before\n\n---\n\nafter";
         let typst = markdown_to_typst(md);
         assert!(typst.contains("#line(length: 100%)"));
+    }
+
+    #[test]
+    fn test_rule_inside_list_source_map() {
+        // crash-823d13a0: list item containing --- emitted a Rule source mapping
+        // that overlapped with the enclosing List block mapping.
+        let md = "+\t---\t\t";
+        let (typst, map) = markdown_to_typst_with_map(md);
+        for pair in map.blocks.windows(2) {
+            assert!(
+                pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
+                "overlapping typst ranges: {:?} and {:?}",
+                pair[0].typst_byte_range,
+                pair[1].typst_byte_range,
+            );
+        }
+        for block in &map.blocks {
+            assert!(
+                block.typst_byte_range.end <= typst.len(),
+                "typst_byte_range {:?} out of bounds",
+                block.typst_byte_range,
+            );
+        }
     }
 
     #[test]
