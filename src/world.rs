@@ -9,42 +9,81 @@ use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
 use typst_kit::fonts::{FontSearcher, FontSlot, Fonts};
 
+/// Cached font search results, shared across multiple `MluxWorld` instances.
+///
+/// `FontSearcher::search()` scans the filesystem (~13ms even in release builds).
+/// By caching the results, we avoid repeated scans when creating multiple worlds
+/// (e.g., content + sidebar in the viewer, or across resize rebuilds).
+pub struct FontCache {
+    book: FontBook,
+    fonts: Vec<FontSlot>,
+}
+
+impl FontCache {
+    /// Perform a one-time font search and cache the results.
+    pub fn new() -> Self {
+        let start = Instant::now();
+        let Fonts { book, fonts } = FontSearcher::new()
+            .include_system_fonts(true)
+            .search();
+        info!(
+            "world: font search completed in {:.1}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+
+        // CJK font availability check (once per process)
+        let has_cjk = book.contains_family("ipagothic")
+            || book.contains_family("noto sans cjk jp")
+            || book.contains_family("noto serif cjk jp")
+            || book.contains_family("ipamincho");
+        if !has_cjk {
+            eprintln!("warning: no CJK font found. Japanese text may not render correctly.");
+            eprintln!("  Install IPAGothic or Noto Sans CJK JP for proper rendering.");
+        }
+
+        Self { book, fonts }
+    }
+}
+
 /// The Typst world for mlux.
 ///
 /// Provides a single virtual file (`/main.typ`) containing the theme
 /// set-rules followed by the converted Markdown content.
-pub struct MluxWorld {
+///
+/// Borrows font data from a [`FontCache`] to avoid repeated filesystem scans.
+pub struct MluxWorld<'f> {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
-    fonts: Vec<FontSlot>,
+    fonts: &'f [FontSlot],
     main_id: FileId,
     main_source: Source,
     /// Byte offset where content_text begins within main.typ.
     content_offset: usize,
 }
 
-impl MluxWorld {
+impl<'f> MluxWorld<'f> {
     /// Create a new MluxWorld.
     ///
     /// - `theme_text`: contents of the theme.typ file
     /// - `content_text`: Typst markup converted from Markdown
     /// - `width`: page width in pt
-    pub fn new(theme_text: &str, content_text: &str, width: f64) -> Self {
+    /// - `fonts`: cached font search results
+    pub fn new(theme_text: &str, content_text: &str, width: f64, fonts: &'f FontCache) -> Self {
         let start = Instant::now();
         // Inline theme + width override + content into a single source
         let prefix = format!("{theme_text}\n#set page(width: {width}pt)\n");
         let content_offset = prefix.len();
         let main_text = format!("{prefix}{content_text}\n");
 
-        let mut world = Self::from_source(&main_text, true);
+        let mut world = Self::from_source(&main_text, fonts);
         world.content_offset = content_offset;
         info!("world: new() completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
         world
     }
 
     /// Create a MluxWorld from raw Typst source (no theme injection or width override).
-    pub fn new_raw(source: &str) -> Self {
-        Self::from_source(source, false)
+    pub fn new_raw(source: &str, fonts: &'f FontCache) -> Self {
+        Self::from_source(source, fonts)
     }
 
     /// Get a reference to the main Source (for Span resolution).
@@ -57,34 +96,15 @@ impl MluxWorld {
         self.content_offset
     }
 
-    fn from_source(main_text: &str, check_cjk: bool) -> Self {
+    fn from_source(main_text: &str, fonts: &'f FontCache) -> Self {
         let vpath = VirtualPath::new("main.typ");
         let main_id = FileId::new(None, vpath);
         let main_source = Source::new(main_id, main_text.to_string());
 
-        let font_start = Instant::now();
-        let Fonts { book, fonts } = FontSearcher::new()
-            .include_system_fonts(true)
-            .search();
-        info!("world: font search completed in {:.1}ms", font_start.elapsed().as_secs_f64() * 1000.0);
-
-        if check_cjk {
-            // Check if any CJK font is available
-            // FontBook uses lowercased family names
-            let has_cjk = book.contains_family("ipagothic")
-                || book.contains_family("noto sans cjk jp")
-                || book.contains_family("noto serif cjk jp")
-                || book.contains_family("ipamincho");
-            if !has_cjk {
-                eprintln!("warning: no CJK font found. Japanese text may not render correctly.");
-                eprintln!("  Install IPAGothic or Noto Sans CJK JP for proper rendering.");
-            }
-        }
-
         Self {
             library: LazyHash::new(Library::default()),
-            book: LazyHash::new(book),
-            fonts,
+            book: LazyHash::new(fonts.book.clone()),
+            fonts: &fonts.fonts,
             main_id,
             main_source,
             content_offset: 0,
@@ -92,7 +112,7 @@ impl MluxWorld {
     }
 }
 
-impl World for MluxWorld {
+impl World for MluxWorld<'_> {
     fn library(&self) -> &LazyHash<Library> {
         &self.library
     }

@@ -41,7 +41,7 @@ use crate::strip::{
     SourceMappingParams, StripDocument, StripDocumentCache, StripPngs, VisualLine, VisibleStrips,
     extract_visual_lines_with_map, generate_sidebar_typst, yank_exact, yank_lines,
 };
-use crate::world::MluxWorld;
+use crate::world::{FontCache, MluxWorld};
 
 const CHUNK_SIZE: usize = 4096;
 const SCROLL_STEP_CELLS: u32 = 3;
@@ -494,6 +494,7 @@ fn build_strip_document(
     md_source: &str,
     source_map: &SourceMap,
     layout: &Layout,
+    fonts: &FontCache,
 ) -> anyhow::Result<StripDocument> {
     let start = Instant::now();
     let viewport_px_w = layout.image_cols as f64 * layout.cell_w as f64;
@@ -510,7 +511,7 @@ fn build_strip_document(
     );
 
     // 1. Compile content document
-    let content_world = MluxWorld::new(theme_text, content_text, width_pt);
+    let content_world = MluxWorld::new(theme_text, content_text, width_pt, fonts);
     let document = compile_document(&content_world)?;
 
     // 2. Extract visual lines with source mapping
@@ -528,7 +529,7 @@ fn build_strip_document(
     info!("extract_visual_lines: {} lines ({} mapped, {} unmapped)", visual_lines.len(), mapped, unmapped);
 
     // 3. Compile sidebar document using visual lines
-    let sidebar_doc = build_sidebar_doc(&visual_lines, layout, page_height_pt)?;
+    let sidebar_doc = build_sidebar_doc(&visual_lines, layout, page_height_pt, fonts)?;
 
     // 4. Build StripDocument with both content + sidebar
     let strip_doc = StripDocument::new(
@@ -546,6 +547,7 @@ fn build_sidebar_doc(
     visual_lines: &[VisualLine],
     layout: &Layout,
     page_height_pt: f64,
+    fonts: &FontCache,
 ) -> anyhow::Result<PagedDocument> {
     let sidebar_width_pt = layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / PPI as f64;
     let sidebar_source = generate_sidebar_typst(
@@ -554,7 +556,7 @@ fn build_sidebar_doc(
         page_height_pt,
     );
 
-    let sidebar_world = MluxWorld::new_raw(&sidebar_source);
+    let sidebar_world = MluxWorld::new_raw(&sidebar_source, fonts);
     compile_document(&sidebar_world)
 }
 
@@ -652,7 +654,10 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
         );
     }
 
-    // 3. raw mode + alternate screen (maintained across rebuilds)
+    // 3. Font cache (one-time filesystem scan, shared across rebuilds)
+    let font_cache = FontCache::new();
+
+    // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = RawGuard::enter()?;
 
     let mut layout = compute_layout(term_cols, term_rows, pixel_w, pixel_h);
@@ -660,9 +665,9 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
 
     // Outer loop: each iteration builds a new StripDocument (initial + resize)
     'outer: loop {
-        // 4. Build StripDocument (content + sidebar compiled & split)
+        // 5. Build StripDocument (content + sidebar compiled & split)
         info!("building strip document...");
-        let strip_doc = build_strip_document(&theme_text, &content_text, &markdown, &source_map, &layout)?;
+        let strip_doc = build_strip_document(&theme_text, &content_text, &markdown, &source_map, &layout, &font_cache)?;
 
         let img_w = strip_doc.width_px();
         let img_h = strip_doc.total_height_px();
@@ -678,7 +683,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
         let mut cache = StripDocumentCache::new();
         let mut loaded = LoadedStrips::new();
 
-        // 5. thread::scope — prefetch worker + inner event loop
+        // 6. thread::scope — prefetch worker + inner event loop
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
             let (req_tx, req_rx) = mpsc::channel::<usize>();
             let (res_tx, res_rx) = mpsc::channel::<(usize, StripPngs)>();

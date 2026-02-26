@@ -9,7 +9,7 @@ use log::info;
 use mlux::convert::markdown_to_typst;
 use mlux::render::{compile_document, dump_document, format_diagnostic, render_frame_to_png};
 use mlux::strip::split_frame;
-use mlux::world::MluxWorld;
+use mlux::world::{FontCache, MluxWorld};
 
 #[derive(Parser)]
 #[command(name = "mlux", about = "Markdown viewer and renderer powered by Typst")]
@@ -94,8 +94,11 @@ fn cmd_render(
     // Convert markdown to typst
     let content_text = markdown_to_typst(&markdown);
 
+    // Create font cache (one-time filesystem scan)
+    let font_cache = FontCache::new();
+
     // Create world and compile
-    let world = MluxWorld::new(&theme_text, &content_text, width);
+    let world = MluxWorld::new(&theme_text, &content_text, width, &font_cache);
     if dump {
         // Dump generated Typst source
         let source_text = world.main_source().text();

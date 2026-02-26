@@ -3,7 +3,7 @@ use std::fs;
 use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
 use mlux::render::{compile_document, render_frame_to_png};
 use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines};
-use mlux::world::MluxWorld;
+use mlux::world::{FontCache, MluxWorld};
 
 fn load_theme() -> String {
     fs::read_to_string("themes/catppuccin.typ").expect("theme file should exist")
@@ -15,7 +15,8 @@ fn test_paragraph_ja_renders() {
         fs::read_to_string("tests/fixtures/01_paragraph_ja.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
-    let world = MluxWorld::new(&theme, &content, 800.0);
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
     let strips = split_frame(&document.pages[0].frame, 500.0);
     let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
@@ -36,7 +37,8 @@ fn test_paragraph_ja_renders() {
 fn test_empty_input() {
     let theme = load_theme();
     let content = markdown_to_typst("");
-    let world = MluxWorld::new(&theme, &content, 800.0);
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
     let strips = split_frame(&document.pages[0].frame, 500.0);
     let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
@@ -51,7 +53,8 @@ fn test_full_document_renders() {
         fs::read_to_string("tests/fixtures/07_full_document.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
-    let world = MluxWorld::new(&theme, &content, 800.0);
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
     let strips = split_frame(&document.pages[0].frame, 500.0);
 
@@ -96,7 +99,8 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::strip::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
     let (content, source_map) = markdown_to_typst_with_map(md);
-    let world = MluxWorld::new(&theme, &content, WIDTH_PT);
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(&theme, &content, WIDTH_PT, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
 
     let params = SourceMappingParams {

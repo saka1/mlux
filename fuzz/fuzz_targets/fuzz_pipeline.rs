@@ -1,20 +1,24 @@
 #![no_main]
 
+use std::sync::OnceLock;
+
 use libfuzzer_sys::fuzz_target;
 use mlux::convert::markdown_to_typst;
 use mlux::render::{compile_document, render_frame_to_png};
 use mlux::strip::split_frame;
-use mlux::world::MluxWorld;
+use mlux::world::{FontCache, MluxWorld};
 
 static THEME: &str = include_str!("../../themes/catppuccin.typ");
+static FONTS: OnceLock<FontCache> = OnceLock::new();
 
 fuzz_target!(|data: &[u8]| {
     let Ok(markdown) = std::str::from_utf8(data) else {
         return;
     };
 
+    let fonts = FONTS.get_or_init(FontCache::new);
     let typst_content = markdown_to_typst(markdown);
-    let world = MluxWorld::new(THEME, &typst_content, 660.0);
+    let world = MluxWorld::new(THEME, &typst_content, 660.0, fonts);
 
     let document = match compile_document(&world) {
         Ok(doc) => doc,
