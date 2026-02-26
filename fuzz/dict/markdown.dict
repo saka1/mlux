@@ -14,6 +14,8 @@
 "- "
 "* "
 "1. "
+"2. "
+" 2 "
 "> "
 "```"
 "~~~"
@@ -45,7 +47,23 @@
 "~"
 "/"
 
-# Unicode edge cases (em-dash, left/right double quote)
+# Unicode edge cases (em-dash, left/right double quote, soft hyphen)
 "\xe2\x80\x94"
 "\xe2\x80\x9c"
 "\xe2\x80\x9d"
+"\xc2\xad"
+
+# URL tokens
+"://"
+
+# Typst-internal strings (found by fuzzer to increase coverage)
+"urw bookman"
+"demi"
+"en"
+"-s"
+"ono"
+"ks"
+"ur"
+
+# Bracket (escape target per crash-b305e5d4 / e4ff42b8)
+"]"
