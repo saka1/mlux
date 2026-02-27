@@ -834,6 +834,16 @@ mod tests {
     }
 
     #[test]
+    fn test_rule_inside_list() {
+        // pulldown-cmark parses "+\t---" as an unordered list item containing
+        // a thematic break (Rule event), not plain text.
+        let md = "+\t---\t\t";
+        let typst = markdown_to_typst(md);
+        assert!(typst.contains("- "), "should produce unordered list marker");
+        assert!(typst.contains("#line(length: 100%)"), "should produce horizontal rule");
+    }
+
+    #[test]
     fn test_rule_inside_list_source_map() {
         // crash-823d13a0: list item containing --- emitted a Rule source mapping
         // that overlapped with the enclosing List block mapping.

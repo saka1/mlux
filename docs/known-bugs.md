@@ -24,13 +24,14 @@ URLが空の場合は `#link("")[...]` を出力せず、リンクテキスト�
 
 ---
 
-## Bug 2: 深いブロック引用ネストでTypst show ruleの深度上限超過
+## ~~Bug 2: 深いブロック引用ネストでTypst show ruleの深度上限超過~~ (修正済み)
 
 **重要度**: High — コンパイルが失敗する
 **発見**: fuzz_pipeline (fuzz-0.log, fuzz-1.log)
 **アーティファクト**:
 - `fuzz/artifacts/fuzz_pipeline/crash-5e57d8223a3950f2b0b75df8b68b38ab9a9c38fd`
 - `fuzz/artifacts/fuzz_pipeline/crash-509961e8de1f9df748f5d3c3236d40ab5e74f6db`
+**ステータス**: **修正済み** — ブロック引用のネスト深度を最大10段に制限 (`MAX_BLOCKQUOTE_DEPTH`)。11段目以降は `#quote` を出力せず内容のみ出力する (`BlockQuoteCapped`)。テスト `test_blockquote_depth_capped` 追加。
 
 ### 再現入力
 
@@ -38,51 +39,20 @@ URLが空の場合は `#link("")[...]` を出力せず、リンクテキスト�
 > > > > > > > > > > > > deeply nested blockquote
 ```
 
-または大量の `>` を含む壊れたMarkdown。
+### 修正内容
 
-### 症状
-
-Typstコンパイル時に `error: maximum show rule depth exceeded` で失敗。
-
-### 原因
-
-`convert.rs:127-139` で `>` のネストごとに `#quote(block: true)[...]` を入れ子にする。
-テーマ (`themes/catppuccin.typ:24-27`) の show rule が再帰的にトリガーされ、
-Typstの show rule 深度上限を超える。
-
-```rust
-// convert.rs:127-139 — ネスト制限なし
-Event::Start(Tag::BlockQuote(_)) => {
-    output.push_str("#quote(block: true)[");
-    stack.push(Container::BlockQuote);
-}
-```
-
-```typst
-// themes/catppuccin.typ:24-27 — show rule が再帰的にトリガー
-#show quote.where(block: true): it => block(
-  inset: (left: 16pt, y: 8pt),
-  stroke: (left: 3pt + rgb("#89b4fa")),
-  text(fill: rgb("#a6adc8"), it.body))
-```
-
-### Typstエラー出力
-
-```
-error: maximum show rule depth exceeded
-  --> main.typ:137:2
-   137 | #quote(block: true)[
-  hint: maybe a show rule matches its own output
-  hint: maybe there are too deeply nested elements
-```
+`convert.rs` で `BlockQuoteCapped` バリアントを追加。ネスト深度が `MAX_BLOCKQUOTE_DEPTH` (10) 以上の場合、
+`#quote(block: true)[...]` を出力せずスタックに `BlockQuoteCapped` を積む。
+`End(BlockQuote)` 時に `BlockQuoteCapped` なら閉じブラケットを出力しない。
 
 ---
 
-## Bug 3: fuzz_convert ソースマップのアサーション失敗
+## ~~Bug 3: fuzz_convert ソースマップのアサーション失敗~~ (修正済み)
 
 **重要度**: Medium — fuzz_convert ターゲットのみ
 **発見**: fuzz_convert
 **アーティファクト**: `fuzz/artifacts/fuzz_convert/crash-823d13a04190e19be4673a91b6d19ed8f2e1561a`
+**ステータス**: **修正済み** — `Event::Rule` に `block_depth == 0` ガードを追加。テスト `test_rule_inside_list_source_map` 追加。
 
 ### 再現入力
 
@@ -90,34 +60,45 @@ error: maximum show rule depth exceeded
 +	---
 ```
 
-(orderedリスト `+` + タブ + 水平線 `---` + タブ2つ)
+(unorderedリスト `+` + タブ + 水平線 `---` + タブ2つ)
 
 ### 症状
 
-`fuzz_convert` ターゲットのソースマップ検証アサーションのいずれかが失敗する。
-具体的にどのアサーションかは未調査。
-
-```rust
-// fuzz_convert.rs で検証しているアサーション:
-// 1. typst_byte_range.end <= with_map.len()
-// 2. md_byte_range.end <= markdown.len()
-// 3. typst_byte_range が反転していない
-// 4. md_byte_range が反転していない
-// 5. typst_byte_range がソート済みで重複なし
-```
+`fuzz_convert` ターゲットのソースマップ検証アサーション (5: typst_byte_range がソート済みで重複なし) が失敗する。
 
 ### 原因
 
-未調査。orderedリスト開始 (`+`) と水平線 (`---`) の組み合わせで
-pulldown-cmarkのイベント列が予期しないパターンになり、
-ソースマップの `block_starts` / `block_depth` 追跡がずれる可能性。
+`Event::Rule` はリーフイベント（Start/End ペアを持たない）。
+修正前は `block_depth` チェックなしに無条件で `BlockMapping` を push していた。
+
+pulldown-cmark は `+\t---` を以下のイベント列に解析する:
+
+```
+Start(List(None))   ← + は unordered list marker
+  Start(Item)
+    Rule            ← --- が thematic break として解析される
+  End(Item)
+End(List(None))
+```
+
+List 内 (`block_depth == 1`) で Rule が発火すると:
+1. Rule の `BlockMapping { typst: 2..25, md: 2..5 }` が先に push
+2. List の `End` で `BlockMapping { typst: 0..25, md: 0..7 }` が push
+3. → **範囲が重複** → fuzz assertion 失敗
+
+### 修正内容
+
+`convert.rs` の `Event::Rule` ハンドラに `block_depth == 0` ガードを追加。
+リスト内で Rule が発生してもトップレベルの `BlockMapping` を出力しない。
+回帰テスト `test_rule_inside_list_source_map` 追加。
 
 ---
 
 ## 備考
 
+- Bug 1, 2, 3 はすべて修正済み。
 - fuzz_pipeline ターゲットは `compile_document` のエラーを `panic!` で処理している
-  (`fuzz_pipeline.rs:25`)。Bug 1, 2 の修正後も、未知の入力で Typst コンパイルエラーが
+  (`fuzz_pipeline.rs:25`)。未知の入力で Typst コンパイルエラーが
   起きうるため、`panic!` → `return` への変更も検討すべき。
 - `fuzz-2.log` ではクラッシュなし。
 - 残りのアーティファクト (`crash-b305e5d4958745f890f1f79742e6651461a6ae15`,
