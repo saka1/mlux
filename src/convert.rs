@@ -257,13 +257,13 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     output.push('\n');
                 }
                 block_depth -= 1;
-                if block_depth == 0 {
-                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
-                        source_map_blocks.push(BlockMapping {
-                            typst_byte_range: typst_start..output.len(),
-                            md_byte_range: md_range_start,
-                        });
-                    }
+                if block_depth == 0
+                    && let Some((typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: typst_start..output.len(),
+                        md_byte_range: md_range_start,
+                    });
                 }
             }
             Event::End(TagEnd::Heading(_)) => {
@@ -272,13 +272,13 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 }
                 pop_expect(&mut stack, "Heading");
                 block_depth -= 1;
-                if block_depth == 0 {
-                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
-                        source_map_blocks.push(BlockMapping {
-                            typst_byte_range: typst_start..output.len(),
-                            md_byte_range: md_range_start,
-                        });
-                    }
+                if block_depth == 0
+                    && let Some((typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: typst_start..output.len(),
+                        md_byte_range: md_range_start,
+                    });
                 }
             }
             Event::End(TagEnd::BlockQuote(_)) => {
@@ -296,13 +296,13 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     }
                 }
                 block_depth -= 1;
-                if block_depth == 0 {
-                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
-                        source_map_blocks.push(BlockMapping {
-                            typst_byte_range: typst_start..output.len(),
-                            md_byte_range: md_range_start,
-                        });
-                    }
+                if block_depth == 0
+                    && let Some((typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: typst_start..output.len(),
+                        md_byte_range: md_range_start,
+                    });
                 }
             }
             Event::End(TagEnd::CodeBlock) => {
@@ -323,25 +323,25 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 code_block_lang.clear();
                 pop_expect(&mut stack, "CodeBlock");
                 block_depth -= 1;
-                if block_depth == 0 {
-                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
-                        source_map_blocks.push(BlockMapping {
-                            typst_byte_range: typst_start..output.len(),
-                            md_byte_range: md_range_start,
-                        });
-                    }
+                if block_depth == 0
+                    && let Some((typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: typst_start..output.len(),
+                        md_byte_range: md_range_start,
+                    });
                 }
             }
             Event::End(TagEnd::List(_)) => {
                 pop_expect(&mut stack, "List");
                 block_depth -= 1;
-                if block_depth == 0 {
-                    if let Some((typst_start, md_range_start)) = block_starts.pop() {
-                        source_map_blocks.push(BlockMapping {
-                            typst_byte_range: typst_start..output.len(),
-                            md_byte_range: md_range_start,
-                        });
-                    }
+                if block_depth == 0
+                    && let Some((typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: typst_start..output.len(),
+                        md_byte_range: md_range_start,
+                    });
                 }
             }
             Event::End(TagEnd::Item) => {
@@ -365,13 +365,13 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 table_cells.clear();
                 pop_expect(&mut stack, "Table");
                 block_depth -= 1;
-                if block_depth == 0 {
-                    if let Some((_typst_start, md_range_start)) = block_starts.pop() {
-                        source_map_blocks.push(BlockMapping {
-                            typst_byte_range: table_typst_start..output.len(),
-                            md_byte_range: md_range_start,
-                        });
-                    }
+                if block_depth == 0
+                    && let Some((_typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: table_typst_start..output.len(),
+                        md_byte_range: md_range_start,
+                    });
                 }
             }
             Event::End(TagEnd::TableHead) => {

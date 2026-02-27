@@ -74,12 +74,24 @@ cargo test <test_name>
 # Check
 cargo check
 
+# Lint (clippy) — must stay warning-free
+cargo clippy
+
 # Debug logging (viewer/tile internals)
 RUST_LOG=debug cargo run -- <input.md>
 
 # Fuzz testing (requires nightly-2025-11-01; newer nightlies may break libfuzzer-sys)
 cargo +nightly-2025-11-01 fuzz run fuzz_convert -- -max_total_time=30
 cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
+```
+
+## Quality Gates
+
+After any code change, ensure both pass:
+
+```bash
+cargo test      # all tests pass
+cargo clippy    # zero warnings
 ```
 
 ## Dependencies

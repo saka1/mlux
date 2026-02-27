@@ -19,6 +19,12 @@ pub struct FontCache {
     fonts: Vec<FontSlot>,
 }
 
+impl Default for FontCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FontCache {
     /// Perform a one-time font search and cache the results.
     pub fn new() -> Self {

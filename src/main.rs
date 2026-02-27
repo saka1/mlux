@@ -9,7 +9,7 @@ use log::info;
 use mlux::config;
 use mlux::convert::markdown_to_typst_with_map;
 use mlux::render::{compile_document, dump_document};
-use mlux::tile::{DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
+use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
 use mlux::world::{FontCache, MluxWorld};
 
 #[derive(Parser)]
@@ -188,10 +188,17 @@ fn cmd_render(
         return Ok(());
     }
 
-    let tiled_doc = build_tiled_document(
-        &theme_text, &content_text, &markdown, &source_map,
-        width, DEFAULT_SIDEBAR_WIDTH_PT, tile_height, ppi, &font_cache,
-    )?;
+    let tiled_doc = build_tiled_document(&BuildParams {
+        theme_text: &theme_text,
+        content_text: &content_text,
+        md_source: &markdown,
+        source_map: &source_map,
+        width_pt: width,
+        sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
+        tile_height_pt: tile_height,
+        ppi,
+        fonts: &font_cache,
+    })?;
 
     let stem = output.file_stem().unwrap_or_default().to_string_lossy().to_string();
     let ext = output.extension().unwrap_or_default().to_string_lossy().to_string();

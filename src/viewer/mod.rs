@@ -130,10 +130,16 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
 
         // 5b. Build TiledDocument (content + sidebar compiled & split)
         info!("building tiled document...");
-        let tiled_doc = pipeline::build_tiled_document(
-            &theme_text, &content_text, &markdown, &source_map, &layout,
-            config.ppi, config.viewer.tile_height, &font_cache,
-        )?;
+        let tiled_doc = pipeline::build_tiled_document(&pipeline::PipelineInput {
+            theme_text: &theme_text,
+            content_text: &content_text,
+            md_source: &markdown,
+            source_map: &source_map,
+            layout: &layout,
+            ppi: config.ppi,
+            tile_height_min: config.viewer.tile_height,
+            fonts: &font_cache,
+        })?;
 
         let img_w = tiled_doc.width_px();
         let img_h = tiled_doc.total_height_px();
@@ -345,10 +351,10 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                 last_render = Instant::now();
 
                 // Check for file changes (non-blocking)
-                if let Some(ref w) = watcher {
-                    if w.has_changed() {
-                        return Ok(ExitReason::Reload);
-                    }
+                if let Some(ref w) = watcher
+                    && w.has_changed()
+                {
+                    return Ok(ExitReason::Reload);
                 }
             }
             // req_tx dropped here → worker recv() gets Err → worker exits → scope joins

@@ -86,13 +86,13 @@ pub fn extract_visual_lines_with_map(
     for (y, span) in entries {
         if deduped
             .last()
-            .map_or(true, |(prev_y, _)| (y - prev_y).abs() > TOLERANCE_PT)
+            .is_none_or(|(prev_y, _)| (y - prev_y).abs() > TOLERANCE_PT)
         {
             deduped.push((y, span.into_iter().collect()));
-        } else if let Some(last) = deduped.last_mut() {
-            if let Some(s) = span {
-                last.1.push(s);
-            }
+        } else if let Some(last) = deduped.last_mut()
+            && let Some(s) = span
+        {
+            last.1.push(s);
         }
     }
 
@@ -127,7 +127,7 @@ pub fn extract_visual_lines_with_map(
         start.elapsed().as_secs_f64() * 1000.0,
         lines.len()
     );
-    if mapping.is_some() {
+    if let Some(m) = mapping {
         let mapped = lines.iter().filter(|l| l.md_line_range.is_some()).count();
         debug!(
             "extract_visual_lines: {} lines ({} mapped, {} unmapped)",
@@ -137,7 +137,7 @@ pub fn extract_visual_lines_with_map(
         );
         for (i, vl) in lines.iter().enumerate() {
             if let Some((s, e)) = vl.md_line_range {
-                let preview: String = mapping.unwrap().md_source
+                let preview: String = m.md_source
                     .lines()
                     .nth(s - 1)
                     .unwrap_or("")
@@ -368,26 +368,40 @@ pub fn generate_sidebar_typst(
 /// Default sidebar width in typst points (used by cmd_render).
 pub const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 
+/// Parameters for [`build_tiled_document`].
+pub struct BuildParams<'a> {
+    pub theme_text: &'a str,
+    pub content_text: &'a str,
+    pub md_source: &'a str,
+    pub source_map: &'a SourceMap,
+    pub width_pt: f64,
+    pub sidebar_width_pt: f64,
+    pub tile_height_pt: f64,
+    pub ppi: f32,
+    pub fonts: &'a crate::world::FontCache,
+}
+
 /// Build a TiledDocument from converted Typst content.
 ///
 /// Shared pipeline used by both `cmd_render` and the terminal viewer.
 /// Compiles content, extracts visual lines with source mapping,
 /// generates + compiles sidebar, and assembles into a TiledDocument.
-pub fn build_tiled_document(
-    theme_text: &str,
-    content_text: &str,
-    md_source: &str,
-    source_map: &SourceMap,
-    width_pt: f64,
-    sidebar_width_pt: f64,
-    tile_height_pt: f64,
-    ppi: f32,
-    fonts: &crate::world::FontCache,
-) -> Result<TiledDocument> {
+pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
+    let BuildParams {
+        theme_text,
+        content_text,
+        md_source,
+        source_map,
+        width_pt,
+        sidebar_width_pt,
+        tile_height_pt,
+        ppi,
+        fonts,
+    } = params;
     let start = Instant::now();
 
     // 1. Compile content document
-    let content_world = crate::world::MluxWorld::new(theme_text, content_text, width_pt, fonts);
+    let content_world = crate::world::MluxWorld::new(theme_text, content_text, *width_pt, fonts);
     let document = crate::render::compile_document(&content_world)?;
 
     // 2. Extract visual lines with source mapping
@@ -397,7 +411,7 @@ pub fn build_tiled_document(
         source_map,
         md_source,
     };
-    let visual_lines = extract_visual_lines_with_map(&document, ppi, Some(&mapping_params));
+    let visual_lines = extract_visual_lines_with_map(&document, *ppi, Some(&mapping_params));
 
     if document.pages.is_empty() {
         bail!("[BUG] document has no pages");
@@ -405,12 +419,12 @@ pub fn build_tiled_document(
     let page_height_pt = document.pages[0].frame.size().y.to_pt();
 
     // 3. Compile sidebar document using visual lines
-    let sidebar_source = generate_sidebar_typst(&visual_lines, sidebar_width_pt, page_height_pt);
+    let sidebar_source = generate_sidebar_typst(&visual_lines, *sidebar_width_pt, page_height_pt);
     let sidebar_world = crate::world::MluxWorld::new_raw(&sidebar_source, fonts);
     let sidebar_doc = crate::render::compile_document(&sidebar_world)?;
 
     // 4. Build TiledDocument with both content + sidebar
-    let tiled_doc = TiledDocument::new(&document, &sidebar_doc, visual_lines, tile_height_pt, ppi)?;
+    let tiled_doc = TiledDocument::new(&document, &sidebar_doc, visual_lines, *tile_height_pt, *ppi)?;
     info!(
         "build_tiled_document completed in {:.1}ms",
         start.elapsed().as_secs_f64() * 1000.0
@@ -765,6 +779,12 @@ pub struct TiledDocumentCache {
     data: HashMap<usize, TilePngs>,
 }
 
+impl Default for TiledDocumentCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TiledDocumentCache {
     pub fn new() -> Self {
         Self {
@@ -786,10 +806,11 @@ impl TiledDocumentCache {
 
     /// Get cached PNGs or render synchronously and cache the result.
     pub fn get_or_render(&mut self, doc: &TiledDocument, idx: usize) -> Result<&TilePngs> {
-        if !self.data.contains_key(&idx) {
+        use std::collections::hash_map::Entry;
+        if let Entry::Vacant(e) = self.data.entry(idx) {
             let content = doc.render_tile(idx)?;
             let sidebar = doc.render_sidebar_tile(idx)?;
-            self.data.insert(idx, TilePngs { content, sidebar });
+            e.insert(TilePngs { content, sidebar });
         }
         Ok(self.data.get(&idx).unwrap())
     }
