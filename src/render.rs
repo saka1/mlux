@@ -74,7 +74,11 @@ pub fn compile_document(world: &MluxWorld<'_>) -> Result<PagedDocument> {
             for err in &errors {
                 detail.push_str(&format_diagnostic(err, world));
             }
-            bail!("typst compilation failed with {} error(s)\n{detail}", errors.len());
+            bail!(
+                "[BUG] typst compilation failed — this is a bug in mlux, not your input\n\
+                 {} error(s):\n{detail}",
+                errors.len()
+            );
         }
     }
 }
@@ -97,7 +101,7 @@ pub fn render_frame_to_png(frame: &Frame, fill: &Smart<Option<Paint>>, ppi: f32)
 
     let png = pixmap
         .encode_png()
-        .map_err(|e| anyhow::anyhow!("PNG encoding failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("[BUG] PNG encoding failed: {e}"))?;
     info!(
         "render: render_frame_to_png completed in {:.1}ms ({}x{}px, {} bytes)",
         start.elapsed().as_secs_f64() * 1000.0,

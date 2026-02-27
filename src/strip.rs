@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use log::{debug, info, trace};
 use typst::foundations::Smart;
 use typst::layout::{Abs, Axes, Frame, FrameItem, Page, PagedDocument, Point};
@@ -504,8 +504,10 @@ impl StripDocument {
         visual_lines: Vec<VisualLine>,
         strip_height_pt: f64,
         ppi: f32,
-    ) -> Self {
-        assert!(!document.pages.is_empty(), "document has no pages");
+    ) -> Result<Self> {
+        if document.pages.is_empty() {
+            bail!("[BUG] document has no pages");
+        }
         let page = &document.pages[0];
 
         let page_size = page.frame.size();
@@ -519,7 +521,9 @@ impl StripDocument {
         let strips = split_frame(&page.frame, strip_height_pt);
 
         // Split sidebar with the same strip boundaries
-        assert!(!sidebar_doc.pages.is_empty(), "sidebar document has no pages");
+        if sidebar_doc.pages.is_empty() {
+            bail!("[BUG] sidebar document has no pages");
+        }
         let sidebar_page = &sidebar_doc.pages[0];
         let sidebar_strips = split_frame(&sidebar_page.frame, strip_height_pt);
         let pixel_per_pt = ppi as f64 / 72.0;
@@ -535,7 +539,7 @@ impl StripDocument {
         let total_height_px = (page_size.y.to_pt() * pixel_per_pt).ceil() as u32;
         let page_height_pt = page_size.y.to_pt();
 
-        Self {
+        Ok(Self {
             strips,
             sidebar_strips,
             sidebar_fill: sidebar_page.fill.clone(),
@@ -547,7 +551,7 @@ impl StripDocument {
             total_height_px,
             page_height_pt,
             visual_lines,
-        }
+        })
     }
 
     /// Number of strips.

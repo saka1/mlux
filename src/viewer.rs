@@ -538,7 +538,7 @@ fn build_strip_document(
         visual_lines,
         strip_height_pt,
         PPI,
-    );
+    )?;
     info!("viewer: build_strip_document completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
     Ok(strip_doc)
 }

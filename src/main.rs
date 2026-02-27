@@ -55,19 +55,34 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
     env_logger::init();
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Some(Command::Render { input, output, width, ppi, strip_height, dump }) => {
             cmd_render(input, cli.theme, output, width, ppi, strip_height, dump)
         }
         None => {
-            let input = cli.input
-                .ok_or_else(|| anyhow::anyhow!("input file required"))?;
+            let input = match cli.input {
+                Some(p) => p,
+                None => {
+                    eprintln!("Error: input file required");
+                    std::process::exit(1);
+                }
+            };
             mlux::viewer::run(input, cli.theme)
         }
+    };
+
+    if let Err(e) = result {
+        let msg = format!("{e:#}");
+        if msg.contains("[BUG]") {
+            eprintln!("\x1b[1;31m{msg}\x1b[0m");
+        } else {
+            eprintln!("Error: {msg}");
+        }
+        std::process::exit(1);
     }
 }
 
@@ -90,6 +105,10 @@ fn cmd_render(
     let theme_path = PathBuf::from(format!("themes/{}.typ", theme));
     let theme_text = fs::read_to_string(&theme_path)
         .with_context(|| format!("failed to read theme {}", theme_path.display()))?;
+
+    if markdown.trim().is_empty() {
+        anyhow::bail!("input file is empty or contains only whitespace");
+    }
 
     // Convert markdown to typst
     let content_text = markdown_to_typst(&markdown);
@@ -126,7 +145,7 @@ fn cmd_render(
 
     let document = compile_document(&world)?;
     if document.pages.is_empty() {
-        anyhow::bail!("typst produced no pages");
+        anyhow::bail!("[BUG] typst produced no pages — please report this issue");
     }
     let page = &document.pages[0];
 

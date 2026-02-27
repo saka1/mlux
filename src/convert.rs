@@ -49,6 +49,7 @@ enum Container {
     Strikethrough,
     Link { _url: String },
     BlockQuote,
+    BlockQuoteCapped,
     List { ordered: bool },
     Item,
     CodeBlock,
@@ -57,6 +58,8 @@ enum Container {
     TableRow,
     TableCell,
 }
+
+const MAX_BLOCKQUOTE_DEPTH: usize = 10;
 
 /// Convert Markdown text to Typst markup (compatibility wrapper).
 pub fn markdown_to_typst(markdown: &str) -> String {
@@ -135,8 +138,16 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 if !output.is_empty() {
                     output.push('\n');
                 }
-                output.push_str("#quote(block: true)[");
-                stack.push(Container::BlockQuote);
+                let bq_depth = stack
+                    .iter()
+                    .filter(|c| matches!(c, Container::BlockQuote | Container::BlockQuoteCapped))
+                    .count();
+                if bq_depth < MAX_BLOCKQUOTE_DEPTH {
+                    output.push_str("#quote(block: true)[");
+                    stack.push(Container::BlockQuote);
+                } else {
+                    stack.push(Container::BlockQuoteCapped);
+                }
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 if block_depth == 0 {
@@ -271,11 +282,19 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 }
             }
             Event::End(TagEnd::BlockQuote(_)) => {
-                // Trim trailing whitespace inside the quote
-                let trimmed = output.trim_end().len();
-                output.truncate(trimmed);
-                output.push_str("]\n");
-                pop_expect(&mut stack, "BlockQuote");
+                match stack.pop() {
+                    Some(Container::BlockQuote) => {
+                        let trimmed = output.trim_end().len();
+                        output.truncate(trimmed);
+                        output.push_str("]\n");
+                    }
+                    Some(Container::BlockQuoteCapped) => {
+                        // Depth-capped: no closing bracket needed
+                    }
+                    other => {
+                        debug_assert!(false, "expected BlockQuote/BlockQuoteCapped, got {other:?}");
+                    }
+                }
                 block_depth -= 1;
                 if block_depth == 0 {
                     if let Some((typst_start, md_range_start)) = block_starts.pop() {
@@ -487,6 +506,7 @@ fn pop_expect(stack: &mut Vec<Container>, expected: &str) {
                     | (Container::Strikethrough, "Strikethrough")
                     | (Container::Link { .. }, "Link")
                     | (Container::BlockQuote, "BlockQuote")
+                    | (Container::BlockQuoteCapped, "BlockQuote")
                     | (Container::List { .. }, "List")
                     | (Container::Item, "Item")
                     | (Container::CodeBlock, "CodeBlock")
@@ -903,6 +923,16 @@ mod tests {
         assert_eq!(max_backtick_run("```"), 3);
         assert_eq!(max_backtick_run("a```b``c"), 3);
         assert_eq!(max_backtick_run("``````"), 6);
+    }
+
+    #[test]
+    fn test_blockquote_depth_capped() {
+        // 15段ネスト → 最初の10段のみ #quote 出力
+        let input = "> ".repeat(15) + "deep";
+        let result = markdown_to_typst(&input);
+        let quote_count = result.matches("#quote(block: true)[").count();
+        assert_eq!(quote_count, MAX_BLOCKQUOTE_DEPTH);
+        assert!(result.contains("deep"));
     }
 
     #[test]
