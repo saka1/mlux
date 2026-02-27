@@ -2,7 +2,7 @@ use std::fs;
 
 use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
 use mlux::render::{compile_document, render_frame_to_png};
-use mlux::strip::{SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines};
+use mlux::tile::{SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines};
 use mlux::world::{FontCache, MluxWorld};
 
 fn load_theme() -> String {
@@ -18,8 +18,8 @@ fn test_paragraph_ja_renders() {
     let font_cache = FontCache::new();
     let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
-    let strips = split_frame(&document.pages[0].frame, 500.0);
-    let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
         .expect("rendering should succeed");
 
     // Check PNG magic bytes
@@ -40,8 +40,8 @@ fn test_empty_input() {
     let font_cache = FontCache::new();
     let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
-    let strips = split_frame(&document.pages[0].frame, 500.0);
-    let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
         .expect("empty input should still render");
 
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n");
@@ -56,23 +56,23 @@ fn test_full_document_renders() {
     let font_cache = FontCache::new();
     let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
-    let strips = split_frame(&document.pages[0].frame, 500.0);
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
 
-    // Should produce multiple strips for a full document
+    // Should produce multiple tiles for a full document
     assert!(
-        !strips.is_empty(),
-        "should produce at least one strip"
+        !tiles.is_empty(),
+        "should produce at least one tile"
     );
 
-    // Check first strip renders to valid PNG
-    let png_data = render_frame_to_png(&strips[0], &document.pages[0].fill, 144.0)
+    // Check first tile renders to valid PNG
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
         .expect("rendering should succeed");
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n", "output should be valid PNG");
 
-    // First strip of full document should produce a substantial image
+    // First tile of full document should produce a substantial image
     assert!(
         png_data.len() > 5000,
-        "PNG should be larger than 5KB for full document strip, got {} bytes",
+        "PNG should be larger than 5KB for full document tile, got {} bytes",
         png_data.len()
     );
 }
@@ -95,7 +95,7 @@ const WIDTH_PT: f64 = 400.0;
 /// Run the full source mapping pipeline for a given Markdown string.
 ///
 /// Returns (visual_lines, md_source) for use in yank_lines.
-fn source_map_pipeline(md: &str) -> Vec<mlux::strip::VisualLine> {
+fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
     let (content, source_map) = markdown_to_typst_with_map(md);

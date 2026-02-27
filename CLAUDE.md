@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 mlux — Markdown to PNG renderer using Rust + Typst. Parses Markdown with pulldown-cmark,
 converts to Typst markup, compiles via Typst's engine, and renders to PNG.
-Includes a terminal viewer using Kitty Graphics Protocol with strip-based lazy rendering.
+Includes a terminal viewer using Kitty Graphics Protocol with tile-based lazy rendering.
 
 ## Architecture
 
@@ -23,23 +23,23 @@ Markdown → pulldown-cmark → Event stream → convert.rs → Typst markup
 ```
 Markdown → convert.rs → Typst markup
   → render.rs: compile_document() → PagedDocument
-  → strip.rs: split_frame() → Vec<Frame> (vertical strips)
-  → StripDocument: lazy per-strip PNG rendering with LRU cache
+  → tile.rs: split_frame() → Vec<Frame> (vertical tiles)
+  → TiledDocument: lazy per-tile PNG rendering with LRU cache
   → viewer.rs: Kitty Graphics Protocol display + scroll
 ```
 
 The document is compiled once with `height: auto` (single tall page), then the Frame tree
-is split into vertical strips. Only visible strips are rendered to PNG on demand,
-keeping peak memory proportional to strip size, not document size.
+is split into vertical tiles. Only visible tiles are rendered to PNG on demand,
+keeping peak memory proportional to tile size, not document size.
 
 ## Key Files
 
-- `src/lib.rs` — Public module declarations (convert, render, strip, viewer, world)
+- `src/lib.rs` — Public module declarations (convert, render, tile, viewer, world)
 - `src/main.rs` — CLI entry point (clap subcommands: default=viewer, `render`=PNG output)
 - `src/convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, 20 unit tests inline)
 - `src/world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
-- `src/render.rs` — Typst compile (`compile_document`) + strip PNG render (`render_frame_to_png`) + debug dump
-- `src/strip.rs` — Strip-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
+- `src/render.rs` — Typst compile (`compile_document`) + tile PNG render (`render_frame_to_png`) + debug dump
+- `src/tile.rs` — Tile-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
 - `src/viewer.rs` — Terminal viewer using Kitty Graphics Protocol
 - `themes/catppuccin.typ` — Default dark theme (Catppuccin Mocha)
 - `tests/integration.rs` — Integration tests (fixture-based: load md → convert → render → verify PNG)
@@ -59,8 +59,8 @@ cargo build
 # View in terminal (default mode, requires Kitty Graphics Protocol support)
 cargo run -- <input.md>
 
-# Render to PNG strips (outputs output-000.png, output-001.png, ...)
-cargo run -- render <input.md> -o <output.png> [--width 800] [--ppi 144] [--strip-height 500] [--theme catppuccin]
+# Render to PNG tiles (outputs output-000.png, output-001.png, ...)
+cargo run -- render <input.md> -o <output.png> [--width 800] [--ppi 144] [--tile-height 500] [--theme catppuccin]
 
 # Dump PagedDocument frame tree (debug)
 cargo run -- render <input.md> --dump
@@ -74,7 +74,7 @@ cargo test <test_name>
 # Check
 cargo check
 
-# Debug logging (viewer/strip internals)
+# Debug logging (viewer/tile internals)
 RUST_LOG=debug cargo run -- <input.md>
 
 # Fuzz testing (requires nightly-2025-11-01; newer nightlies may break libfuzzer-sys)
@@ -98,14 +98,14 @@ cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
 - Phase 2 (complete): Block elements (headings, code blocks, tables, lists, quotes)
 - Phase 3 (planned): Edge cases and conversion quality
 - Phase 4 (in progress): Kitty Graphics Protocol terminal display
-  - Strip-based lazy rendering, visual line extraction, sidebar line numbers, scroll — implemented
+  - Tile-based lazy rendering, visual line extraction, sidebar line numbers, scroll — implemented
   - Design doc: `docs/terminal-viewer-design.md`
   - Protocol spec: `docs/kitty-graphics-protocol.md`
 
 ## Viewer Constants
 
 - PPI = 144.0 (fixed in viewer, configurable in `render` CLI)
-- Strip height = 500pt minimum (at least viewport height)
+- Tile height = 500pt minimum (at least viewport height)
 - Scroll step = 3 terminal cells per j/k press
 - Frame budget = 32ms (~30fps)
 - Sidebar = 6 columns (fixed)

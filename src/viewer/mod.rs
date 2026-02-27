@@ -2,13 +2,13 @@
 //!
 //! Layout:
 //!   col 0..sidebar_cols : sidebar image (pixel-precise line numbers)
-//!   col sidebar_cols..  : content image viewport (strip-based lazy rendering)
+//!   col sidebar_cols..  : content image viewport (tile-based lazy rendering)
 //!   row term_rows-1     : status bar
 //!
-//! Strip-based rendering:
+//! Tile-based rendering:
 //!   The document is compiled once with `height: auto`, then the Frame tree
-//!   is split into vertical strips. Only visible strips are rendered to PNG,
-//!   keeping peak memory proportional to strip size, not document size.
+//!   is split into vertical tiles. Only visible tiles are rendered to PNG,
+//!   keeping peak memory proportional to tile size, not document size.
 //!
 //! Kitty response suppression:
 //!   All Kitty Graphics Protocol commands use `q=2` (suppress all responses).
@@ -34,11 +34,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::convert::markdown_to_typst_with_map;
-use crate::strip::{StripDocumentCache, StripPngs, yank_exact, yank_lines};
+use crate::tile::{TiledDocumentCache, TilePngs, yank_exact, yank_lines};
 use crate::world::FontCache;
 
 use input::{Action, InputAccumulator, map_key_event};
-use state::{ExitReason, LoadedStrips, ViewState};
+use state::{ExitReason, LoadedTiles, ViewState};
 
 const SCROLL_STEP_CELLS: u32 = 3;
 const FRAME_BUDGET: Duration = Duration::from_millis(32); // ~30fps max
@@ -88,62 +88,62 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
     let mut layout = state::compute_layout(term_cols, term_rows, pixel_w, pixel_h);
     let mut y_offset_carry: u32 = 0;
 
-    // Outer loop: each iteration builds a new StripDocument (initial + resize)
+    // Outer loop: each iteration builds a new TiledDocument (initial + resize)
     'outer: loop {
-        // 5. Build StripDocument (content + sidebar compiled & split)
-        info!("building strip document...");
-        let strip_doc = pipeline::build_strip_document(
+        // 5. Build TiledDocument (content + sidebar compiled & split)
+        info!("building tiled document...");
+        let tiled_doc = pipeline::build_tiled_document(
             &theme_text, &content_text, &markdown, &source_map, &layout, &font_cache,
         )?;
 
-        let img_w = strip_doc.width_px();
-        let img_h = strip_doc.total_height_px();
+        let img_w = tiled_doc.width_px();
+        let img_h = tiled_doc.total_height_px();
         let (vp_w, vp_h) = state::vp_dims(&layout, img_w, img_h);
         let mut state = ViewState {
-            y_offset: y_offset_carry.min(strip_doc.max_scroll(vp_h)),
+            y_offset: y_offset_carry.min(tiled_doc.max_scroll(vp_h)),
             img_h,
             vp_w,
             vp_h,
             filename: filename.clone(),
         };
 
-        let mut cache = StripDocumentCache::new();
-        let mut loaded = LoadedStrips::new();
+        let mut cache = TiledDocumentCache::new();
+        let mut loaded = LoadedTiles::new();
 
         // 6. thread::scope — prefetch worker + inner event loop
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
             let (req_tx, req_rx) = mpsc::channel::<usize>();
-            let (res_tx, res_rx) = mpsc::channel::<(usize, StripPngs)>();
+            let (res_tx, res_rx) = mpsc::channel::<(usize, TilePngs)>();
 
             // Prefetch worker: FIFO — process each request in order.
             //
             // 各リクエストを受信順に処理する。drain-to-latest は使わない:
             // send_prefetch() は [current+1, current+2, current-1] の独立した
-            // 複数リクエストを送るため、最後だけ残すと手前のストリップが
+            // 複数リクエストを送るため、最後だけ残すと手前のタイルが
             // プリフェッチされず、メインスレッドで同期レンダリングが発生する。
             //
             // worker → main の結果は res_tx/res_rx チャネル経由。
             // main thread が res_rx.try_recv() で受信し cache に格納する。
-            let doc = &strip_doc;
+            let doc = &tiled_doc;
             s.spawn(move || {
                 debug!("prefetch worker: started");
                 while let Ok(idx) = req_rx.recv() {
-                    debug!("prefetch worker: rendering strip {idx}");
+                    debug!("prefetch worker: rendering tile {idx}");
                     let render_start = Instant::now();
-                    match (doc.render_strip(idx), doc.render_sidebar_strip(idx)) {
+                    match (doc.render_tile(idx), doc.render_sidebar_tile(idx)) {
                         (Ok(content), Ok(sidebar)) => {
-                            debug!("prefetch worker: strip {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, content.len(), sidebar.len());
-                            let _ = res_tx.send((idx, StripPngs { content, sidebar }));
+                            debug!("prefetch worker: tile {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, content.len(), sidebar.len());
+                            let _ = res_tx.send((idx, TilePngs { content, sidebar }));
                         }
                         (Err(e), _) | (_, Err(e)) => {
-                            log::error!("prefetch worker: strip {idx} failed: {e}");
+                            log::error!("prefetch worker: tile {idx} failed: {e}");
                         }
                     }
                 }
                 debug!("prefetch worker: channel closed, exiting");
             });
 
-            // in_flight: 「worker に送信済みだが結果未受信」のストリップ index 集合。
+            // in_flight: 「worker に送信済みだが結果未受信」のタイル index 集合。
             // main thread 専用（worker はアクセスしない）。
             // send_prefetch() で insert、res_rx.try_recv() で remove。
             // cache と合わせてチェックすることで二重レンダリングを防ぐ。
@@ -165,7 +165,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
             loop {
                 // Drain prefetch results into cache.
                 while let Ok((idx, pngs)) = res_rx.try_recv() {
-                    debug!("main: received prefetched strip {idx} (content={}, sidebar={} bytes)", pngs.content.len(), pngs.sidebar.len());
+                    debug!("main: received prefetched tile {idx} (content={}, sidebar={} bytes)", pngs.content.len(), pngs.sidebar.len());
                     in_flight.remove(&idx);
                     cache.insert(idx, pngs);
                 }
@@ -327,14 +327,14 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                     // redraw 直前に追加 drain: event::poll() のブロック中に worker が
                     // 完了した結果を回収し、redraw での同期レンダリングを回避する。
                     while let Ok((idx, pngs)) = res_rx.try_recv() {
-                        debug!("main: received prefetched strip {idx} (content={}, sidebar={} bytes, pre-redraw)", pngs.content.len(), pngs.sidebar.len());
+                        debug!("main: received prefetched tile {idx} (content={}, sidebar={} bytes, pre-redraw)", pngs.content.len(), pngs.sidebar.len());
                         in_flight.remove(&idx);
                         cache.insert(idx, pngs);
                     }
                     self::state::redraw(doc, &mut cache, &mut loaded, &layout, &state, acc.peek(), flash_msg.as_deref())?;
                     self::state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
                     cache.evict_distant(
-                        (state.y_offset / doc.strip_height_px()) as usize,
+                        (state.y_offset / doc.tile_height_px()) as usize,
                         4,
                     );
                     dirty = false;
@@ -349,7 +349,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
             ExitReason::Resize { new_cols, new_rows } => {
                 y_offset_carry = state.y_offset;
                 // Delete all images, then rebuild in next outer iteration
-                debug!("resize: rebuilding strip document and sidebar");
+                debug!("resize: rebuilding tiled document and sidebar");
                 let new_winsize = crossterm_terminal::window_size()?;
                 layout = state::compute_layout(
                     new_cols,
@@ -358,7 +358,7 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                     new_winsize.height,
                 );
                 terminal::delete_all_images()?;
-                // continue 'outer → new strip_doc + new scope + new worker
+                // continue 'outer → new tiled_doc + new scope + new worker
             }
         }
     }

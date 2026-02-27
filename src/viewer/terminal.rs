@@ -9,8 +9,8 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
-use super::state::{Layout, LoadedStrips, ViewState};
-use crate::strip::{StripDocument, VisibleStrips};
+use super::state::{Layout, LoadedTiles, ViewState};
+use crate::tile::{TiledDocument, VisibleTiles};
 
 const CHUNK_SIZE: usize = 4096;
 
@@ -89,29 +89,29 @@ pub(super) fn delete_all_images() -> io::Result<()> {
     out.flush()
 }
 
-/// Parameters for placing strip images via Kitty Graphics Protocol.
+/// Parameters for placing tile images via Kitty Graphics Protocol.
 pub(super) struct PlaceParams {
     pub start_col: u16,
     pub num_cols: u16,
     pub img_width: u32,
 }
 
-/// Place strip(s) using Kitty Graphics Protocol.
+/// Place tile(s) using Kitty Graphics Protocol.
 ///
-/// `get_id` selects which image ID to use from a `StripImageIds`.
-pub(super) fn place_strips(
-    visible: &VisibleStrips,
-    loaded: &LoadedStrips,
+/// `get_id` selects which image ID to use from a `TileImageIds`.
+pub(super) fn place_tiles(
+    visible: &VisibleTiles,
+    loaded: &LoadedTiles,
     layout: &Layout,
     params: &PlaceParams,
-    get_id: fn(&super::state::StripImageIds) -> u32,
+    get_id: fn(&super::state::TileImageIds) -> u32,
 ) -> io::Result<()> {
     let mut out = stdout();
     let w = params.img_width;
     let cols = params.num_cols;
 
     match visible {
-        VisibleStrips::Single { idx, src_y, src_h } => {
+        VisibleTiles::Single { idx, src_y, src_h } => {
             let id = get_id(loaded.map.get(idx).unwrap());
             let rows = ((*src_h as f64) / (layout.cell_h as f64))
                 .ceil()
@@ -123,7 +123,7 @@ pub(super) fn place_strips(
                 "\x1b_Ga=p,i={id},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,q=2\x1b\\",
             )?;
         }
-        VisibleStrips::Split {
+        VisibleTiles::Split {
             top_idx,
             top_src_y,
             top_src_h,
@@ -154,14 +154,14 @@ pub(super) fn place_strips(
     out.flush()
 }
 
-/// Place content strip(s) based on visible_strips result.
-pub(super) fn place_content_strips(
-    visible: &VisibleStrips,
-    loaded: &LoadedStrips,
+/// Place content tile(s) based on visible_tiles result.
+pub(super) fn place_content_tiles(
+    visible: &VisibleTiles,
+    loaded: &LoadedTiles,
     layout: &Layout,
     state: &ViewState,
 ) -> io::Result<()> {
-    place_strips(
+    place_tiles(
         visible,
         loaded,
         layout,
@@ -174,21 +174,21 @@ pub(super) fn place_content_strips(
     )
 }
 
-/// Place sidebar strip(s) based on the same visible_strips as content.
-pub(super) fn place_sidebar_strips(
-    visible: &VisibleStrips,
-    loaded: &LoadedStrips,
-    strip_doc: &StripDocument,
+/// Place sidebar tile(s) based on the same visible_tiles as content.
+pub(super) fn place_sidebar_tiles(
+    visible: &VisibleTiles,
+    loaded: &LoadedTiles,
+    tiled_doc: &TiledDocument,
     layout: &Layout,
 ) -> io::Result<()> {
-    place_strips(
+    place_tiles(
         visible,
         loaded,
         layout,
         &PlaceParams {
             start_col: 0,
             num_cols: layout.sidebar_cols,
-            img_width: strip_doc.sidebar_width_px(),
+            img_width: tiled_doc.sidebar_width_px(),
         },
         |ids| ids.sidebar_id,
     )

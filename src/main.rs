@@ -8,7 +8,7 @@ use log::info;
 
 use mlux::convert::markdown_to_typst_with_map;
 use mlux::render::{compile_document, dump_document};
-use mlux::strip::{DEFAULT_SIDEBAR_WIDTH_PT, build_strip_document};
+use mlux::tile::{DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
 use mlux::world::{FontCache, MluxWorld};
 
 #[derive(Parser)]
@@ -45,9 +45,9 @@ enum Command {
         #[arg(long, default_value_t = 144.0)]
         ppi: f32,
 
-        /// Strip height in pt
+        /// Tile height in pt
         #[arg(long, default_value_t = 500.0)]
-        strip_height: f64,
+        tile_height: f64,
 
         /// Dump frame tree to stderr
         #[arg(long)]
@@ -60,8 +60,8 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Command::Render { input, output, width, ppi, strip_height, dump }) => {
-            cmd_render(input, cli.theme, output, width, ppi, strip_height, dump)
+        Some(Command::Render { input, output, width, ppi, tile_height, dump }) => {
+            cmd_render(input, cli.theme, output, width, ppi, tile_height, dump)
         }
         None => {
             let input = match cli.input {
@@ -92,7 +92,7 @@ fn cmd_render(
     output: PathBuf,
     width: f64,
     ppi: f32,
-    strip_height: f64,
+    tile_height: f64,
     dump: bool,
 ) -> Result<()> {
     let pipeline_start = Instant::now();
@@ -133,9 +133,9 @@ fn cmd_render(
         return Ok(());
     }
 
-    let strip_doc = build_strip_document(
+    let tiled_doc = build_tiled_document(
         &theme_text, &content_text, &markdown, &source_map,
-        width, DEFAULT_SIDEBAR_WIDTH_PT, strip_height, ppi, &font_cache,
+        width, DEFAULT_SIDEBAR_WIDTH_PT, tile_height, ppi, &font_cache,
     )?;
 
     let stem = output.file_stem().unwrap_or_default().to_string_lossy().to_string();
@@ -144,8 +144,8 @@ fn cmd_render(
     fs::create_dir_all(parent).ok();
 
     let mut files = Vec::new();
-    for i in 0..strip_doc.strip_count() {
-        let png_data = strip_doc.render_strip(i)?;
+    for i in 0..tiled_doc.tile_count() {
+        let png_data = tiled_doc.render_tile(i)?;
         let filename = format!("{}-{:03}.{}", stem, i, ext);
         let path = parent.join(&filename);
         fs::write(&path, &png_data)
@@ -158,7 +158,7 @@ fn cmd_render(
         pipeline_start.elapsed().as_secs_f64() * 1000.0
     );
 
-    eprintln!("rendered {} -> {} strip(s):", input.display(), strip_doc.strip_count());
+    eprintln!("rendered {} -> {} tile(s):", input.display(), tiled_doc.tile_count());
     for (filename, size) in &files {
         eprintln!("  {} ({} bytes)", filename, size);
     }

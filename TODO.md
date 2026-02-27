@@ -10,7 +10,7 @@
 ### Phase A: ソースマッピングの配管接続 ✓
 
 - `viewer.rs` を `markdown_to_typst_with_map()` に切り替え
-- `build_strip_document()` に `md_source`, `source_map` を渡す
+- `build_tiled_document()` に `md_source`, `source_map` を渡す
 - `extract_visual_lines_with_map()` で `SourceMappingParams` を構築
 - `visual_lines` に `md_line_range` が入ることを確認
 

@@ -1,4 +1,4 @@
-//! Application state: layout, viewport, loaded strips, redraw, prefetch.
+//! Application state: layout, viewport, loaded tiles, redraw, prefetch.
 
 use log::debug;
 use std::collections::{HashMap, HashSet};
@@ -6,7 +6,7 @@ use std::io;
 use std::sync::mpsc;
 
 use super::terminal;
-use crate::strip::{StripDocument, StripDocumentCache, VisibleStrips, VisualLine};
+use crate::tile::{TiledDocument, TiledDocumentCache, VisibleTiles, VisualLine};
 
 // ---------------------------------------------------------------------------
 // Layout / ViewState
@@ -61,23 +61,23 @@ pub(super) fn jump_to_visual_line(
 }
 
 // ---------------------------------------------------------------------------
-// Strip-aware content display
+// Tile-aware content display
 // ---------------------------------------------------------------------------
 
-/// Kitty image IDs for a content + sidebar strip pair.
-pub(super) struct StripImageIds {
+/// Kitty image IDs for a content + sidebar tile pair.
+pub(super) struct TileImageIds {
     pub content_id: u32,
     pub sidebar_id: u32,
 }
 
-/// Track which strip PNGs are loaded in the terminal, keyed by strip index.
-pub(super) struct LoadedStrips {
-    /// strip_index → Kitty image IDs (content + sidebar)
-    pub map: HashMap<usize, StripImageIds>,
+/// Track which tile PNGs are loaded in the terminal, keyed by tile index.
+pub(super) struct LoadedTiles {
+    /// tile_index → Kitty image IDs (content + sidebar)
+    pub map: HashMap<usize, TileImageIds>,
     next_id: u32,
 }
 
-impl LoadedStrips {
+impl LoadedTiles {
     pub(super) fn new() -> Self {
         Self {
             map: HashMap::new(),
@@ -85,11 +85,11 @@ impl LoadedStrips {
         }
     }
 
-    /// Ensure a strip (content + sidebar) is loaded in the terminal.
+    /// Ensure a tile (content + sidebar) is loaded in the terminal.
     pub(super) fn ensure_loaded(
         &mut self,
-        strip_doc: &StripDocument,
-        cache: &mut StripDocumentCache,
+        tiled_doc: &TiledDocument,
+        cache: &mut TiledDocumentCache,
         idx: usize,
     ) -> anyhow::Result<()> {
         if self.map.contains_key(&idx) {
@@ -100,12 +100,12 @@ impl LoadedStrips {
         let sidebar_id = self.next_id + 1;
         self.next_id += 2;
 
-        let pngs = cache.get_or_render(strip_doc, idx)?;
+        let pngs = cache.get_or_render(tiled_doc, idx)?;
         terminal::send_image(&pngs.content, content_id)?;
         terminal::send_image(&pngs.sidebar, sidebar_id)?;
-        self.map.insert(idx, StripImageIds { content_id, sidebar_id });
+        self.map.insert(idx, TileImageIds { content_id, sidebar_id });
 
-        // Evict strips far from current viewport to bound terminal memory
+        // Evict tiles far from current viewport to bound terminal memory
         let to_evict: Vec<usize> = self
             .map
             .keys()
@@ -122,7 +122,7 @@ impl LoadedStrips {
         Ok(())
     }
 
-    /// Delete all strip placements (content + sidebar, keep image data).
+    /// Delete all tile placements (content + sidebar, keep image data).
     pub(super) fn delete_placements(&self) -> io::Result<()> {
         use std::io::Write;
         let mut out = std::io::stdout();
@@ -140,28 +140,28 @@ pub(super) enum ExitReason {
     Resize { new_cols: u16, new_rows: u16 },
 }
 
-/// Full redraw: content strips + sidebar + status bar.
+/// Full redraw: content tiles + sidebar + status bar.
 ///
 /// Ordering: ensure loaded (slow) → delete placements → place new (fast).
 pub(super) fn redraw(
-    strip_doc: &StripDocument,
-    cache: &mut StripDocumentCache,
-    loaded: &mut LoadedStrips,
+    tiled_doc: &TiledDocument,
+    cache: &mut TiledDocumentCache,
+    loaded: &mut LoadedTiles,
     layout: &Layout,
     state: &ViewState,
     acc_peek: Option<u32>,
     flash: Option<&str>,
 ) -> anyhow::Result<()> {
-    let visible = strip_doc.visible_strips(state.y_offset, state.vp_h);
+    let visible = tiled_doc.visible_tiles(state.y_offset, state.vp_h);
 
-    // Phase 1: Ensure all needed strips are rendered and sent to the terminal.
+    // Phase 1: Ensure all needed tiles are rendered and sent to the terminal.
     match &visible {
-        VisibleStrips::Single { idx, .. } => {
-            loaded.ensure_loaded(strip_doc, cache, *idx)?;
+        VisibleTiles::Single { idx, .. } => {
+            loaded.ensure_loaded(tiled_doc, cache, *idx)?;
         }
-        VisibleStrips::Split { top_idx, bot_idx, .. } => {
-            loaded.ensure_loaded(strip_doc, cache, *top_idx)?;
-            loaded.ensure_loaded(strip_doc, cache, *bot_idx)?;
+        VisibleTiles::Split { top_idx, bot_idx, .. } => {
+            loaded.ensure_loaded(tiled_doc, cache, *top_idx)?;
+            loaded.ensure_loaded(tiled_doc, cache, *bot_idx)?;
         }
     }
 
@@ -169,41 +169,41 @@ pub(super) fn redraw(
     loaded.delete_placements()?;
 
     // Phase 3: Place content + sidebar + status bar
-    terminal::place_content_strips(&visible, loaded, layout, state)?;
-    terminal::place_sidebar_strips(&visible, loaded, strip_doc, layout)?;
+    terminal::place_content_tiles(&visible, loaded, layout, state)?;
+    terminal::place_sidebar_tiles(&visible, loaded, tiled_doc, layout)?;
     terminal::draw_status_bar(layout, state, acc_peek, flash)?;
     Ok(())
 }
 
-/// Request prefetch of strips adjacent to the current viewport.
+/// Request prefetch of tiles adjacent to the current viewport.
 ///
-/// Sends strip indices for 2 strips ahead and 1 behind the current position.
+/// Sends tile indices for 2 tiles ahead and 1 behind the current position.
 ///
 /// ## in_flight による二重レンダリング防止
 ///
 /// `cache` だけでは TOCTOU (Time-of-Check-to-Time-of-Use) が発生する:
-///   1. worker がストリップ N をレンダリング完了 → `res_tx.send()` で結果送信
+///   1. worker がタイル N をレンダリング完了 → `res_tx.send()` で結果送信
 ///   2. main thread の `send_prefetch()` が `cache.contains(N)` を検査 → false
 ///      (結果は mpsc チャネル内にあるが、まだ `cache.insert()` されていない)
-///   3. ストリップ N を再リクエスト → worker が同じストリップを二重レンダリング
+///   3. タイル N を再リクエスト → worker が同じタイルを二重レンダリング
 ///
-/// `in_flight` は「送信済み・未受信」のストリップ index を追跡し、この隙間を埋める:
+/// `in_flight` は「送信済み・未受信」のタイル index を追跡し、この隙間を埋める:
 ///   - `send_prefetch()`: `in_flight` に insert してからリクエスト送信
 ///   - `res_rx.try_recv()`: 結果受信時に `in_flight` から remove
 ///
 /// `in_flight` は main thread 専用。worker thread はアクセスしない。
 pub(super) fn send_prefetch(
     tx: &mpsc::Sender<usize>,
-    doc: &StripDocument,
-    cache: &StripDocumentCache,
+    doc: &TiledDocument,
+    cache: &TiledDocumentCache,
     in_flight: &mut HashSet<usize>,
     y_offset: u32,
 ) {
-    let current = (y_offset / doc.strip_height_px()) as usize;
+    let current = (y_offset / doc.tile_height_px()) as usize;
     // Forward 2 + backward 1
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
-        if idx < doc.strip_count() && !cache.contains(idx) && !in_flight.contains(&idx) {
-            debug!("prefetch: requesting strip {idx} (current={current})");
+        if idx < doc.tile_count() && !cache.contains(idx) && !in_flight.contains(&idx) {
+            debug!("prefetch: requesting tile {idx} (current={current})");
             let _ = tx.send(idx);
             in_flight.insert(idx);
         }

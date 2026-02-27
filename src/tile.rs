@@ -110,7 +110,7 @@ pub fn extract_visual_lines_with_map(
         .collect();
 
     info!(
-        "strip: extract_visual_lines completed in {:.1}ms ({} lines)",
+        "tile: extract_visual_lines completed in {:.1}ms ({} lines)",
         start.elapsed().as_secs_f64() * 1000.0,
         lines.len()
     );
@@ -349,28 +349,28 @@ pub fn generate_sidebar_typst(
 }
 
 // ---------------------------------------------------------------------------
-// Shared build pipeline: Markdown → Typst → PagedDocument → StripDocument
+// Shared build pipeline: Markdown → Typst → PagedDocument → TiledDocument
 // ---------------------------------------------------------------------------
 
 /// Default sidebar width in typst points (used by cmd_render).
 pub const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 
-/// Build a StripDocument from converted Typst content.
+/// Build a TiledDocument from converted Typst content.
 ///
 /// Shared pipeline used by both `cmd_render` and the terminal viewer.
 /// Compiles content, extracts visual lines with source mapping,
-/// generates + compiles sidebar, and assembles into a StripDocument.
-pub fn build_strip_document(
+/// generates + compiles sidebar, and assembles into a TiledDocument.
+pub fn build_tiled_document(
     theme_text: &str,
     content_text: &str,
     md_source: &str,
     source_map: &SourceMap,
     width_pt: f64,
     sidebar_width_pt: f64,
-    strip_height_pt: f64,
+    tile_height_pt: f64,
     ppi: f32,
     fonts: &crate::world::FontCache,
-) -> Result<StripDocument> {
+) -> Result<TiledDocument> {
     let start = Instant::now();
 
     // 1. Compile content document
@@ -396,17 +396,17 @@ pub fn build_strip_document(
     let sidebar_world = crate::world::MluxWorld::new_raw(&sidebar_source, fonts);
     let sidebar_doc = crate::render::compile_document(&sidebar_world)?;
 
-    // 4. Build StripDocument with both content + sidebar
-    let strip_doc = StripDocument::new(&document, &sidebar_doc, visual_lines, strip_height_pt, ppi)?;
+    // 4. Build TiledDocument with both content + sidebar
+    let tiled_doc = TiledDocument::new(&document, &sidebar_doc, visual_lines, tile_height_pt, ppi)?;
     info!(
-        "build_strip_document completed in {:.1}ms",
+        "build_tiled_document completed in {:.1}ms",
         start.elapsed().as_secs_f64() * 1000.0
     );
-    Ok(strip_doc)
+    Ok(tiled_doc)
 }
 
 // ---------------------------------------------------------------------------
-// Frame splitting — split a tall frame into vertical strips
+// Frame splitting — split a tall frame into vertical tiles
 // ---------------------------------------------------------------------------
 
 /// Estimate the bounding height of a FrameItem in pt.
@@ -448,26 +448,26 @@ fn item_bounding_height(item: &FrameItem) -> f64 {
     }
 }
 
-/// Split a compiled Frame into vertical strips of `strip_height_pt` each.
+/// Split a compiled Frame into vertical tiles of `tile_height_pt` each.
 ///
-/// Items spanning a strip boundary are cloned into both strips.
+/// Items spanning a tile boundary are cloned into both tiles.
 /// tiny-skia clips drawing outside the canvas, so the visual result is correct.
-pub fn split_frame(frame: &Frame, strip_height_pt: f64) -> Vec<Frame> {
+pub fn split_frame(frame: &Frame, tile_height_pt: f64) -> Vec<Frame> {
     let start = Instant::now();
     let total_height = frame.size().y.to_pt();
-    let strip_count = (total_height / strip_height_pt).ceil().max(1.0) as usize;
+    let tile_count = (total_height / tile_height_pt).ceil().max(1.0) as usize;
     let orig_width = frame.size().x;
 
-    let mut strips = Vec::with_capacity(strip_count);
+    let mut tiles = Vec::with_capacity(tile_count);
 
-    for i in 0..strip_count {
-        let y_start = i as f64 * strip_height_pt;
-        let y_end = ((i + 1) as f64 * strip_height_pt).min(total_height);
-        let strip_h = y_end - y_start;
+    for i in 0..tile_count {
+        let y_start = i as f64 * tile_height_pt;
+        let y_end = ((i + 1) as f64 * tile_height_pt).min(total_height);
+        let tile_h = y_end - y_start;
 
         let mut sub = Frame::hard(Axes {
             x: orig_width,
-            y: Abs::pt(strip_h),
+            y: Abs::pt(tile_h),
         });
 
         let mut item_count = 0u32;
@@ -484,7 +484,7 @@ pub fn split_frame(frame: &Frame, strip_height_pt: f64) -> Vec<Frame> {
                 sub.push(new_pos, item.clone());
                 item_count += 1;
 
-                // Check if item spans beyond this strip
+                // Check if item spans beyond this tile
                 if item_y < y_start || item_bottom > y_end {
                     spanning_count += 1;
                 }
@@ -492,35 +492,35 @@ pub fn split_frame(frame: &Frame, strip_height_pt: f64) -> Vec<Frame> {
         }
 
         debug!(
-            "strip {}: {} items, {} boundary-spanning",
+            "tile {}: {} items, {} boundary-spanning",
             i, item_count, spanning_count
         );
-        strips.push(sub);
+        tiles.push(sub);
     }
 
     info!(
-        "strip: split_frame completed in {:.1}ms ({} strips, height={}pt)",
+        "tile: split_frame completed in {:.1}ms ({} tiles, height={}pt)",
         start.elapsed().as_secs_f64() * 1000.0,
-        strip_count,
-        strip_height_pt
+        tile_count,
+        tile_height_pt
     );
-    strips
+    tiles
 }
 
 // ---------------------------------------------------------------------------
-// StripDocument — lazy strip-based rendering
+// TiledDocument — lazy tile-based rendering
 // ---------------------------------------------------------------------------
 
-/// Which strips are visible for a given scroll position.
+/// Which tiles are visible for a given scroll position.
 #[derive(Debug)]
-pub enum VisibleStrips {
-    /// Viewport fits entirely within one strip.
+pub enum VisibleTiles {
+    /// Viewport fits entirely within one tile.
     Single {
         idx: usize,
         src_y: u32,
         src_h: u32,
     },
-    /// Viewport straddles two strips.
+    /// Viewport straddles two tiles.
     Split {
         top_idx: usize,
         top_src_y: u32,
@@ -530,36 +530,36 @@ pub enum VisibleStrips {
     },
 }
 
-/// A document split into renderable strips for lazy, bounded-memory rendering.
+/// A document split into renderable tiles for lazy, bounded-memory rendering.
 ///
 /// All methods take `&self` — rendering is pure (no internal caching).
-/// Use [`StripDocumentCache`] separately for caching rendered PNGs.
-pub struct StripDocument {
-    strips: Vec<Frame>,
-    sidebar_strips: Vec<Frame>,
+/// Use [`TiledDocumentCache`] separately for caching rendered PNGs.
+pub struct TiledDocument {
+    tiles: Vec<Frame>,
+    sidebar_tiles: Vec<Frame>,
     sidebar_fill: Smart<Option<Paint>>,
     page_fill: Smart<Option<Paint>>,
     ppi: f32,
     width_px: u32,
     sidebar_width_px: u32,
-    strip_height_px: u32,
+    tile_height_px: u32,
     total_height_px: u32,
     page_height_pt: f64,
     pub visual_lines: Vec<VisualLine>,
 }
 
-impl StripDocument {
-    /// Build a StripDocument from a compiled content + sidebar PagedDocument.
+impl TiledDocument {
+    /// Build a TiledDocument from a compiled content + sidebar PagedDocument.
     ///
     /// - `sidebar_doc`: compiled sidebar document (same page height as content)
     /// - `visual_lines`: pre-extracted visual line positions (avoids redundant extraction)
-    /// - `strip_height_pt`: height of each strip in typst points
+    /// - `tile_height_pt`: height of each tile in typst points
     /// - `ppi`: rendering resolution
     pub fn new(
         document: &PagedDocument,
         sidebar_doc: &PagedDocument,
         visual_lines: Vec<VisualLine>,
-        strip_height_pt: f64,
+        tile_height_pt: f64,
         ppi: f32,
     ) -> Result<Self> {
         if document.pages.is_empty() {
@@ -575,45 +575,45 @@ impl StripDocument {
             page.frame.items().count()
         );
 
-        let strips = split_frame(&page.frame, strip_height_pt);
+        let tiles = split_frame(&page.frame, tile_height_pt);
 
-        // Split sidebar with the same strip boundaries
+        // Split sidebar with the same tile boundaries
         if sidebar_doc.pages.is_empty() {
             bail!("[BUG] sidebar document has no pages");
         }
         let sidebar_page = &sidebar_doc.pages[0];
-        let sidebar_strips = split_frame(&sidebar_page.frame, strip_height_pt);
+        let sidebar_tiles = split_frame(&sidebar_page.frame, tile_height_pt);
         let pixel_per_pt = ppi as f64 / 72.0;
         let sidebar_width_px = (sidebar_page.frame.size().x.to_pt() * pixel_per_pt).ceil() as u32;
         info!(
-            "sidebar: {} strips, {}px wide",
-            sidebar_strips.len(),
+            "sidebar: {} tiles, {}px wide",
+            sidebar_tiles.len(),
             sidebar_width_px
         );
 
         let width_px = (page_size.x.to_pt() * pixel_per_pt).ceil() as u32;
-        let strip_height_px = (strip_height_pt * pixel_per_pt).ceil() as u32;
+        let tile_height_px = (tile_height_pt * pixel_per_pt).ceil() as u32;
         let total_height_px = (page_size.y.to_pt() * pixel_per_pt).ceil() as u32;
         let page_height_pt = page_size.y.to_pt();
 
         Ok(Self {
-            strips,
-            sidebar_strips,
+            tiles,
+            sidebar_tiles,
             sidebar_fill: sidebar_page.fill.clone(),
             page_fill: page.fill.clone(),
             ppi,
             width_px,
             sidebar_width_px,
-            strip_height_px,
+            tile_height_px,
             total_height_px,
             page_height_pt,
             visual_lines,
         })
     }
 
-    /// Number of strips.
-    pub fn strip_count(&self) -> usize {
-        self.strips.len()
+    /// Number of tiles.
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
     }
 
     /// Document width in pixels.
@@ -626,9 +626,9 @@ impl StripDocument {
         self.sidebar_width_px
     }
 
-    /// Height of one standard strip in pixels.
-    pub fn strip_height_px(&self) -> u32 {
-        self.strip_height_px
+    /// Height of one standard tile in pixels.
+    pub fn tile_height_px(&self) -> u32 {
+        self.tile_height_px
     }
 
     /// Total document height in pixels.
@@ -641,70 +641,70 @@ impl StripDocument {
         self.page_height_pt
     }
 
-    /// Actual pixel height of a specific strip (last strip may be shorter).
-    fn strip_actual_height_px(&self, idx: usize) -> u32 {
+    /// Actual pixel height of a specific tile (last tile may be shorter).
+    fn tile_actual_height_px(&self, idx: usize) -> u32 {
         let pixel_per_pt = self.ppi as f64 / 72.0;
-        (self.strips[idx].size().y.to_pt() * pixel_per_pt).ceil() as u32
+        (self.tiles[idx].size().y.to_pt() * pixel_per_pt).ceil() as u32
     }
 
-    /// Render a single content strip to PNG bytes.
+    /// Render a single content tile to PNG bytes.
     ///
     /// This is a pure function -- no internal caching.
     /// Thread-safe: `Frame.items` uses `Arc`, `typst_render::render` is stateless.
-    pub fn render_strip(&self, idx: usize) -> Result<Vec<u8>> {
-        self.render_frame(idx, &self.strips, &self.page_fill, "content")
+    pub fn render_tile(&self, idx: usize) -> Result<Vec<u8>> {
+        self.render_frame(idx, &self.tiles, &self.page_fill, "content")
     }
 
-    /// Render a single sidebar strip to PNG bytes.
-    pub fn render_sidebar_strip(&self, idx: usize) -> Result<Vec<u8>> {
-        self.render_frame(idx, &self.sidebar_strips, &self.sidebar_fill, "sidebar")
+    /// Render a single sidebar tile to PNG bytes.
+    pub fn render_sidebar_tile(&self, idx: usize) -> Result<Vec<u8>> {
+        self.render_frame(idx, &self.sidebar_tiles, &self.sidebar_fill, "sidebar")
     }
 
-    /// Render a frame from `strips` at `idx` to PNG bytes.
+    /// Render a frame from `tiles` at `idx` to PNG bytes.
     fn render_frame(
         &self,
         idx: usize,
-        strips: &[Frame],
+        tiles: &[Frame],
         fill: &Smart<Option<Paint>>,
         label: &str,
     ) -> Result<Vec<u8>> {
-        assert!(idx < strips.len(), "{label} strip index out of bounds");
-        trace!("rendering {label} strip {idx}");
-        crate::render::render_frame_to_png(&strips[idx], fill, self.ppi)
+        assert!(idx < tiles.len(), "{label} tile index out of bounds");
+        trace!("rendering {label} tile {idx}");
+        crate::render::render_frame_to_png(&tiles[idx], fill, self.ppi)
     }
 
-    /// Determine which strip(s) are visible at a given scroll offset.
-    pub fn visible_strips(&self, global_y: u32, vp_h: u32) -> VisibleStrips {
-        let top_strip = (global_y / self.strip_height_px) as usize;
-        let top_strip = top_strip.min(self.strips.len().saturating_sub(1));
-        let src_y_in_strip = global_y - (top_strip as u32 * self.strip_height_px);
-        let top_actual_h = self.strip_actual_height_px(top_strip);
-        let remaining_in_top = top_actual_h.saturating_sub(src_y_in_strip);
+    /// Determine which tile(s) are visible at a given scroll offset.
+    pub fn visible_tiles(&self, global_y: u32, vp_h: u32) -> VisibleTiles {
+        let top_tile = (global_y / self.tile_height_px) as usize;
+        let top_tile = top_tile.min(self.tiles.len().saturating_sub(1));
+        let src_y_in_tile = global_y - (top_tile as u32 * self.tile_height_px);
+        let top_actual_h = self.tile_actual_height_px(top_tile);
+        let remaining_in_top = top_actual_h.saturating_sub(src_y_in_tile);
 
-        if remaining_in_top >= vp_h || top_strip + 1 >= self.strips.len() {
-            // Viewport fits in one strip (or no more strips)
+        if remaining_in_top >= vp_h || top_tile + 1 >= self.tiles.len() {
+            // Viewport fits in one tile (or no more tiles)
             let src_h = vp_h.min(remaining_in_top);
             debug!(
-                "display: single strip {}, src_y={}, src_h={}, vp_h={}",
-                top_strip, src_y_in_strip, src_h, vp_h
+                "display: single tile {}, src_y={}, src_h={}, vp_h={}",
+                top_tile, src_y_in_tile, src_h, vp_h
             );
-            VisibleStrips::Single {
-                idx: top_strip,
-                src_y: src_y_in_strip,
+            VisibleTiles::Single {
+                idx: top_tile,
+                src_y: src_y_in_tile,
                 src_h,
             }
         } else {
-            // Viewport straddles two strips
+            // Viewport straddles two tiles
             let top_src_h = remaining_in_top;
-            let bot_idx = top_strip + 1;
-            let bot_src_h = (vp_h - top_src_h).min(self.strip_actual_height_px(bot_idx));
+            let bot_idx = top_tile + 1;
+            let bot_src_h = (vp_h - top_src_h).min(self.tile_actual_height_px(bot_idx));
             debug!(
-                "display: split strips [{}, {}], top_src_y={}, top_h={}, bot_h={}, vp_h={}",
-                top_strip, bot_idx, src_y_in_strip, top_src_h, bot_src_h, vp_h
+                "display: split tiles [{}, {}], top_src_y={}, top_h={}, bot_h={}, vp_h={}",
+                top_tile, bot_idx, src_y_in_tile, top_src_h, bot_src_h, vp_h
             );
-            VisibleStrips::Split {
-                top_idx: top_strip,
-                top_src_y: src_y_in_strip,
+            VisibleTiles::Split {
+                top_idx: top_tile,
+                top_src_y: src_y_in_tile,
                 top_src_h,
                 bot_idx,
                 bot_src_h,
@@ -736,30 +736,30 @@ impl StripDocument {
 }
 
 // ---------------------------------------------------------------------------
-// StripDocumentCache — external cache for rendered strip PNGs
+// TiledDocumentCache — external cache for rendered tile PNGs
 // ---------------------------------------------------------------------------
 
-/// A pair of rendered PNGs: content + sidebar for the same strip index.
-pub struct StripPngs {
+/// A pair of rendered PNGs: content + sidebar for the same tile index.
+pub struct TilePngs {
     pub content: Vec<u8>,
     pub sidebar: Vec<u8>,
 }
 
-/// Cache for rendered strip PNGs, separated from [`StripDocument`] to allow
-/// concurrent `&StripDocument` access (e.g., from a prefetch worker thread)
-/// while the main thread owns `&mut StripDocumentCache`.
-pub struct StripDocumentCache {
-    data: HashMap<usize, StripPngs>,
+/// Cache for rendered tile PNGs, separated from [`TiledDocument`] to allow
+/// concurrent `&TiledDocument` access (e.g., from a prefetch worker thread)
+/// while the main thread owns `&mut TiledDocumentCache`.
+pub struct TiledDocumentCache {
+    data: HashMap<usize, TilePngs>,
 }
 
-impl StripDocumentCache {
+impl TiledDocumentCache {
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
         }
     }
 
-    pub fn get(&self, idx: usize) -> Option<&StripPngs> {
+    pub fn get(&self, idx: usize) -> Option<&TilePngs> {
         self.data.get(&idx)
     }
 
@@ -767,16 +767,16 @@ impl StripDocumentCache {
         self.data.contains_key(&idx)
     }
 
-    pub fn insert(&mut self, idx: usize, pngs: StripPngs) {
+    pub fn insert(&mut self, idx: usize, pngs: TilePngs) {
         self.data.insert(idx, pngs);
     }
 
     /// Get cached PNGs or render synchronously and cache the result.
-    pub fn get_or_render(&mut self, doc: &StripDocument, idx: usize) -> Result<&StripPngs> {
+    pub fn get_or_render(&mut self, doc: &TiledDocument, idx: usize) -> Result<&TilePngs> {
         if !self.data.contains_key(&idx) {
-            let content = doc.render_strip(idx)?;
-            let sidebar = doc.render_sidebar_strip(idx)?;
-            self.data.insert(idx, StripPngs { content, sidebar });
+            let content = doc.render_tile(idx)?;
+            let sidebar = doc.render_sidebar_tile(idx)?;
+            self.data.insert(idx, TilePngs { content, sidebar });
         }
         Ok(self.data.get(&idx).unwrap())
     }
@@ -791,7 +791,7 @@ impl StripDocumentCache {
             .collect();
         for k in to_evict {
             self.data.remove(&k);
-            trace!("cache evict strip {}", k);
+            trace!("cache evict tile {}", k);
         }
     }
 

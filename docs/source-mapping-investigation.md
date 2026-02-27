@@ -662,7 +662,7 @@ Typst 出力は `End(Table)` 後に書き込まれる。
 - `MluxWorld::source()` の戻り値 `Source` へのアクセサ追加
   （Span 解決に `Source::range(span)` が必要）
 
-### strip.rs
+### tile.rs
 
 - `VisualLine` に `md_line_range: Option<(usize, usize)>` フィールド追加
 - `extract_visual_lines()` のシグネチャ拡張:
@@ -671,6 +671,6 @@ Typst 出力は `End(Table)` 後に書き込まれる。
 
 ### viewer.rs
 
-- `build_strip_document()` で SourceMap を受け渡し
+- `build_tiled_document()` で SourceMap を受け渡し
 - ヤンク時に `md_line_range` を使って MD ソースから行を切り出し
 - オリジナル Markdown ソーステキストをビューアスコープに保持

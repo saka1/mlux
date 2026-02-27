@@ -3,7 +3,7 @@ use std::time::Instant;
 use log::info;
 use mlux::convert::markdown_to_typst;
 use mlux::render::{compile_document, render_frame_to_png};
-use mlux::strip::split_frame;
+use mlux::tile::split_frame;
 use mlux::world::{FontCache, MluxWorld};
 
 static THEME: &str = include_str!("../../themes/catppuccin.typ");
@@ -59,9 +59,9 @@ fn main() {
         }
 
         let page = &document.pages[0];
-        let strips = split_frame(&page.frame, 500.0);
-        for strip in &strips {
-            if let Err(e) = render_frame_to_png(strip, &page.fill, 144.0) {
+        let tiles = split_frame(&page.frame, 500.0);
+        for tile in &tiles {
+            if let Err(e) = render_frame_to_png(tile, &page.fill, 144.0) {
                 eprintln!("Render error: {e}");
                 std::process::exit(1);
             }

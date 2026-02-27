@@ -93,7 +93,7 @@ pub fn compile_document(world: &MluxWorld<'_>) -> Result<PagedDocument> {
     }
 }
 
-/// Render a single Frame to PNG bytes (used for strip-based rendering).
+/// Render a single Frame to PNG bytes (used for tile-based rendering).
 ///
 /// Wraps the frame in a Page, renders at the given PPI, and encodes to PNG.
 pub fn render_frame_to_png(frame: &Frame, fill: &Smart<Option<Paint>>, ppi: f32) -> Result<Vec<u8>> {

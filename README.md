@@ -13,7 +13,7 @@ that displays rendered documents inline using the Kitty Graphics Protocol.
 - **CJK support** -- Japanese text renders correctly out of the box (IPAGothic / Noto Sans CJK JP).
 - **Themeable** -- Themes are plain Typst files. Ships with a Catppuccin Mocha dark theme.
 - **Terminal viewer** -- View rendered Markdown directly in your terminal with
-  pixel-precise line numbers, vim-style scrolling, and strip-based lazy rendering
+  pixel-precise line numbers, vim-style scrolling, and tile-based lazy rendering
   for constant memory usage regardless of document size.
   Requires a terminal that supports the Kitty Graphics Protocol (e.g. Ghostty, Kitty).
 
