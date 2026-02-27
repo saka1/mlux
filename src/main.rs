@@ -68,8 +68,7 @@ fn main() {
     let cli = Cli::parse();
 
     if let Some(log_path) = &cli.log {
-        let file = std::fs::File::create(log_path)
-            .expect("failed to open log file");
+        let file = std::fs::File::create(log_path).expect("failed to open log file");
         env_logger::Builder::from_default_env()
             .target(env_logger::Target::Pipe(Box::new(file)))
             .init();
@@ -89,9 +88,12 @@ fn main() {
 
     // Extract render-subcommand CLI overrides (width/ppi/tile_height)
     let (render_width, render_ppi, render_tile_height) = match &cli.command {
-        Some(Command::Render { width, ppi, tile_height, .. }) => {
-            (*width, *ppi, *tile_height)
-        }
+        Some(Command::Render {
+            width,
+            ppi,
+            tile_height,
+            ..
+        }) => (*width, *ppi, *tile_height),
         None => (None, None, None),
     };
 
@@ -103,19 +105,17 @@ fn main() {
         tile_height: render_tile_height,
     };
 
-    cfg.merge_cli(
-        cli.theme,
-        render_width,
-        render_ppi,
-        render_tile_height,
-    );
+    cfg.merge_cli(cli.theme, render_width, render_ppi, render_tile_height);
 
     let config = cfg.resolve();
 
     let result = match cli.command {
-        Some(Command::Render { input, output, dump, .. }) => {
-            cmd_render(input, &config, output, dump)
-        }
+        Some(Command::Render {
+            input,
+            output,
+            dump,
+            ..
+        }) => cmd_render(input, &config, output, dump),
         None => {
             let input = match cli.input {
                 Some(p) => p,
@@ -139,12 +139,7 @@ fn main() {
     }
 }
 
-fn cmd_render(
-    input: PathBuf,
-    config: &config::Config,
-    output: PathBuf,
-    dump: bool,
-) -> Result<()> {
+fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bool) -> Result<()> {
     let pipeline_start = Instant::now();
 
     let width = config.width;
@@ -175,7 +170,10 @@ fn cmd_render(
         // Dump mode: build world directly for source inspection
         let world = MluxWorld::new(&theme_text, &content_text, width, &font_cache);
         let source_text = world.main_source().text();
-        eprintln!("=== Generated main.typ ({} lines) ===", source_text.lines().count());
+        eprintln!(
+            "=== Generated main.typ ({} lines) ===",
+            source_text.lines().count()
+        );
         for (i, line) in source_text.lines().enumerate() {
             eprintln!("{:>4} | {}", i + 1, line);
         }
@@ -200,8 +198,16 @@ fn cmd_render(
         fonts: &font_cache,
     })?;
 
-    let stem = output.file_stem().unwrap_or_default().to_string_lossy().to_string();
-    let ext = output.extension().unwrap_or_default().to_string_lossy().to_string();
+    let stem = output
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let ext = output
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(parent).ok();
 
@@ -220,7 +226,11 @@ fn cmd_render(
         pipeline_start.elapsed().as_secs_f64() * 1000.0
     );
 
-    eprintln!("rendered {} -> {} tile(s):", input.display(), tiled_doc.tile_count());
+    eprintln!(
+        "rendered {} -> {} tile(s):",
+        input.display(),
+        tiled_doc.tile_count()
+    );
     for (filename, size) in &files {
         eprintln!("  {} ({} bytes)", filename, size);
     }

@@ -87,7 +87,9 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         }
 
         Action::EnterCommand => {
-            let cs = CommandState { input: String::new() };
+            let cs = CommandState {
+                input: String::new(),
+            };
             vec![Effect::SetMode(ViewerMode::Command(cs))]
         }
 

@@ -2,8 +2,7 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::{
-    ExecutableCommand, QueueableCommand,
-    cursor,
+    ExecutableCommand, QueueableCommand, cursor,
     style::{self, Stylize},
     terminal,
 };
@@ -67,7 +66,10 @@ pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
         let is_last = i == chunks.len() - 1;
         let m = if is_last { 0 } else { 1 };
         if i == 0 {
-            write!(out, "\x1b_Ga=t,f=100,i={image_id},t=d,q=2,m={m};{chunk}\x1b\\")?;
+            write!(
+                out,
+                "\x1b_Ga=t,f=100,i={image_id},t=d,q=2,m={m};{chunk}\x1b\\"
+            )?;
         } else {
             write!(out, "\x1b_Gm={m},q=2;{chunk}\x1b\\")?;
         }
@@ -217,11 +219,15 @@ pub(super) fn draw_status_bar(
     let total_cols = layout.sidebar_cols + layout.image_cols;
 
     let middle = if let Some(msg) = flash {
-        format!(" {} | {} | y={}/{} px  {}%",
-            state.filename, msg, state.y_offset, state.img_h, pct)
+        format!(
+            " {} | {} | y={}/{} px  {}%",
+            state.filename, msg, state.y_offset, state.img_h, pct
+        )
     } else if let Some(n) = acc_peek {
-        format!(" {} | :{n}_ | y={}/{} px  {}%",
-            state.filename, state.y_offset, state.img_h, pct)
+        format!(
+            " {} | :{n}_ | y={}/{} px  {}%",
+            state.filename, state.y_offset, state.img_h, pct
+        )
     } else {
         format!(
             " {} | y={}/{} px  {}%  [/:search n/N:match Ng:goto j/k d/u ::cmd q:quit]",

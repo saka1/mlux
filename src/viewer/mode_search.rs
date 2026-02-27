@@ -1,8 +1,7 @@
 //! Search functionality: grep Markdown source and display results as a picker.
 
 use crossterm::{
-    QueueableCommand,
-    cursor,
+    QueueableCommand, cursor,
     style::{self, Stylize},
     terminal::{Clear, ClearType},
 };
@@ -82,7 +81,9 @@ impl LastSearch {
 
     /// Get the visual_line_idx of the current match.
     pub(super) fn current_visual_line_idx(&self) -> Option<usize> {
-        self.matches.get(self.current_idx).map(|m| m.visual_line_idx)
+        self.matches
+            .get(self.current_idx)
+            .map(|m| m.visual_line_idx)
     }
 }
 
@@ -155,7 +156,9 @@ pub(super) fn grep_markdown(
 
 /// Find the byte position of the first occurrence of `needle` in `haystack`.
 fn find_match_pos(haystack: &str, needle: &str) -> Option<(usize, usize)> {
-    haystack.find(needle).map(|start| (start, start + needle.len()))
+    haystack
+        .find(needle)
+        .map(|start| (start, start + needle.len()))
 }
 
 /// Case-insensitive match position finder using char-level comparison.
@@ -266,7 +269,11 @@ pub(super) fn draw_search_screen(
             write!(out, "{}", highlight.on_dark_blue().yellow().bold())?;
             // Pad remaining
             let remaining = total_cols.saturating_sub(prefix_len + context.len());
-            write!(out, "{}", format!("{after}{:remaining$}", "").on_dark_blue().white())?;
+            write!(
+                out,
+                "{}",
+                format!("{after}{:remaining$}", "").on_dark_blue().white()
+            )?;
         } else {
             // Normal line: highlight match in reverse
             write!(out, "{}", line_prefix.dark_grey())?;
@@ -303,7 +310,13 @@ pub(super) fn handle(
             ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
             ss.selected = 0;
             ss.scroll_offset = 0;
-            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            draw_search_screen(
+                layout,
+                &ss.query,
+                &ss.matches,
+                ss.selected,
+                ss.scroll_offset,
+            )?;
             Ok(vec![])
         }
         SearchAction::Backspace => {
@@ -311,7 +324,13 @@ pub(super) fn handle(
             ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
             ss.selected = 0;
             ss.scroll_offset = 0;
-            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            draw_search_screen(
+                layout,
+                &ss.query,
+                &ss.matches,
+                ss.selected,
+                ss.scroll_offset,
+            )?;
             Ok(vec![])
         }
         SearchAction::SelectNext => {
@@ -322,7 +341,13 @@ pub(super) fn handle(
                     ss.scroll_offset = ss.selected - visible_count + 1;
                 }
             }
-            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            draw_search_screen(
+                layout,
+                &ss.query,
+                &ss.matches,
+                ss.selected,
+                ss.scroll_offset,
+            )?;
             Ok(vec![])
         }
         SearchAction::SelectPrev => {
@@ -332,15 +357,18 @@ pub(super) fn handle(
                     ss.scroll_offset = ss.selected;
                 }
             }
-            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            draw_search_screen(
+                layout,
+                &ss.query,
+                &ss.matches,
+                ss.selected,
+                ss.scroll_offset,
+            )?;
             Ok(vec![])
         }
         SearchAction::Confirm => {
             if ss.matches.is_empty() {
-                return Ok(vec![
-                    Effect::SetMode(ViewerMode::Normal),
-                    Effect::MarkDirty,
-                ]);
+                return Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]);
             }
             let vl_idx = ss.matches[ss.selected].visual_line_idx;
             let last = LastSearch::from_search_state(ss);
@@ -354,8 +382,6 @@ pub(super) fn handle(
                 Effect::SetMode(ViewerMode::Normal),
             ])
         }
-        SearchAction::Cancel => {
-            Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty])
-        }
+        SearchAction::Cancel => Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]),
     }
 }

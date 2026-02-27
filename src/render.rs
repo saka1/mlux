@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use log::info;
-use typst::diag::{SourceDiagnostic, Severity, Tracepoint};
+use typst::diag::{Severity, SourceDiagnostic, Tracepoint};
 use typst::foundations::Smart;
 use typst::layout::{Frame, FrameItem, Page, PagedDocument, Point};
 use typst::visualize::Paint;
@@ -21,14 +21,13 @@ pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld<'_>) -> Stri
     };
 
     // Try to resolve source location and source line
-    let location = diag.span.id()
-        .and_then(|id| {
-            let source = world.source(id).ok()?;
-            let range = world.range(diag.span)?;
-            let (line, col) = source.lines().byte_to_line_column(range.start)?;
-            let source_line = source.text().lines().nth(line).map(String::from);
-            Some((line + 1, col + 1, source_line)) // 0-indexed → 1-indexed
-        });
+    let location = diag.span.id().and_then(|id| {
+        let source = world.source(id).ok()?;
+        let range = world.range(diag.span)?;
+        let (line, col) = source.lines().byte_to_line_column(range.start)?;
+        let source_line = source.text().lines().nth(line).map(String::from);
+        Some((line + 1, col + 1, source_line)) // 0-indexed → 1-indexed
+    });
 
     let _ = writeln!(out, "{level}: {}", diag.message);
     if let Some((line, col, source_line)) = &location {
@@ -76,7 +75,10 @@ pub fn compile_document(world: &MluxWorld<'_>) -> Result<PagedDocument> {
 
     match warned.output {
         Ok(doc) => {
-            info!("render: typst::compile completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
+            info!(
+                "render: typst::compile completed in {:.1}ms",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
             Ok(doc)
         }
         Err(errors) => {
@@ -96,7 +98,11 @@ pub fn compile_document(world: &MluxWorld<'_>) -> Result<PagedDocument> {
 /// Render a single Frame to PNG bytes (used for tile-based rendering).
 ///
 /// Wraps the frame in a Page, renders at the given PPI, and encodes to PNG.
-pub fn render_frame_to_png(frame: &Frame, fill: &Smart<Option<Paint>>, ppi: f32) -> Result<Vec<u8>> {
+pub fn render_frame_to_png(
+    frame: &Frame,
+    fill: &Smart<Option<Paint>>,
+    ppi: f32,
+) -> Result<Vec<u8>> {
     let start = Instant::now();
     let page = Page {
         frame: frame.clone(),

@@ -76,14 +76,13 @@ pub(super) enum Action {
 ///
 /// Returns `None` for unknown keys (caller should reset accumulator).
 pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option<Action> {
-    let KeyEvent { code, modifiers, .. } = key;
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
 
     match (code, modifiers) {
         // 終了 (always immediate)
-        (KeyCode::Char('q'), _)
-        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            Some(Action::Quit)
-        }
+        (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(Action::Quit),
 
         // Esc: cancel pending input
         (KeyCode::Esc, _) => {
@@ -119,35 +118,27 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             Some(Action::HalfPageUp(count))
         }
         // 先頭 / ジャンプ
-        (KeyCode::Char('g'), _) => {
-            match acc.take() {
-                None => Some(Action::JumpToTop),
-                Some(n) => Some(Action::JumpToLine(n)),
-            }
-        }
+        (KeyCode::Char('g'), _) => match acc.take() {
+            None => Some(Action::JumpToTop),
+            Some(n) => Some(Action::JumpToLine(n)),
+        },
         // 末尾 / ジャンプ
-        (KeyCode::Char('G'), _) => {
-            match acc.take() {
-                None => Some(Action::JumpToBottom),
-                Some(n) => Some(Action::JumpToLine(n)),
-            }
-        }
+        (KeyCode::Char('G'), _) => match acc.take() {
+            None => Some(Action::JumpToBottom),
+            Some(n) => Some(Action::JumpToLine(n)),
+        },
 
         // 精密ヤンク (y)
-        (KeyCode::Char('y'), _) => {
-            match acc.take() {
-                None => Some(Action::YankExactPrompt),
-                Some(n) => Some(Action::YankExact(n)),
-            }
-        }
+        (KeyCode::Char('y'), _) => match acc.take() {
+            None => Some(Action::YankExactPrompt),
+            Some(n) => Some(Action::YankExact(n)),
+        },
 
         // ブロックヤンク (Y)
-        (KeyCode::Char('Y'), _) => {
-            match acc.take() {
-                None => Some(Action::YankBlockPrompt),
-                Some(n) => Some(Action::YankBlock(n)),
-            }
-        }
+        (KeyCode::Char('Y'), _) => match acc.take() {
+            None => Some(Action::YankBlockPrompt),
+            Some(n) => Some(Action::YankBlock(n)),
+        },
 
         // 検索
         (KeyCode::Char('/'), _) => {
@@ -194,7 +185,9 @@ pub(super) enum CommandAction {
 
 /// Map a key event to a command-mode action.
 pub(super) fn map_command_key(key: KeyEvent) -> Option<CommandAction> {
-    let KeyEvent { code, modifiers, .. } = key;
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
 
     match (code, modifiers) {
         (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -209,7 +202,9 @@ pub(super) fn map_command_key(key: KeyEvent) -> Option<CommandAction> {
 
 /// Map a key event to a search-mode action.
 pub(super) fn map_search_key(key: KeyEvent) -> Option<SearchAction> {
-    let KeyEvent { code, modifiers, .. } = key;
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
 
     match (code, modifiers) {
         (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {

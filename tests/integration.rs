@@ -2,7 +2,9 @@ use std::fs;
 
 use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
 use mlux::render::{compile_document, render_frame_to_png};
-use mlux::tile::{SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines};
+use mlux::tile::{
+    SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
+};
 use mlux::world::{FontCache, MluxWorld};
 
 fn load_theme() -> String {
@@ -23,7 +25,11 @@ fn test_paragraph_ja_renders() {
         .expect("rendering should succeed");
 
     // Check PNG magic bytes
-    assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n", "output should be valid PNG");
+    assert_eq!(
+        &png_data[..8],
+        b"\x89PNG\r\n\x1a\n",
+        "output should be valid PNG"
+    );
 
     // Check minimum size (should be a meaningful image, not just a tiny dot)
     assert!(
@@ -59,15 +65,16 @@ fn test_full_document_renders() {
     let tiles = split_frame(&document.pages[0].frame, 500.0);
 
     // Should produce multiple tiles for a full document
-    assert!(
-        !tiles.is_empty(),
-        "should produce at least one tile"
-    );
+    assert!(!tiles.is_empty(), "should produce at least one tile");
 
     // Check first tile renders to valid PNG
     let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
         .expect("rendering should succeed");
-    assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n", "output should be valid PNG");
+    assert_eq!(
+        &png_data[..8],
+        b"\x89PNG\r\n\x1a\n",
+        "output should be valid PNG"
+    );
 
     // First tile of full document should produce a substantial image
     assert!(
@@ -161,8 +168,7 @@ fn test_source_map_code_block() {
     let code_vl = vlines
         .iter()
         .position(|vl| {
-            vl.md_line_range
-                .map_or(false, |(s, _)| s >= 3) // code block starts at line 3
+            vl.md_line_range.map_or(false, |(s, _)| s >= 3) // code block starts at line 3
         })
         .expect("should find a visual line for the code block");
     let yanked = yank_lines(md, &vlines, code_vl, code_vl);
@@ -274,16 +280,10 @@ fn test_source_map_full_document() {
 fn test_source_map_inline_formatting_preserved() {
     let md = "Text with **bold** and [link](http://example.com).\n";
     let vlines = source_map_pipeline(md);
-    assert!(
-        !vlines.is_empty(),
-        "expected at least 1 visual line"
-    );
+    assert!(!vlines.is_empty(), "expected at least 1 visual line");
 
     let yanked = yank_lines(md, &vlines, 0, 0);
-    assert_eq!(
-        yanked,
-        "Text with **bold** and [link](http://example.com)."
-    );
+    assert_eq!(yanked, "Text with **bold** and [link](http://example.com).");
 }
 
 #[test]
@@ -343,7 +343,10 @@ fn test_yank_exact_code_block_line() {
         // The exact line should be one of the code block content lines
         let exact_line = vlines[idx].md_line_exact.unwrap();
         let expected = md.lines().nth(exact_line - 1).unwrap();
-        assert_eq!(exact, expected, "yank_exact vl {idx} should match md line {exact_line}");
+        assert_eq!(
+            exact, expected,
+            "yank_exact vl {idx} should match md line {exact_line}"
+        );
     }
 }
 
@@ -367,7 +370,10 @@ fn test_yank_exact_falls_back_for_paragraph() {
     // yank_exact should fall back to block yank
     let exact = yank_exact(md, &vlines, para_idx);
     let block = yank_lines(md, &vlines, para_idx, para_idx);
-    assert_eq!(exact, block, "yank_exact should fall back to yank_lines for paragraphs");
+    assert_eq!(
+        exact, block,
+        "yank_exact should fall back to yank_lines for paragraphs"
+    );
 }
 
 #[test]

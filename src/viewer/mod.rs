@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{self, CliOverrides, Config};
 use crate::convert::markdown_to_typst_with_map;
-use crate::tile::{TiledDocumentCache, TilePngs};
+use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
@@ -76,7 +76,12 @@ enum Effect {
 /// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
 /// `cli_overrides` are preserved across config reloads.
 /// `watch` enables automatic reload on file change.
-pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, watch: bool) -> anyhow::Result<()> {
+pub fn run(
+    md_path: PathBuf,
+    mut config: Config,
+    cli_overrides: &CliOverrides,
+    watch: bool,
+) -> anyhow::Result<()> {
     let filename = md_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -94,7 +99,8 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
     if pixel_w == 0 || pixel_h == 0 {
         anyhow::bail!(
             "terminal pixel size {}x{} is zero — Kitty graphics requires non-zero pixel dimensions",
-            pixel_w, pixel_h
+            pixel_w,
+            pixel_h
         );
     }
 
@@ -104,7 +110,13 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
     // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = terminal::RawGuard::enter()?;
 
-    let mut layout = state::compute_layout(term_cols, term_rows, pixel_w, pixel_h, config.viewer.sidebar_cols);
+    let mut layout = state::compute_layout(
+        term_cols,
+        term_rows,
+        pixel_w,
+        pixel_h,
+        config.viewer.sidebar_cols,
+    );
     let mut y_offset_carry: u32 = 0;
     // Flash message to pass from outer loop into inner loop (e.g. "Config reloaded")
     let mut outer_flash: Option<String> = None;
@@ -204,7 +216,15 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
             let mut last_search: Option<LastSearch> = None;
 
             // Initial redraw + prefetch
-            self::state::redraw(doc, &mut cache, &mut loaded, &layout, &state, acc.peek(), None)?;
+            self::state::redraw(
+                doc,
+                &mut cache,
+                &mut loaded,
+                &layout,
+                &state,
+                acc.peek(),
+                None,
+            )?;
             self::state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
 
             // Inner event loop
@@ -214,7 +234,11 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
             loop {
                 // Drain prefetch results into cache.
                 while let Ok((idx, pngs)) = res_rx.try_recv() {
-                    debug!("main: received prefetched tile {idx} (content={}, sidebar={} bytes)", pngs.content.len(), pngs.sidebar.len());
+                    debug!(
+                        "main: received prefetched tile {idx} (content={}, sidebar={} bytes)",
+                        pngs.content.len(),
+                        pngs.sidebar.len()
+                    );
                     in_flight.remove(&idx);
                     cache.insert(idx, pngs);
                 }
@@ -225,7 +249,10 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                     Duration::from_secs(86400)
                 };
                 let timeout = if dirty {
-                    config.viewer.frame_budget.saturating_sub(last_render.elapsed())
+                    config
+                        .viewer
+                        .frame_budget
+                        .saturating_sub(last_render.elapsed())
                 } else {
                     idle_timeout
                 };
@@ -249,8 +276,10 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                                                 state: &state,
                                                 visual_lines: &doc.visual_lines,
                                                 max_scroll: max_y,
-                                                scroll_step: config.viewer.scroll_step * layout.cell_h as u32,
-                                                half_page: (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32,
+                                                scroll_step: config.viewer.scroll_step
+                                                    * layout.cell_h as u32,
+                                                half_page: (layout.image_rows as u32 / 2).max(1)
+                                                    * layout.cell_h as u32,
                                                 markdown: &markdown,
                                                 last_search: &mut last_search,
                                             };
@@ -267,7 +296,14 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                                     }
                                 }
                                 ViewerMode::Search(ss) => match map_search_key(key_event) {
-                                    Some(a) => mode_search::handle(a, ss, &markdown, &doc.visual_lines, &layout, max_y)?,
+                                    Some(a) => mode_search::handle(
+                                        a,
+                                        ss,
+                                        &markdown,
+                                        &doc.visual_lines,
+                                        &layout,
+                                        max_y,
+                                    )?,
                                     None => vec![],
                                 },
                                 ViewerMode::Command(cs) => match map_command_key(key_event) {
@@ -289,7 +325,12 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                                         flash_msg = Some(msg);
                                     }
                                     Effect::RedrawStatusBar => {
-                                        terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                        terminal::draw_status_bar(
+                                            &layout,
+                                            &state,
+                                            acc.peek(),
+                                            flash_msg.as_deref(),
+                                        )?;
                                     }
                                     Effect::Yank(text) => {
                                         let _ = terminal::send_osc52(&text);
@@ -297,7 +338,13 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                                     Effect::SetMode(m) => {
                                         match &m {
                                             ViewerMode::Search(ss) => {
-                                                mode_search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+                                                mode_search::draw_search_screen(
+                                                    &layout,
+                                                    &ss.query,
+                                                    &ss.matches,
+                                                    ss.selected,
+                                                    ss.scroll_offset,
+                                                )?;
                                             }
                                             ViewerMode::Command(cs) => {
                                                 terminal::draw_command_bar(&layout, &cs.input)?;
@@ -336,12 +383,30 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                     // redraw 直前に追加 drain: event::poll() のブロック中に worker が
                     // 完了した結果を回収し、redraw での同期レンダリングを回避する。
                     while let Ok((idx, pngs)) = res_rx.try_recv() {
-                        debug!("main: received prefetched tile {idx} (content={}, sidebar={} bytes, pre-redraw)", pngs.content.len(), pngs.sidebar.len());
+                        debug!(
+                            "main: received prefetched tile {idx} (content={}, sidebar={} bytes, pre-redraw)",
+                            pngs.content.len(),
+                            pngs.sidebar.len()
+                        );
                         in_flight.remove(&idx);
                         cache.insert(idx, pngs);
                     }
-                    self::state::redraw(doc, &mut cache, &mut loaded, &layout, &state, acc.peek(), flash_msg.as_deref())?;
-                    self::state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
+                    self::state::redraw(
+                        doc,
+                        &mut cache,
+                        &mut loaded,
+                        &layout,
+                        &state,
+                        acc.peek(),
+                        flash_msg.as_deref(),
+                    )?;
+                    self::state::send_prefetch(
+                        &req_tx,
+                        doc,
+                        &cache,
+                        &mut in_flight,
+                        state.y_offset,
+                    );
                     cache.evict_distant(
                         (state.y_offset / doc.tile_height_px()) as usize,
                         config.viewer.evict_distance,
@@ -390,13 +455,17 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
                 match config::reload_config(cli_overrides) {
                     Ok(new_config) => {
                         // Verify theme file exists before committing
-                        let new_theme_path = PathBuf::from(format!("themes/{}.typ", new_config.theme));
+                        let new_theme_path =
+                            PathBuf::from(format!("themes/{}.typ", new_config.theme));
                         if !new_theme_path.exists() {
                             outer_flash = Some(format!(
                                 "Reload failed: theme '{}': file not found",
                                 new_config.theme
                             ));
-                            debug!("config reload: theme file {} not found, keeping old config", new_theme_path.display());
+                            debug!(
+                                "config reload: theme file {} not found, keeping old config",
+                                new_theme_path.display()
+                            );
                             // Rebuild with old config
                             terminal::delete_all_images()?;
                             continue 'outer;

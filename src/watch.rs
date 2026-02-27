@@ -40,7 +40,10 @@ impl FileWatcher {
             .ok_or_else(|| anyhow::anyhow!("cannot watch root path"))?;
         watcher.watch(parent, RecursiveMode::NonRecursive)?;
 
-        Ok(Self { rx, _watcher: watcher })
+        Ok(Self {
+            rx,
+            _watcher: watcher,
+        })
     }
 
     /// Return true if the file has changed since last check (non-blocking).

@@ -29,9 +29,7 @@ impl FontCache {
     /// Perform a one-time font search and cache the results.
     pub fn new() -> Self {
         let start = Instant::now();
-        let Fonts { book, fonts } = FontSearcher::new()
-            .include_system_fonts(true)
-            .search();
+        let Fonts { book, fonts } = FontSearcher::new().include_system_fonts(true).search();
         info!(
             "world: font search completed in {:.1}ms",
             start.elapsed().as_secs_f64() * 1000.0
@@ -83,7 +81,10 @@ impl<'f> MluxWorld<'f> {
 
         let mut world = Self::from_source(&main_text, fonts);
         world.content_offset = content_offset;
-        info!("world: new() completed in {:.1}ms", start.elapsed().as_secs_f64() * 1000.0);
+        info!(
+            "world: new() completed in {:.1}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         world
     }
 

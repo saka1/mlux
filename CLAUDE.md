@@ -87,11 +87,12 @@ cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
 
 ## Quality Gates
 
-After any code change, ensure both pass:
+After any code change, ensure all pass:
 
 ```bash
-cargo test      # all tests pass
+cargo fmt       # auto-format (or `cargo fmt --check` to verify)
 cargo clippy    # zero warnings
+cargo test      # all tests pass
 ```
 
 ## Dependencies

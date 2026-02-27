@@ -14,30 +14,52 @@ use crate::tile::{TiledDocument, TiledDocumentCache, VisibleTiles, VisualLine};
 
 pub(super) struct Layout {
     pub sidebar_cols: u16,
-    pub image_col: u16,    // 画像領域の開始列 (= sidebar_cols)
-    pub image_cols: u16,   // 画像領域の幅 (= term_cols - sidebar_cols)
-    pub image_rows: u16,   // 画像領域の高さ (= term_rows - 1)
-    pub status_row: u16,   // ステータスバーの行 (= term_rows - 1)
-    pub cell_w: u16,       // ピクセル/セル（幅）
-    pub cell_h: u16,       // ピクセル/セル（高さ）
+    pub image_col: u16,  // 画像領域の開始列 (= sidebar_cols)
+    pub image_cols: u16, // 画像領域の幅 (= term_cols - sidebar_cols)
+    pub image_rows: u16, // 画像領域の高さ (= term_rows - 1)
+    pub status_row: u16, // ステータスバーの行 (= term_rows - 1)
+    pub cell_w: u16,     // ピクセル/セル（幅）
+    pub cell_h: u16,     // ピクセル/セル（高さ）
 }
 
 pub(super) struct ViewState {
-    pub y_offset: u32,   // スクロールオフセット（ピクセル）
-    pub img_h: u32,      // ドキュメント高さ（ピクセル）
-    pub vp_w: u32,       // ビューポート幅（ピクセル）
-    pub vp_h: u32,       // ビューポート高さ（ピクセル）
+    pub y_offset: u32, // スクロールオフセット（ピクセル）
+    pub img_h: u32,    // ドキュメント高さ（ピクセル）
+    pub vp_w: u32,     // ビューポート幅（ピクセル）
+    pub vp_h: u32,     // ビューポート高さ（ピクセル）
     pub filename: String,
 }
 
-pub(super) fn compute_layout(term_cols: u16, term_rows: u16, pixel_w: u16, pixel_h: u16, sidebar_cols: u16) -> Layout {
+pub(super) fn compute_layout(
+    term_cols: u16,
+    term_rows: u16,
+    pixel_w: u16,
+    pixel_h: u16,
+    sidebar_cols: u16,
+) -> Layout {
     let image_col = sidebar_cols;
     let image_cols = term_cols.saturating_sub(sidebar_cols);
     let image_rows = term_rows.saturating_sub(1);
     let status_row = term_rows.saturating_sub(1);
-    let cell_w = if term_cols > 0 { pixel_w / term_cols } else { 1 };
-    let cell_h = if term_rows > 0 { pixel_h / term_rows } else { 1 };
-    Layout { sidebar_cols, image_col, image_cols, image_rows, status_row, cell_w, cell_h }
+    let cell_w = if term_cols > 0 {
+        pixel_w / term_cols
+    } else {
+        1
+    };
+    let cell_h = if term_rows > 0 {
+        pixel_h / term_rows
+    } else {
+        1
+    };
+    Layout {
+        sidebar_cols,
+        image_col,
+        image_cols,
+        image_rows,
+        status_row,
+        cell_w,
+        cell_h,
+    }
 }
 
 pub(super) fn vp_dims(layout: &Layout, img_w: u32, img_h: u32) -> (u32, u32) {
@@ -105,7 +127,13 @@ impl LoadedTiles {
         let pngs = cache.get_or_render(tiled_doc, idx)?;
         terminal::send_image(&pngs.content, content_id)?;
         terminal::send_image(&pngs.sidebar, sidebar_id)?;
-        self.map.insert(idx, TileImageIds { content_id, sidebar_id });
+        self.map.insert(
+            idx,
+            TileImageIds {
+                content_id,
+                sidebar_id,
+            },
+        );
 
         // Evict tiles far from current viewport to bound terminal memory
         let to_evict: Vec<usize> = self
@@ -163,7 +191,9 @@ pub(super) fn redraw(
         VisibleTiles::Single { idx, .. } => {
             loaded.ensure_loaded(tiled_doc, cache, *idx)?;
         }
-        VisibleTiles::Split { top_idx, bot_idx, .. } => {
+        VisibleTiles::Split {
+            top_idx, bot_idx, ..
+        } => {
             loaded.ensure_loaded(tiled_doc, cache, *top_idx)?;
             loaded.ensure_loaded(tiled_doc, cache, *bot_idx)?;
         }

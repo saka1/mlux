@@ -101,7 +101,10 @@ pub fn extract_visual_lines_with_map(
         .into_iter()
         .enumerate()
         .map(|(i, (y_pt, spans))| {
-            trace!("visual_line[{i}]: y={y_pt:.1}pt, {} span candidates", spans.len());
+            trace!(
+                "visual_line[{i}]: y={y_pt:.1}pt, {} span candidates",
+                spans.len()
+            );
             // Try each span candidate until one resolves to a content-area line.
             // This handles cases where theme-derived spans (e.g., list markers
             // from `#set list(marker: ...)`) coexist with content spans on the
@@ -109,7 +112,8 @@ pub fn extract_visual_lines_with_map(
             // and is not guaranteed, so we try all candidates rather than relying
             // on position.
             let info = mapping.and_then(|m| {
-                spans.iter()
+                spans
+                    .iter()
                     .filter(|s| !s.is_detached())
                     .find_map(|&s| resolve_md_line_range(s, m))
             });
@@ -137,17 +141,15 @@ pub fn extract_visual_lines_with_map(
         );
         for (i, vl) in lines.iter().enumerate() {
             if let Some((s, e)) = vl.md_line_range {
-                let preview: String = m.md_source
+                let preview: String = m
+                    .md_source
                     .lines()
                     .nth(s - 1)
                     .unwrap_or("")
                     .chars()
                     .take(60)
                     .collect();
-                debug!(
-                    "  vl[{i}] y={:.1}pt → md L{s}-{e}: {:?}",
-                    vl.y_pt, preview
-                );
+                debug!("  vl[{i}] y={:.1}pt → md L{s}-{e}: {:?}", vl.y_pt, preview);
             } else {
                 debug!("  vl[{i}] y={:.1}pt → (unmapped)", vl.y_pt);
             }
@@ -174,7 +176,10 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
 
     // Convert to content_text offset
     if main_range.start < params.content_offset {
-        trace!("  span in prefix (main_range={:?}, content_offset={})", main_range, params.content_offset);
+        trace!(
+            "  span in prefix (main_range={:?}, content_offset={})",
+            main_range, params.content_offset
+        );
         return None; // Within theme/prefix, not content
     }
     let content_offset = main_range.start - params.content_offset;
@@ -186,7 +191,11 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
     let start_line = byte_offset_to_line(params.md_source, block.md_byte_range.start);
     let end_line = byte_offset_to_line(
         params.md_source,
-        block.md_byte_range.end.saturating_sub(1).max(block.md_byte_range.start),
+        block
+            .md_byte_range
+            .end
+            .saturating_sub(1)
+            .max(block.md_byte_range.start),
     );
 
     // Compute exact line for code blocks.
@@ -210,8 +219,13 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
             // start_line is the "```" fence line; content starts at start_line + 1
             let exact_line = start_line + 1 + newlines_before;
             // Clamp to not exceed end_line - 1 (closing fence)
-            let exact_line = exact_line.min(end_line.saturating_sub(1)).max(start_line + 1);
-            trace!("  code block exact: typst_local_off={}, newlines={}, exact_line={}", typst_local_offset, newlines_before, exact_line);
+            let exact_line = exact_line
+                .min(end_line.saturating_sub(1))
+                .max(start_line + 1);
+            trace!(
+                "  code block exact: typst_local_off={}, newlines={}, exact_line={}",
+                typst_local_offset, newlines_before, exact_line
+            );
             Some(exact_line)
         } else {
             None
@@ -222,7 +236,13 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
 
     trace!(
         "  span resolved: main={:?} → content_off={} → typst_block={:?} → md_block={:?} → lines {}-{} exact={:?}",
-        main_range, content_offset, block.typst_byte_range, block.md_byte_range, start_line, end_line, exact
+        main_range,
+        content_offset,
+        block.typst_byte_range,
+        block.md_byte_range,
+        start_line,
+        end_line,
+        exact
     );
 
     Some(MdLineInfo {
@@ -238,11 +258,7 @@ fn byte_offset_to_line(source: &str, offset: usize) -> usize {
 }
 
 /// Recursively collect (absolute Y, representative Span) from all TextItem nodes.
-fn collect_text_y_span(
-    frame: &Frame,
-    parent_offset: Point,
-    out: &mut Vec<(f64, Option<Span>)>,
-) {
+fn collect_text_y_span(frame: &Frame, parent_offset: Point, out: &mut Vec<(f64, Option<Span>)>) {
     for (pos, item) in frame.items() {
         let abs = parent_offset + *pos;
         match item {
@@ -293,7 +309,7 @@ pub fn yank_lines(
     // Extract lines min_line..=max_line (1-based) from md_source
     let lines: Vec<&str> = md_source.lines().collect();
     let start_idx = min_line.saturating_sub(1); // Convert to 0-based
-    let end_idx = max_line.min(lines.len());     // 1-based end → exclusive 0-based
+    let end_idx = max_line.min(lines.len()); // 1-based end → exclusive 0-based
 
     if start_idx >= lines.len() {
         return String::new();
@@ -424,7 +440,8 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let sidebar_doc = crate::render::compile_document(&sidebar_world)?;
 
     // 4. Build TiledDocument with both content + sidebar
-    let tiled_doc = TiledDocument::new(&document, &sidebar_doc, visual_lines, *tile_height_pt, *ppi)?;
+    let tiled_doc =
+        TiledDocument::new(&document, &sidebar_doc, visual_lines, *tile_height_pt, *ppi)?;
     info!(
         "build_tiled_document completed in {:.1}ms",
         start.elapsed().as_secs_f64() * 1000.0
@@ -454,8 +471,7 @@ fn item_bounding_height(item: &FrameItem) -> f64 {
                         typst::visualize::CurveItem::Line(p) => p.y.to_pt(),
                         typst::visualize::CurveItem::Cubic(p1, p2, p3) => {
                             // Take max of all control/end points
-                            let ys =
-                                [p1.y.to_pt(), p2.y.to_pt(), p3.y.to_pt()];
+                            let ys = [p1.y.to_pt(), p2.y.to_pt(), p3.y.to_pt()];
                             min_y = min_y.min(ys[0]).min(ys[1]).min(ys[2]);
                             ys.into_iter()
                                 .max_by(|a, b| a.partial_cmp(b).unwrap())
@@ -542,11 +558,7 @@ pub fn split_frame(frame: &Frame, tile_height_pt: f64) -> Vec<Frame> {
 #[derive(Debug)]
 pub enum VisibleTiles {
     /// Viewport fits entirely within one tile.
-    Single {
-        idx: usize,
-        src_y: u32,
-        src_h: u32,
-    },
+    Single { idx: usize, src_y: u32, src_h: u32 },
     /// Viewport straddles two tiles.
     Split {
         top_idx: usize,

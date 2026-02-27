@@ -84,15 +84,11 @@ impl ConfigFile {
             ppi: self.ppi.unwrap_or(144.0),
             viewer: ViewerConfig {
                 scroll_step: self.viewer.scroll_step.unwrap_or(3),
-                frame_budget: Duration::from_millis(
-                    self.viewer.frame_budget_ms.unwrap_or(32),
-                ),
+                frame_budget: Duration::from_millis(self.viewer.frame_budget_ms.unwrap_or(32)),
                 tile_height: self.viewer.tile_height.unwrap_or(500.0),
                 sidebar_cols: self.viewer.sidebar_cols.unwrap_or(6),
                 evict_distance: self.viewer.evict_distance.unwrap_or(4),
-                watch_interval: Duration::from_millis(
-                    self.viewer.watch_interval_ms.unwrap_or(200),
-                ),
+                watch_interval: Duration::from_millis(self.viewer.watch_interval_ms.unwrap_or(200)),
             },
         };
         info!(
@@ -117,9 +113,7 @@ impl ConfigFile {
 fn config_path() -> Option<PathBuf> {
     let config_dir = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
-        })?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(config_dir.join("mlux").join("config.toml"))
 }
 

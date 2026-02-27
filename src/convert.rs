@@ -241,9 +241,7 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 push_to_target(&mut output, &mut cell_buf, "#strike[");
                 stack.push(Container::Strikethrough);
             }
-            Event::Start(Tag::Link {
-                dest_url, ..
-            }) => {
+            Event::Start(Tag::Link { dest_url, .. }) => {
                 let url = dest_url.to_string();
                 if !url.is_empty() {
                     push_to_target(&mut output, &mut cell_buf, &format!("#link(\"{url}\")["));
@@ -563,7 +561,8 @@ fn escape_typst(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
-            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' | '[' | ']' => {
+            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' | '['
+            | ']' => {
                 escaped.push('\\');
                 escaped.push(ch);
             }
@@ -773,7 +772,10 @@ mod tests {
     fn test_inline_code_with_backticks_in_table() {
         let md = "| Header |\n|--------|\n| `` ` `` |";
         let typst = markdown_to_typst(md);
-        assert!(typst.contains("#table("), "expected table markup, got: {typst}");
+        assert!(
+            typst.contains("#table("),
+            "expected table markup, got: {typst}"
+        );
         assert!(
             typst.contains("#raw(\"`\")"),
             "expected #raw() in table cell, got: {typst}"
@@ -791,7 +793,10 @@ mod tests {
     fn test_link_empty_url() {
         let md = "[link]()";
         let typst = markdown_to_typst(md);
-        assert!(!typst.contains("#link"), "empty URL should not produce #link");
+        assert!(
+            !typst.contains("#link"),
+            "empty URL should not produce #link"
+        );
         assert!(typst.contains("link"));
     }
 
@@ -840,7 +845,10 @@ mod tests {
         let md = "+\t---\t\t";
         let typst = markdown_to_typst(md);
         assert!(typst.contains("- "), "should produce unordered list marker");
-        assert!(typst.contains("#line(length: 100%)"), "should produce horizontal rule");
+        assert!(
+            typst.contains("#line(length: 100%)"),
+            "should produce horizontal rule"
+        );
     }
 
     #[test]

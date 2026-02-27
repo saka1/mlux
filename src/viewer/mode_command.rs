@@ -50,8 +50,6 @@ pub(super) fn handle(
                 ]),
             }
         }
-        CommandAction::Cancel => {
-            Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty])
-        }
+        CommandAction::Cancel => Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]),
     }
 }
