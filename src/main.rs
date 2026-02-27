@@ -95,6 +95,14 @@ fn main() {
         None => (None, None, None),
     };
 
+    // Build CliOverrides for viewer config reload support
+    let cli_overrides = config::CliOverrides {
+        theme: cli.theme.clone(),
+        width: render_width,
+        ppi: render_ppi,
+        tile_height: render_tile_height,
+    };
+
     cfg.merge_cli(
         cli.theme,
         render_width,
@@ -116,7 +124,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            mlux::viewer::run(input, &config, !cli.no_watch)
+            mlux::viewer::run(input, config, &cli_overrides, !cli.no_watch)
         }
     };
 

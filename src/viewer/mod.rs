@@ -34,28 +34,30 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
+use crate::config::{self, CliOverrides, Config};
 use crate::convert::markdown_to_typst_with_map;
 use crate::tile::{TiledDocumentCache, TilePngs, yank_exact, yank_lines};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
-use input::{Action, InputAccumulator, map_key_event, map_search_key, SearchAction};
+use input::{Action, CommandAction, InputAccumulator, map_command_key, map_key_event, map_search_key, SearchAction};
 use search::{LastSearch, SearchState};
-use state::{ExitReason, LoadedTiles, ViewState};
+use state::{CommandState, ExitReason, LoadedTiles, ViewState};
 
-/// Viewer mode: normal (tile display) or search (picker UI).
+/// Viewer mode: normal (tile display), search (picker UI), or command (`:` prompt).
 enum ViewerMode {
     Normal,
     Search(SearchState),
+    Command(CommandState),
 }
 
 /// Run the terminal viewer.
 ///
 /// `md_path` is the Markdown file to display.
 /// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
+/// `cli_overrides` are preserved across config reloads.
 /// `watch` enables automatic reload on file change.
-pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()> {
+pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, watch: bool) -> anyhow::Result<()> {
     let filename = md_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -63,11 +65,6 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
         .to_string();
 
     terminal::check_tty()?;
-
-    // 1. テーマを読み込み (変更なし、ループ外で1回)
-    let theme_path = PathBuf::from(format!("themes/{}.typ", config.theme));
-    let theme_text = std::fs::read_to_string(&theme_path)
-        .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
 
     // 2. ターミナルサイズを先に取得してビューポート幅を確定
     let winsize = crossterm_terminal::window_size()
@@ -90,6 +87,8 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
 
     let mut layout = state::compute_layout(term_cols, term_rows, pixel_w, pixel_h, config.viewer.sidebar_cols);
     let mut y_offset_carry: u32 = 0;
+    // Flash message to pass from outer loop into inner loop (e.g. "Config reloaded")
+    let mut outer_flash: Option<String> = None;
 
     // File watcher (optional)
     let watcher = if watch {
@@ -100,6 +99,11 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
+        // 1. テーマを読み込み (config reload でテーマ名が変わる場合があるのでループ内)
+        let theme_path = PathBuf::from(format!("themes/{}.typ", config.theme));
+        let theme_text = std::fs::read_to_string(&theme_path)
+            .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
+
         // 5a. Read markdown (re-read on each iteration for reload support)
         let markdown = std::fs::read_to_string(&md_path)
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", md_path.display()))?;
@@ -168,7 +172,7 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
             // Vim-style number prefix accumulator
             let mut acc = InputAccumulator::new();
             // Flash message (e.g., "Yanked L56"), cleared on next keypress
-            let mut flash_msg: Option<String> = None;
+            let mut flash_msg: Option<String> = outer_flash.take();
             // Viewer mode: normal (tile display) or search (picker UI)
             let mut mode = ViewerMode::Normal;
             // Persisted search results for n/N navigation
@@ -283,6 +287,13 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
                                             let ss = SearchState::new();
                                             search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
                                             mode = ViewerMode::Search(ss);
+                                        }
+
+                                        // コマンドモード開始
+                                        Some(Action::EnterCommand) => {
+                                            let cs = CommandState { input: String::new() };
+                                            terminal::draw_command_bar(&layout, &cs.input)?;
+                                            mode = ViewerMode::Command(cs);
                                         }
 
                                         // 次のマッチへジャンプ
@@ -434,6 +445,50 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
                                         None => {}
                                     }
                                 }
+
+                                ViewerMode::Command(cs) => {
+                                    match map_command_key(key_event) {
+                                        Some(CommandAction::Type(c)) => {
+                                            cs.input.push(c);
+                                            terminal::draw_command_bar(&layout, &cs.input)?;
+                                        }
+                                        Some(CommandAction::Backspace) => {
+                                            if cs.input.is_empty() {
+                                                // Empty input + Backspace → cancel (vim behavior)
+                                                mode = ViewerMode::Normal;
+                                                dirty = true;
+                                            } else {
+                                                cs.input.pop();
+                                                terminal::draw_command_bar(&layout, &cs.input)?;
+                                            }
+                                        }
+                                        Some(CommandAction::Execute) => {
+                                            let cmd = cs.input.trim().to_string();
+                                            mode = ViewerMode::Normal;
+                                            match cmd.as_str() {
+                                                "" => {
+                                                    // Empty command → just return to normal
+                                                    dirty = true;
+                                                }
+                                                "reload" | "rel" => {
+                                                    return Ok(ExitReason::ConfigReload);
+                                                }
+                                                "q" | "quit" => {
+                                                    return Ok(ExitReason::Quit);
+                                                }
+                                                _ => {
+                                                    flash_msg = Some(format!("Unknown command: {cmd}"));
+                                                    dirty = true;
+                                                }
+                                            }
+                                        }
+                                        Some(CommandAction::Cancel) => {
+                                            mode = ViewerMode::Normal;
+                                            dirty = true;
+                                        }
+                                        None => {}
+                                    }
+                                }
                             }
                         }
 
@@ -498,6 +553,49 @@ pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()>
                 debug!("file changed: reloading document");
                 terminal::delete_all_images()?;
                 // continue 'outer → re-read file + rebuild document
+            }
+            ExitReason::ConfigReload => {
+                y_offset_carry = state.y_offset;
+                debug!("config reload requested");
+
+                match config::reload_config(cli_overrides) {
+                    Ok(new_config) => {
+                        // Verify theme file exists before committing
+                        let new_theme_path = PathBuf::from(format!("themes/{}.typ", new_config.theme));
+                        if !new_theme_path.exists() {
+                            outer_flash = Some(format!(
+                                "Reload failed: theme '{}': file not found",
+                                new_config.theme
+                            ));
+                            debug!("config reload: theme file {} not found, keeping old config", new_theme_path.display());
+                            // Rebuild with old config
+                            terminal::delete_all_images()?;
+                            continue 'outer;
+                        }
+
+                        // Recalculate layout if sidebar_cols changed
+                        if new_config.viewer.sidebar_cols != config.viewer.sidebar_cols {
+                            let winsize = crossterm_terminal::window_size()?;
+                            layout = state::compute_layout(
+                                winsize.columns,
+                                winsize.rows,
+                                winsize.width,
+                                winsize.height,
+                                new_config.viewer.sidebar_cols,
+                            );
+                        }
+
+                        config = new_config;
+                        outer_flash = Some("Config reloaded".into());
+                    }
+                    Err(e) => {
+                        outer_flash = Some(format!("Reload failed: {e}"));
+                        debug!("config reload failed: {e}");
+                        // Rebuild with old config
+                    }
+                }
+                terminal::delete_all_images()?;
+                // continue 'outer → rebuild document with new (or old) config
             }
         }
     }

@@ -64,6 +64,7 @@ pub(super) enum Action {
     YankBlock(u32),
     YankBlockPrompt,
     EnterSearch,
+    EnterCommand,
     SearchNextMatch,
     SearchPrevMatch,
     CancelInput,
@@ -153,6 +154,11 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             acc.reset();
             Some(Action::EnterSearch)
         }
+        // コマンドモード
+        (KeyCode::Char(':'), _) => {
+            acc.reset();
+            Some(Action::EnterCommand)
+        }
         // 次のマッチへジャンプ
         (KeyCode::Char('n'), KeyModifiers::NONE) => {
             acc.reset();
@@ -176,6 +182,29 @@ pub(super) enum SearchAction {
     SelectPrev,
     Confirm,
     Cancel,
+}
+
+/// Actions specific to command mode (`:` prompt).
+pub(super) enum CommandAction {
+    Type(char),
+    Backspace,
+    Execute,
+    Cancel,
+}
+
+/// Map a key event to a command-mode action.
+pub(super) fn map_command_key(key: KeyEvent) -> Option<CommandAction> {
+    let KeyEvent { code, modifiers, .. } = key;
+
+    match (code, modifiers) {
+        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            Some(CommandAction::Cancel)
+        }
+        (KeyCode::Enter, _) => Some(CommandAction::Execute),
+        (KeyCode::Backspace, _) => Some(CommandAction::Backspace),
+        (KeyCode::Char(c), _) => Some(CommandAction::Type(c)),
+        _ => None,
+    }
 }
 
 /// Map a key event to a search-mode action.
@@ -389,5 +418,44 @@ mod tests {
     fn test_search_unknown_returns_none() {
         let a = map_search_key(simple_key(KeyCode::Tab));
         assert!(a.is_none());
+    }
+
+    // --- Command mode: map_command_key ---
+
+    #[test]
+    fn test_colon_enters_command() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char(':')), &mut acc);
+        assert!(matches!(a, Some(Action::EnterCommand)));
+    }
+
+    #[test]
+    fn test_command_type_char() {
+        let a = map_command_key(simple_key(KeyCode::Char('r')));
+        assert!(matches!(a, Some(CommandAction::Type('r'))));
+    }
+
+    #[test]
+    fn test_command_backspace() {
+        let a = map_command_key(simple_key(KeyCode::Backspace));
+        assert!(matches!(a, Some(CommandAction::Backspace)));
+    }
+
+    #[test]
+    fn test_command_execute() {
+        let a = map_command_key(simple_key(KeyCode::Enter));
+        assert!(matches!(a, Some(CommandAction::Execute)));
+    }
+
+    #[test]
+    fn test_command_cancel_esc() {
+        let a = map_command_key(simple_key(KeyCode::Esc));
+        assert!(matches!(a, Some(CommandAction::Cancel)));
+    }
+
+    #[test]
+    fn test_command_cancel_ctrl_c() {
+        let a = map_command_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(CommandAction::Cancel)));
     }
 }

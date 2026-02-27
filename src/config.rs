@@ -123,6 +123,25 @@ fn config_path() -> Option<PathBuf> {
     Some(config_dir.join("mlux").join("config.toml"))
 }
 
+// ---------------------------------------------------------------------------
+// CliOverrides — values from CLI args, preserved across config reloads
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+pub struct CliOverrides {
+    pub theme: Option<String>,
+    pub width: Option<f64>,
+    pub ppi: Option<f32>,
+    pub tile_height: Option<f64>,
+}
+
+/// Reload config.toml and re-apply CLI overrides.
+pub fn reload_config(cli: &CliOverrides) -> anyhow::Result<Config> {
+    let mut cfg = load_config()?;
+    cfg.merge_cli(cli.theme.clone(), cli.width, cli.ppi, cli.tile_height);
+    Ok(cfg.resolve())
+}
+
 /// Load config file. Returns `ConfigFile::default()` if no file exists.
 /// Returns an error if the file exists but cannot be parsed.
 pub fn load_config() -> anyhow::Result<ConfigFile> {

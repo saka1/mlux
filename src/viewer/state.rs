@@ -140,6 +140,12 @@ pub(super) enum ExitReason {
     Quit,
     Resize { new_cols: u16, new_rows: u16 },
     Reload,
+    ConfigReload,
+}
+
+/// Mutable state for command mode (`:` prompt).
+pub(super) struct CommandState {
+    pub input: String,
 }
 
 /// Full redraw: content tiles + sidebar + status bar.

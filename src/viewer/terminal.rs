@@ -224,12 +224,25 @@ pub(super) fn draw_status_bar(
             state.filename, state.y_offset, state.img_h, pct)
     } else {
         format!(
-            " {} | y={}/{} px  {}%  [/:search n/N:match Ng:goto j/k d/u q:quit]",
+            " {} | y={}/{} px  {}%  [/:search n/N:match Ng:goto j/k d/u ::cmd q:quit]",
             state.filename, state.y_offset, state.img_h, pct
         )
     };
 
     let padded = format!("{:<width$}", middle, width = total_cols as usize);
+    write!(out, "{}", padded.on_dark_grey().white())?;
+    out.queue(style::ResetColor)?;
+    out.flush()
+}
+
+/// Draw command input bar on the status row (`:input_` prompt).
+pub(super) fn draw_command_bar(layout: &Layout, input: &str) -> io::Result<()> {
+    let mut out = stdout();
+    out.queue(cursor::MoveTo(0, layout.status_row))?;
+
+    let total_cols = (layout.sidebar_cols + layout.image_cols) as usize;
+    let prompt = format!(":{input}_");
+    let padded = format!("{:<width$}", prompt, width = total_cols);
     write!(out, "{}", padded.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
     out.flush()
