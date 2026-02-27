@@ -63,6 +63,9 @@ pub(super) enum Action {
     YankExactPrompt,
     YankBlock(u32),
     YankBlockPrompt,
+    EnterSearch,
+    SearchNextMatch,
+    SearchPrevMatch,
     CancelInput,
     /// A digit was accumulated; caller should redraw status bar.
     Digit,
@@ -145,6 +148,53 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             }
         }
 
+        // 検索
+        (KeyCode::Char('/'), _) => {
+            acc.reset();
+            Some(Action::EnterSearch)
+        }
+        // 次のマッチへジャンプ
+        (KeyCode::Char('n'), KeyModifiers::NONE) => {
+            acc.reset();
+            Some(Action::SearchNextMatch)
+        }
+        // 前のマッチへジャンプ
+        (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
+            acc.reset();
+            Some(Action::SearchPrevMatch)
+        }
+
+        _ => None,
+    }
+}
+
+/// Actions specific to search mode.
+pub(super) enum SearchAction {
+    Type(char),
+    Backspace,
+    SelectNext,
+    SelectPrev,
+    Confirm,
+    Cancel,
+}
+
+/// Map a key event to a search-mode action.
+pub(super) fn map_search_key(key: KeyEvent) -> Option<SearchAction> {
+    let KeyEvent { code, modifiers, .. } = key;
+
+    match (code, modifiers) {
+        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            Some(SearchAction::Cancel)
+        }
+        (KeyCode::Enter, _) => Some(SearchAction::Confirm),
+        (KeyCode::Backspace, _) => Some(SearchAction::Backspace),
+        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
+            Some(SearchAction::SelectNext)
+        }
+        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => {
+            Some(SearchAction::SelectPrev)
+        }
+        (KeyCode::Char(c), _) => Some(SearchAction::Type(c)),
         _ => None,
     }
 }
@@ -245,5 +295,99 @@ mod tests {
         let mut acc = InputAccumulator::new();
         let a = map_key_event(key(KeyCode::Char('G'), KeyModifiers::SHIFT), &mut acc);
         assert!(matches!(a, Some(Action::JumpToBottom)));
+    }
+
+    // --- Search: normal mode entry ---
+
+    #[test]
+    fn test_slash_enters_search() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('/')), &mut acc);
+        assert!(matches!(a, Some(Action::EnterSearch)));
+    }
+
+    #[test]
+    fn test_slash_resets_accumulator() {
+        let mut acc = InputAccumulator::new();
+        map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
+        assert!(acc.is_active());
+        map_key_event(simple_key(KeyCode::Char('/')), &mut acc);
+        assert!(!acc.is_active());
+    }
+
+    #[test]
+    fn test_n_search_next() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('n')), &mut acc);
+        assert!(matches!(a, Some(Action::SearchNextMatch)));
+    }
+
+    #[test]
+    fn test_big_n_search_prev() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(key(KeyCode::Char('N'), KeyModifiers::SHIFT), &mut acc);
+        assert!(matches!(a, Some(Action::SearchPrevMatch)));
+    }
+
+    // --- Search mode: map_search_key ---
+
+    #[test]
+    fn test_search_type_char() {
+        let a = map_search_key(simple_key(KeyCode::Char('a')));
+        assert!(matches!(a, Some(SearchAction::Type('a'))));
+    }
+
+    #[test]
+    fn test_search_backspace() {
+        let a = map_search_key(simple_key(KeyCode::Backspace));
+        assert!(matches!(a, Some(SearchAction::Backspace)));
+    }
+
+    #[test]
+    fn test_search_select_next_j() {
+        let a = map_search_key(simple_key(KeyCode::Char('j')));
+        assert!(matches!(a, Some(SearchAction::SelectNext)));
+    }
+
+    #[test]
+    fn test_search_select_next_down() {
+        let a = map_search_key(simple_key(KeyCode::Down));
+        assert!(matches!(a, Some(SearchAction::SelectNext)));
+    }
+
+    #[test]
+    fn test_search_select_prev_k() {
+        let a = map_search_key(simple_key(KeyCode::Char('k')));
+        assert!(matches!(a, Some(SearchAction::SelectPrev)));
+    }
+
+    #[test]
+    fn test_search_select_prev_up() {
+        let a = map_search_key(simple_key(KeyCode::Up));
+        assert!(matches!(a, Some(SearchAction::SelectPrev)));
+    }
+
+    #[test]
+    fn test_search_confirm() {
+        let a = map_search_key(simple_key(KeyCode::Enter));
+        assert!(matches!(a, Some(SearchAction::Confirm)));
+    }
+
+    #[test]
+    fn test_search_cancel_esc() {
+        let a = map_search_key(simple_key(KeyCode::Esc));
+        assert!(matches!(a, Some(SearchAction::Cancel)));
+    }
+
+    #[test]
+    fn test_search_cancel_ctrl_c() {
+        let a = map_search_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(SearchAction::Cancel)));
+    }
+
+    #[test]
+    fn test_search_unknown_returns_none() {
+        let a = map_search_key(simple_key(KeyCode::Tab));
+        assert!(a.is_none());
     }
 }

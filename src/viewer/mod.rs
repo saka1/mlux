@@ -19,6 +19,7 @@
 
 mod input;
 mod pipeline;
+mod search;
 mod state;
 mod terminal;
 
@@ -37,11 +38,18 @@ use crate::convert::markdown_to_typst_with_map;
 use crate::tile::{TiledDocumentCache, TilePngs, yank_exact, yank_lines};
 use crate::world::FontCache;
 
-use input::{Action, InputAccumulator, map_key_event};
+use input::{Action, InputAccumulator, map_key_event, map_search_key, SearchAction};
+use search::{LastSearch, SearchState};
 use state::{ExitReason, LoadedTiles, ViewState};
 
 const SCROLL_STEP_CELLS: u32 = 3;
 const FRAME_BUDGET: Duration = Duration::from_millis(32); // ~30fps max
+
+/// Viewer mode: normal (tile display) or search (picker UI).
+enum ViewerMode {
+    Normal,
+    Search(SearchState),
+}
 
 /// Run the terminal viewer.
 ///
@@ -153,6 +161,10 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
             let mut acc = InputAccumulator::new();
             // Flash message (e.g., "Yanked L56"), cleared on next keypress
             let mut flash_msg: Option<String> = None;
+            // Viewer mode: normal (tile display) or search (picker UI)
+            let mut mode = ViewerMode::Normal;
+            // Persisted search results for n/N navigation
+            let mut last_search: Option<LastSearch> = None;
 
             // Initial redraw + prefetch
             self::state::redraw(doc, &mut cache, &mut loaded, &layout, &state, acc.peek(), None)?;
@@ -180,133 +192,233 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                     let ev = event::read()?;
                     debug!("event: {:?}", ev);
 
-                    // Clear flash message on any keypress
-                    let had_flash = flash_msg.is_some();
-                    flash_msg = None;
-
                     match ev {
                         Event::Key(key_event) => {
-                            let max_y = doc.max_scroll(state.vp_h);
-                            let scroll_step = SCROLL_STEP_CELLS * layout.cell_h as u32;
-                            let half_page =
-                                (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
+                            match &mut mode {
+                                ViewerMode::Normal => {
+                                    // Clear flash message on any keypress
+                                    let had_flash = flash_msg.is_some();
+                                    flash_msg = None;
 
-                            match map_key_event(key_event, &mut acc) {
-                                Some(Action::Quit) => {
-                                    return Ok(ExitReason::Quit);
-                                }
+                                    let max_y = doc.max_scroll(state.vp_h);
+                                    let scroll_step = SCROLL_STEP_CELLS * layout.cell_h as u32;
+                                    let half_page =
+                                        (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
 
-                                Some(Action::CancelInput) => {
-                                    terminal::draw_status_bar(&layout, &state, None, None)?;
-                                }
+                                    match map_key_event(key_event, &mut acc) {
+                                        Some(Action::Quit) => {
+                                            return Ok(ExitReason::Quit);
+                                        }
 
-                                Some(Action::Digit) => {
-                                    terminal::draw_status_bar(&layout, &state, acc.peek(), None)?;
-                                }
+                                        Some(Action::CancelInput) => {
+                                            terminal::draw_status_bar(&layout, &state, None, None)?;
+                                        }
 
-                                Some(Action::ScrollDown(count)) => {
-                                    let old = state.y_offset;
-                                    state.y_offset = (state.y_offset + count * scroll_step).min(max_y);
-                                    debug!("scroll down: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
-                                    dirty = true;
-                                }
-                                Some(Action::ScrollUp(count)) => {
-                                    let old = state.y_offset;
-                                    state.y_offset =
-                                        state.y_offset.saturating_sub(count * scroll_step);
-                                    debug!("scroll up: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
-                                    dirty = true;
-                                }
-                                Some(Action::HalfPageDown(count)) => {
-                                    let old = state.y_offset;
-                                    state.y_offset = (state.y_offset + count * half_page).min(max_y);
-                                    debug!("scroll half-down: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
-                                    dirty = true;
-                                }
-                                Some(Action::HalfPageUp(count)) => {
-                                    let old = state.y_offset;
-                                    state.y_offset =
-                                        state.y_offset.saturating_sub(count * half_page);
-                                    debug!("scroll half-up: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
-                                    dirty = true;
-                                }
+                                        Some(Action::Digit) => {
+                                            terminal::draw_status_bar(&layout, &state, acc.peek(), None)?;
+                                        }
 
-                                Some(Action::JumpToTop) => {
-                                    let old = state.y_offset;
-                                    state.y_offset = 0;
-                                    debug!("scroll top: y_offset {} → 0", old);
-                                    dirty = true;
-                                }
-                                Some(Action::JumpToBottom) => {
-                                    let old = state.y_offset;
-                                    state.y_offset = max_y;
-                                    debug!("scroll bottom: y_offset {} → {} (max={max_y})", old, state.y_offset);
-                                    dirty = true;
-                                }
-                                Some(Action::JumpToLine(n)) => {
-                                    let old = state.y_offset;
-                                    self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, n);
-                                    debug!("jump to line {n}: y_offset {} → {}", old, state.y_offset);
-                                    dirty = true;
-                                }
+                                        Some(Action::ScrollDown(count)) => {
+                                            let old = state.y_offset;
+                                            state.y_offset = (state.y_offset + count * scroll_step).min(max_y);
+                                            debug!("scroll down: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
+                                            dirty = true;
+                                        }
+                                        Some(Action::ScrollUp(count)) => {
+                                            let old = state.y_offset;
+                                            state.y_offset =
+                                                state.y_offset.saturating_sub(count * scroll_step);
+                                            debug!("scroll up: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
+                                            dirty = true;
+                                        }
+                                        Some(Action::HalfPageDown(count)) => {
+                                            let old = state.y_offset;
+                                            state.y_offset = (state.y_offset + count * half_page).min(max_y);
+                                            debug!("scroll half-down: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
+                                            dirty = true;
+                                        }
+                                        Some(Action::HalfPageUp(count)) => {
+                                            let old = state.y_offset;
+                                            state.y_offset =
+                                                state.y_offset.saturating_sub(count * half_page);
+                                            debug!("scroll half-up: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
+                                            dirty = true;
+                                        }
 
-                                // 精密ヤンク (y): コードブロックでは1行、他はブロック全体
-                                Some(Action::YankExactPrompt) => {
-                                    flash_msg = Some("Type Ny to yank line N".into());
-                                    terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                }
-                                Some(Action::YankExact(n)) => {
-                                    let vl_idx = (n as usize).saturating_sub(1);
-                                    if vl_idx >= doc.visual_lines.len() {
-                                        flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
-                                    } else {
-                                        let text = yank_exact(&markdown, &doc.visual_lines, vl_idx);
-                                        if text.is_empty() {
-                                            flash_msg = Some(format!("L{n}: no source mapping"));
-                                        } else {
-                                            let line_count = text.lines().count();
-                                            if let Err(e) = terminal::send_osc52(&text) {
-                                                debug!("OSC 52 failed: {e}");
+                                        Some(Action::JumpToTop) => {
+                                            let old = state.y_offset;
+                                            state.y_offset = 0;
+                                            debug!("scroll top: y_offset {} → 0", old);
+                                            dirty = true;
+                                        }
+                                        Some(Action::JumpToBottom) => {
+                                            let old = state.y_offset;
+                                            state.y_offset = max_y;
+                                            debug!("scroll bottom: y_offset {} → {} (max={max_y})", old, state.y_offset);
+                                            dirty = true;
+                                        }
+                                        Some(Action::JumpToLine(n)) => {
+                                            let old = state.y_offset;
+                                            self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, n);
+                                            debug!("jump to line {n}: y_offset {} → {}", old, state.y_offset);
+                                            dirty = true;
+                                        }
+
+                                        // 検索モード開始
+                                        Some(Action::EnterSearch) => {
+                                            loaded.delete_placements()?;
+                                            let ss = SearchState::new();
+                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+                                            mode = ViewerMode::Search(ss);
+                                        }
+
+                                        // 次のマッチへジャンプ
+                                        Some(Action::SearchNextMatch) => {
+                                            if let Some(ref mut ls) = last_search {
+                                                ls.advance_next();
+                                                if let Some(vl_idx) = ls.current_visual_line_idx() {
+                                                    let line_num = (vl_idx + 1) as u32;
+                                                    self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, line_num);
+                                                    flash_msg = Some(format!("match {}/{}", ls.current_idx + 1, ls.matches.len()));
+                                                    dirty = true;
+                                                }
+                                            } else {
+                                                flash_msg = Some("No search results".into());
+                                                terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
                                             }
-                                            flash_msg = Some(format!("Yanked L{n} ({line_count} line{})", if line_count > 1 { "s" } else { "" }));
-                                            debug!("yank exact L{n}: {} bytes, {line_count} lines", text.len());
+                                        }
+
+                                        // 前のマッチへジャンプ
+                                        Some(Action::SearchPrevMatch) => {
+                                            if let Some(ref mut ls) = last_search {
+                                                ls.advance_prev();
+                                                if let Some(vl_idx) = ls.current_visual_line_idx() {
+                                                    let line_num = (vl_idx + 1) as u32;
+                                                    self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, line_num);
+                                                    flash_msg = Some(format!("match {}/{}", ls.current_idx + 1, ls.matches.len()));
+                                                    dirty = true;
+                                                }
+                                            } else {
+                                                flash_msg = Some("No search results".into());
+                                                terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                            }
+                                        }
+
+                                        // 精密ヤンク (y): コードブロックでは1行、他はブロック全体
+                                        Some(Action::YankExactPrompt) => {
+                                            flash_msg = Some("Type Ny to yank line N".into());
+                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                        }
+                                        Some(Action::YankExact(n)) => {
+                                            let vl_idx = (n as usize).saturating_sub(1);
+                                            if vl_idx >= doc.visual_lines.len() {
+                                                flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
+                                            } else {
+                                                let text = yank_exact(&markdown, &doc.visual_lines, vl_idx);
+                                                if text.is_empty() {
+                                                    flash_msg = Some(format!("L{n}: no source mapping"));
+                                                } else {
+                                                    let line_count = text.lines().count();
+                                                    if let Err(e) = terminal::send_osc52(&text) {
+                                                        debug!("OSC 52 failed: {e}");
+                                                    }
+                                                    flash_msg = Some(format!("Yanked L{n} ({line_count} line{})", if line_count > 1 { "s" } else { "" }));
+                                                    debug!("yank exact L{n}: {} bytes, {line_count} lines", text.len());
+                                                }
+                                            }
+                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                        }
+
+                                        // ブロックヤンク (Y): 常にブロック全体
+                                        Some(Action::YankBlockPrompt) => {
+                                            flash_msg = Some("Type NY to yank block N".into());
+                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                        }
+                                        Some(Action::YankBlock(n)) => {
+                                            let vl_idx = (n as usize).saturating_sub(1);
+                                            if vl_idx >= doc.visual_lines.len() {
+                                                flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
+                                            } else {
+                                                let text = yank_lines(&markdown, &doc.visual_lines, vl_idx, vl_idx);
+                                                if text.is_empty() {
+                                                    flash_msg = Some(format!("L{n}: no source mapping"));
+                                                } else {
+                                                    let line_count = text.lines().count();
+                                                    if let Err(e) = terminal::send_osc52(&text) {
+                                                        debug!("OSC 52 failed: {e}");
+                                                    }
+                                                    flash_msg = Some(format!("Yanked L{n} block ({line_count} lines)"));
+                                                    debug!("yank block L{n}: {} bytes, {line_count} lines", text.len());
+                                                }
+                                            }
+                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                        }
+
+                                        None => {
+                                            // Unknown key: reset accumulator
+                                            if acc.is_active() {
+                                                acc.reset();
+                                                terminal::draw_status_bar(&layout, &state, None, None)?;
+                                            } else if had_flash {
+                                                terminal::draw_status_bar(&layout, &state, None, None)?;
+                                            }
                                         }
                                     }
-                                    terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
                                 }
 
-                                // ブロックヤンク (Y): 常にブロック全体
-                                Some(Action::YankBlockPrompt) => {
-                                    flash_msg = Some("Type NY to yank block N".into());
-                                    terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                }
-                                Some(Action::YankBlock(n)) => {
-                                    let vl_idx = (n as usize).saturating_sub(1);
-                                    if vl_idx >= doc.visual_lines.len() {
-                                        flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
-                                    } else {
-                                        let text = yank_lines(&markdown, &doc.visual_lines, vl_idx, vl_idx);
-                                        if text.is_empty() {
-                                            flash_msg = Some(format!("L{n}: no source mapping"));
-                                        } else {
-                                            let line_count = text.lines().count();
-                                            if let Err(e) = terminal::send_osc52(&text) {
-                                                debug!("OSC 52 failed: {e}");
-                                            }
-                                            flash_msg = Some(format!("Yanked L{n} block ({line_count} lines)"));
-                                            debug!("yank block L{n}: {} bytes, {line_count} lines", text.len());
+                                ViewerMode::Search(ss) => {
+                                    match map_search_key(key_event) {
+                                        Some(SearchAction::Type(c)) => {
+                                            ss.query.push(c);
+                                            ss.matches = search::grep_markdown(&ss.query, &markdown, &doc.visual_lines);
+                                            ss.selected = 0;
+                                            ss.scroll_offset = 0;
+                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
                                         }
-                                    }
-                                    terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                }
-
-                                None => {
-                                    // Unknown key: reset accumulator
-                                    if acc.is_active() {
-                                        acc.reset();
-                                        terminal::draw_status_bar(&layout, &state, None, None)?;
-                                    } else if had_flash {
-                                        terminal::draw_status_bar(&layout, &state, None, None)?;
+                                        Some(SearchAction::Backspace) => {
+                                            ss.query.pop();
+                                            ss.matches = search::grep_markdown(&ss.query, &markdown, &doc.visual_lines);
+                                            ss.selected = 0;
+                                            ss.scroll_offset = 0;
+                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+                                        }
+                                        Some(SearchAction::SelectNext) => {
+                                            if !ss.matches.is_empty() {
+                                                ss.selected = (ss.selected + 1).min(ss.matches.len() - 1);
+                                                // Adjust scroll to keep selected visible
+                                                let visible_count = (layout.status_row - 1) as usize;
+                                                if ss.selected >= ss.scroll_offset + visible_count {
+                                                    ss.scroll_offset = ss.selected - visible_count + 1;
+                                                }
+                                            }
+                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+                                        }
+                                        Some(SearchAction::SelectPrev) => {
+                                            if !ss.matches.is_empty() {
+                                                ss.selected = ss.selected.saturating_sub(1);
+                                                if ss.selected < ss.scroll_offset {
+                                                    ss.scroll_offset = ss.selected;
+                                                }
+                                            }
+                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+                                        }
+                                        Some(SearchAction::Confirm) => {
+                                            if !ss.matches.is_empty() {
+                                                let vl_idx = ss.matches[ss.selected].visual_line_idx;
+                                                last_search = Some(LastSearch::from_search_state(ss));
+                                                let max_y = doc.max_scroll(state.vp_h);
+                                                let line_num = (vl_idx + 1) as u32;
+                                                self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, line_num);
+                                                flash_msg = Some(format!("match {}/{}", ss.selected + 1, ss.matches.len()));
+                                            }
+                                            mode = ViewerMode::Normal;
+                                            dirty = true;
+                                        }
+                                        Some(SearchAction::Cancel) => {
+                                            mode = ViewerMode::Normal;
+                                            dirty = true;
+                                        }
+                                        None => {}
                                     }
                                 }
                             }

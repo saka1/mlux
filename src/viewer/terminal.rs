@@ -224,7 +224,7 @@ pub(super) fn draw_status_bar(
             state.filename, state.y_offset, state.img_h, pct)
     } else {
         format!(
-            " {} | y={}/{} px  {}%  [Ny:line NY:block Ng:goto j/k d/u q:quit]",
+            " {} | y={}/{} px  {}%  [/:search n/N:match Ng:goto j/k d/u q:quit]",
             state.filename, state.y_offset, state.img_h, pct
         )
     };
