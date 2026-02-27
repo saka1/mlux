@@ -4,11 +4,12 @@
 
 ---
 
-## Bug 1: 空URLのリンクでTypstコンパイルエラー
+## ~~Bug 1: 空URLのリンクでTypstコンパイルエラー~~ (修正済み)
 
 **重要度**: High — コンパイルが失敗する
 **発見**: fuzz_pipeline (fuzz-3.log)
 **アーティファクト**: `fuzz/artifacts/fuzz_pipeline/crash-377b47f45eb8f820819bd15e246740d14eda4a61`
+**ステータス**: **修正済み** — 空URLリンクをプレーンテキストとして出力するように変更。テスト `test_link_empty_url` 追加。
 
 ### 再現入力
 
@@ -16,31 +17,10 @@
 [link]()
 ```
 
-### 症状
+### 修正内容
 
-Typstコンパイル時に `error: URL must not be empty` で失敗。
-
-### 原因
-
-`convert.rs:237` で `[link]()` (空href) を `#link("")[link]` に変換している。
-Typstは空文字列のURLを拒否する。
-
-```rust
-// convert.rs:233-238
-Event::Start(Tag::Link { dest_url, .. }) => {
-    let url = dest_url.to_string();
-    push_to_target(&mut output, &mut cell_buf, &format!("#link(\"{url}\")["));
-    // url が空でもそのまま #link("") を出力してしまう
-}
-```
-
-### Typstエラー出力
-
-```
-error: URL must not be empty
-  --> main.typ:41:9
-    41 | | #link("")[link]
-```
+`convert.rs` の `Event::Start(Tag::Link)` / `Event::End(TagEnd::Link)` ハンドラで
+URLが空の場合は `#link("")[...]` を出力せず、リンクテキストをプレーンテキストとして出力する。
 
 ---
 

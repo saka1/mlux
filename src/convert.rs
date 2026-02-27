@@ -234,7 +234,9 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 dest_url, ..
             }) => {
                 let url = dest_url.to_string();
-                push_to_target(&mut output, &mut cell_buf, &format!("#link(\"{url}\")["));
+                if !url.is_empty() {
+                    push_to_target(&mut output, &mut cell_buf, &format!("#link(\"{url}\")["));
+                }
                 stack.push(Container::Link { _url: url });
             }
 
@@ -378,8 +380,17 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 pop_expect(&mut stack, "Strikethrough");
             }
             Event::End(TagEnd::Link) => {
-                push_to_target(&mut output, &mut cell_buf, "]");
-                pop_expect(&mut stack, "Link");
+                match stack.pop() {
+                    Some(Container::Link { _url }) if !_url.is_empty() => {
+                        push_to_target(&mut output, &mut cell_buf, "]");
+                    }
+                    Some(Container::Link { .. }) => {
+                        // Empty URL — text was output as plain text, nothing to close
+                    }
+                    other => {
+                        debug_assert!(false, "Expected Link, got {other:?}");
+                    }
+                }
             }
 
             // === Leaf events ===
@@ -754,6 +765,14 @@ mod tests {
         let md = "[Rust](https://www.rust-lang.org/)";
         let typst = markdown_to_typst(md);
         assert!(typst.contains("#link(\"https://www.rust-lang.org/\")[Rust]"));
+    }
+
+    #[test]
+    fn test_link_empty_url() {
+        let md = "[link]()";
+        let typst = markdown_to_typst(md);
+        assert!(!typst.contains("#link"), "empty URL should not produce #link");
+        assert!(typst.contains("link"));
     }
 
     #[test]
