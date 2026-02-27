@@ -75,19 +75,23 @@ pub fn extract_visual_lines_with_map(
 
     entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut deduped: Vec<(f64, Option<Span>)> = Vec::new();
+    // Collect all span candidates per Y coordinate (not just one winner).
+    //
+    // A single visual line can have multiple TextItems with different spans.
+    // For example, a list item produces both a marker "•" (span points to the
+    // theme's `#set list(marker: ...)`) and the text body "Item 1" (span points
+    // to the content area). We keep all spans so that resolve can try each one
+    // and pick the first that maps to a content-area Markdown line.
+    let mut deduped: Vec<(f64, Vec<Span>)> = Vec::new();
     for (y, span) in entries {
         if deduped
             .last()
             .map_or(true, |(prev_y, _)| (y - prev_y).abs() > TOLERANCE_PT)
         {
-            deduped.push((y, span));
+            deduped.push((y, span.into_iter().collect()));
         } else if let Some(last) = deduped.last_mut() {
-            // Within tolerance — prefer a non-detached span over a detached one
             if let Some(s) = span {
-                if !s.is_detached() && last.1.map_or(true, |ls| ls.is_detached()) {
-                    last.1 = Some(s);
-                }
+                last.1.push(s);
             }
         }
     }
@@ -96,10 +100,19 @@ pub fn extract_visual_lines_with_map(
     let lines: Vec<VisualLine> = deduped
         .into_iter()
         .enumerate()
-        .map(|(i, (y_pt, span))| {
-            trace!("visual_line[{i}]: y={y_pt:.1}pt, span={}", span.map_or("none".to_string(), |s| if s.is_detached() { "detached".to_string() } else { "attached".to_string() }));
-            let info = mapping
-                .and_then(|m| resolve_md_line_range(span?, m));
+        .map(|(i, (y_pt, spans))| {
+            trace!("visual_line[{i}]: y={y_pt:.1}pt, {} span candidates", spans.len());
+            // Try each span candidate until one resolves to a content-area line.
+            // This handles cases where theme-derived spans (e.g., list markers
+            // from `#set list(marker: ...)`) coexist with content spans on the
+            // same visual line. The order of spans depends on frame tree traversal
+            // and is not guaranteed, so we try all candidates rather than relying
+            // on position.
+            let info = mapping.and_then(|m| {
+                spans.iter()
+                    .filter(|s| !s.is_detached())
+                    .find_map(|&s| resolve_md_line_range(s, m))
+            });
             VisualLine {
                 y_pt,
                 y_px: (y_pt * pixel_per_pt).round() as u32,

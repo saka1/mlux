@@ -200,6 +200,20 @@ fn test_source_map_list() {
 }
 
 #[test]
+fn test_source_map_ordered_list() {
+    let md = "1. First\n2. Second\n3. Third\n";
+    let vlines = source_map_pipeline(md);
+    assert!(
+        !vlines.is_empty(),
+        "expected at least 1 visual line for ordered list"
+    );
+
+    // Yank any visual line from the ordered list — should get the whole list
+    let yanked = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(yanked, "1. First\n2. Second\n3. Third");
+}
+
+#[test]
 fn test_source_map_table() {
     let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
     let vlines = source_map_pipeline(md);
