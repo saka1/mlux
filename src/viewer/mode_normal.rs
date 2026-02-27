@@ -2,13 +2,12 @@
 
 use log::debug;
 
+use super::input::Action;
 use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};
-use super::state::{ViewState, visual_line_offset};
+use super::state::{ExitReason, ViewState, visual_line_offset};
 use super::{Effect, ViewerMode};
 use crate::tile::{VisualLine, yank_exact, yank_lines};
-use crate::viewer::input::Action;
-use crate::viewer::state::ExitReason;
 
 pub(super) struct NormalCtx<'a> {
     pub state: &'a ViewState,
@@ -93,43 +92,8 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
             vec![Effect::SetMode(ViewerMode::Command(cs))]
         }
 
-        Action::SearchNextMatch => {
-            if let Some(ls) = ctx.last_search {
-                ls.advance_next();
-                if let Some(vl_idx) = ls.current_visual_line_idx() {
-                    let line_num = (vl_idx + 1) as u32;
-                    let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, line_num);
-                    let flash = format!("match {}/{}", ls.current_idx + 1, ls.matches.len());
-                    vec![Effect::ScrollTo(y), Effect::Flash(flash)]
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![
-                    Effect::Flash("No search results".into()),
-                    Effect::RedrawStatusBar,
-                ]
-            }
-        }
-
-        Action::SearchPrevMatch => {
-            if let Some(ls) = ctx.last_search {
-                ls.advance_prev();
-                if let Some(vl_idx) = ls.current_visual_line_idx() {
-                    let line_num = (vl_idx + 1) as u32;
-                    let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, line_num);
-                    let flash = format!("match {}/{}", ls.current_idx + 1, ls.matches.len());
-                    vec![Effect::ScrollTo(y), Effect::Flash(flash)]
-                } else {
-                    vec![]
-                }
-            } else {
-                vec![
-                    Effect::Flash("No search results".into()),
-                    Effect::RedrawStatusBar,
-                ]
-            }
-        }
+        Action::SearchNextMatch => navigate_search(ctx, SearchDirection::Next),
+        Action::SearchPrevMatch => navigate_search(ctx, SearchDirection::Prev),
 
         Action::YankExactPrompt => {
             vec![
@@ -137,37 +101,9 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
                 Effect::RedrawStatusBar,
             ]
         }
-        Action::YankExact(n) => {
-            let vl_idx = (n as usize).saturating_sub(1);
-            if vl_idx >= ctx.visual_lines.len() {
-                vec![
-                    Effect::Flash(format!(
-                        "Line {n} out of range (max {})",
-                        ctx.visual_lines.len()
-                    )),
-                    Effect::RedrawStatusBar,
-                ]
-            } else {
-                let text = yank_exact(ctx.markdown, ctx.visual_lines, vl_idx);
-                if text.is_empty() {
-                    vec![
-                        Effect::Flash(format!("L{n}: no source mapping")),
-                        Effect::RedrawStatusBar,
-                    ]
-                } else {
-                    let line_count = text.lines().count();
-                    debug!("yank exact L{n}: {} bytes, {line_count} lines", text.len());
-                    vec![
-                        Effect::Yank(text),
-                        Effect::Flash(format!(
-                            "Yanked L{n} ({line_count} line{})",
-                            if line_count > 1 { "s" } else { "" }
-                        )),
-                        Effect::RedrawStatusBar,
-                    ]
-                }
-            }
-        }
+        Action::YankExact(n) => yank_and_flash(ctx, n, yank_exact, |n, lc| {
+            format!("Yanked L{n} ({lc} line{})", if lc > 1 { "s" } else { "" })
+        }),
 
         Action::YankBlockPrompt => {
             vec![
@@ -175,33 +111,72 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
                 Effect::RedrawStatusBar,
             ]
         }
-        Action::YankBlock(n) => {
-            let vl_idx = (n as usize).saturating_sub(1);
-            if vl_idx >= ctx.visual_lines.len() {
-                vec![
-                    Effect::Flash(format!(
-                        "Line {n} out of range (max {})",
-                        ctx.visual_lines.len()
-                    )),
-                    Effect::RedrawStatusBar,
-                ]
-            } else {
-                let text = yank_lines(ctx.markdown, ctx.visual_lines, vl_idx, vl_idx);
-                if text.is_empty() {
-                    vec![
-                        Effect::Flash(format!("L{n}: no source mapping")),
-                        Effect::RedrawStatusBar,
-                    ]
-                } else {
-                    let line_count = text.lines().count();
-                    debug!("yank block L{n}: {} bytes, {line_count} lines", text.len());
-                    vec![
-                        Effect::Yank(text),
-                        Effect::Flash(format!("Yanked L{n} block ({line_count} lines)")),
-                        Effect::RedrawStatusBar,
-                    ]
-                }
-            }
-        }
+        Action::YankBlock(n) => yank_and_flash(
+            ctx,
+            n,
+            |md, vls, idx| yank_lines(md, vls, idx, idx),
+            |n, lc| format!("Yanked L{n} block ({lc} lines)"),
+        ),
     }
+}
+
+enum SearchDirection {
+    Next,
+    Prev,
+}
+
+fn navigate_search(ctx: &mut NormalCtx, direction: SearchDirection) -> Vec<Effect> {
+    let Some(ls) = ctx.last_search.as_mut() else {
+        return vec![
+            Effect::Flash("No search results".into()),
+            Effect::RedrawStatusBar,
+        ];
+    };
+    match direction {
+        SearchDirection::Next => ls.advance_next(),
+        SearchDirection::Prev => ls.advance_prev(),
+    }
+    let Some(vl_idx) = ls.current_visual_line_idx() else {
+        return vec![];
+    };
+    let line_num = (vl_idx + 1) as u32;
+    let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, line_num);
+    let flash = format!("match {}/{}", ls.current_idx + 1, ls.matches.len());
+    vec![Effect::ScrollTo(y), Effect::Flash(flash)]
+}
+
+/// Shared yank logic: bounds check, extract text, build effects.
+///
+/// `extract` performs the actual text extraction (yank_exact or yank_lines).
+/// `format_msg` builds the success flash message from (line_num, line_count).
+fn yank_and_flash(
+    ctx: &NormalCtx,
+    line_num: u32,
+    extract: impl FnOnce(&str, &[VisualLine], usize) -> String,
+    format_msg: impl FnOnce(u32, usize) -> String,
+) -> Vec<Effect> {
+    let vl_idx = (line_num as usize).saturating_sub(1);
+    if vl_idx >= ctx.visual_lines.len() {
+        return vec![
+            Effect::Flash(format!(
+                "Line {line_num} out of range (max {})",
+                ctx.visual_lines.len()
+            )),
+            Effect::RedrawStatusBar,
+        ];
+    }
+    let text = extract(ctx.markdown, ctx.visual_lines, vl_idx);
+    if text.is_empty() {
+        return vec![
+            Effect::Flash(format!("L{line_num}: no source mapping")),
+            Effect::RedrawStatusBar,
+        ];
+    }
+    let line_count = text.lines().count();
+    debug!("yank L{line_num}: {} bytes, {line_count} lines", text.len());
+    vec![
+        Effect::Yank(text),
+        Effect::Flash(format_msg(line_num, line_count)),
+        Effect::RedrawStatusBar,
+    ]
 }

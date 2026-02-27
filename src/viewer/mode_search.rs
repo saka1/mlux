@@ -7,10 +7,10 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
+use super::input::SearchAction;
 use super::state::{Layout, visual_line_offset};
 use super::{Effect, ViewerMode};
 use crate::tile::VisualLine;
-use crate::viewer::input::SearchAction;
 
 /// A single search match within the Markdown source.
 #[derive(Debug, Clone)]
@@ -307,31 +307,11 @@ pub(super) fn handle(
     match action {
         SearchAction::Type(c) => {
             ss.query.push(c);
-            ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
-            ss.selected = 0;
-            ss.scroll_offset = 0;
-            draw_search_screen(
-                layout,
-                &ss.query,
-                &ss.matches,
-                ss.selected,
-                ss.scroll_offset,
-            )?;
-            Ok(vec![])
+            re_grep_and_redraw(ss, markdown, visual_lines, layout)
         }
         SearchAction::Backspace => {
             ss.query.pop();
-            ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
-            ss.selected = 0;
-            ss.scroll_offset = 0;
-            draw_search_screen(
-                layout,
-                &ss.query,
-                &ss.matches,
-                ss.selected,
-                ss.scroll_offset,
-            )?;
-            Ok(vec![])
+            re_grep_and_redraw(ss, markdown, visual_lines, layout)
         }
         SearchAction::SelectNext => {
             if !ss.matches.is_empty() {
@@ -341,14 +321,7 @@ pub(super) fn handle(
                     ss.scroll_offset = ss.selected - visible_count + 1;
                 }
             }
-            draw_search_screen(
-                layout,
-                &ss.query,
-                &ss.matches,
-                ss.selected,
-                ss.scroll_offset,
-            )?;
-            Ok(vec![])
+            redraw_search(ss, layout)
         }
         SearchAction::SelectPrev => {
             if !ss.matches.is_empty() {
@@ -357,14 +330,7 @@ pub(super) fn handle(
                     ss.scroll_offset = ss.selected;
                 }
             }
-            draw_search_screen(
-                layout,
-                &ss.query,
-                &ss.matches,
-                ss.selected,
-                ss.scroll_offset,
-            )?;
-            Ok(vec![])
+            redraw_search(ss, layout)
         }
         SearchAction::Confirm => {
             if ss.matches.is_empty() {
@@ -384,4 +350,29 @@ pub(super) fn handle(
         }
         SearchAction::Cancel => Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]),
     }
+}
+
+/// Re-run grep on the current query, reset selection, and redraw.
+fn re_grep_and_redraw(
+    ss: &mut SearchState,
+    markdown: &str,
+    visual_lines: &[VisualLine],
+    layout: &Layout,
+) -> io::Result<Vec<Effect>> {
+    ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
+    ss.selected = 0;
+    ss.scroll_offset = 0;
+    redraw_search(ss, layout)
+}
+
+/// Redraw the search screen from current state and return empty effects.
+fn redraw_search(ss: &SearchState, layout: &Layout) -> io::Result<Vec<Effect>> {
+    draw_search_screen(
+        layout,
+        &ss.query,
+        &ss.matches,
+        ss.selected,
+        ss.scroll_offset,
+    )?;
+    Ok(vec![])
 }

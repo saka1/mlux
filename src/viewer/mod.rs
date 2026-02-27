@@ -216,7 +216,7 @@ pub fn run(
             let mut last_search: Option<LastSearch> = None;
 
             // Initial redraw + prefetch
-            self::state::redraw(
+            state::redraw(
                 doc,
                 &mut cache,
                 &mut loaded,
@@ -225,7 +225,7 @@ pub fn run(
                 acc.peek(),
                 None,
             )?;
-            self::state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
+            state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
 
             // Inner event loop
             let mut dirty = false;
@@ -350,6 +350,12 @@ pub fn run(
                                                 terminal::draw_command_bar(&layout, &cs.input)?;
                                             }
                                             ViewerMode::Normal => {
+                                                // Clear text from search/command screen and
+                                                // purge terminal-side image data so that
+                                                // ensure_loaded() re-uploads from cache.
+                                                terminal::clear_screen()?;
+                                                terminal::delete_all_images()?;
+                                                loaded.map.clear();
                                                 dirty = true;
                                             }
                                         }
@@ -391,7 +397,7 @@ pub fn run(
                         in_flight.remove(&idx);
                         cache.insert(idx, pngs);
                     }
-                    self::state::redraw(
+                    state::redraw(
                         doc,
                         &mut cache,
                         &mut loaded,
@@ -400,13 +406,7 @@ pub fn run(
                         acc.peek(),
                         flash_msg.as_deref(),
                     )?;
-                    self::state::send_prefetch(
-                        &req_tx,
-                        doc,
-                        &cache,
-                        &mut in_flight,
-                        state.y_offset,
-                    );
+                    state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
                     cache.evict_distant(
                         (state.y_offset / doc.tile_height_px()) as usize,
                         config.viewer.evict_distance,

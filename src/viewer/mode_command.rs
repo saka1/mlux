@@ -2,11 +2,10 @@
 
 use std::io;
 
-use super::state::Layout;
+use super::input::CommandAction;
+use super::state::{ExitReason, Layout};
 use super::terminal;
 use super::{Effect, ViewerMode};
-use crate::viewer::input::CommandAction;
-use crate::viewer::state::ExitReason;
 
 /// Mutable state for command mode (`:` prompt).
 pub(super) struct CommandState {

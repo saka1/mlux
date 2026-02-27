@@ -91,6 +91,13 @@ pub(super) fn delete_all_images() -> io::Result<()> {
     out.flush()
 }
 
+/// Clear the text layer (wipe search/command screen text)
+pub(super) fn clear_screen() -> io::Result<()> {
+    let mut out = stdout();
+    out.queue(terminal::Clear(terminal::ClearType::All))?;
+    out.flush()
+}
+
 /// Parameters for placing tile images via Kitty Graphics Protocol.
 pub(super) struct PlaceParams {
     pub start_col: u16,
