@@ -8,8 +8,10 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
-use super::state::Layout;
+use super::state::{Layout, visual_line_offset};
+use super::{Effect, ViewerMode};
 use crate::tile::VisualLine;
+use crate::viewer::input::SearchAction;
 
 /// A single search match within the Markdown source.
 #[derive(Debug, Clone)]
@@ -285,4 +287,75 @@ pub(super) fn draw_search_screen(
     out.queue(style::ResetColor)?;
 
     out.flush()
+}
+
+pub(super) fn handle(
+    action: SearchAction,
+    ss: &mut SearchState,
+    markdown: &str,
+    visual_lines: &[VisualLine],
+    layout: &Layout,
+    max_scroll: u32,
+) -> io::Result<Vec<Effect>> {
+    match action {
+        SearchAction::Type(c) => {
+            ss.query.push(c);
+            ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
+            ss.selected = 0;
+            ss.scroll_offset = 0;
+            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            Ok(vec![])
+        }
+        SearchAction::Backspace => {
+            ss.query.pop();
+            ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
+            ss.selected = 0;
+            ss.scroll_offset = 0;
+            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            Ok(vec![])
+        }
+        SearchAction::SelectNext => {
+            if !ss.matches.is_empty() {
+                ss.selected = (ss.selected + 1).min(ss.matches.len() - 1);
+                let visible_count = (layout.status_row - 1) as usize;
+                if ss.selected >= ss.scroll_offset + visible_count {
+                    ss.scroll_offset = ss.selected - visible_count + 1;
+                }
+            }
+            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            Ok(vec![])
+        }
+        SearchAction::SelectPrev => {
+            if !ss.matches.is_empty() {
+                ss.selected = ss.selected.saturating_sub(1);
+                if ss.selected < ss.scroll_offset {
+                    ss.scroll_offset = ss.selected;
+                }
+            }
+            draw_search_screen(layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+            Ok(vec![])
+        }
+        SearchAction::Confirm => {
+            if ss.matches.is_empty() {
+                return Ok(vec![
+                    Effect::SetMode(ViewerMode::Normal),
+                    Effect::MarkDirty,
+                ]);
+            }
+            let vl_idx = ss.matches[ss.selected].visual_line_idx;
+            let last = LastSearch::from_search_state(ss);
+            let line_num = (vl_idx + 1) as u32;
+            let y = visual_line_offset(visual_lines, max_scroll, line_num);
+            let flash = format!("match {}/{}", ss.selected + 1, ss.matches.len());
+            Ok(vec![
+                Effect::SetLastSearch(last),
+                Effect::ScrollTo(y),
+                Effect::Flash(flash),
+                Effect::SetMode(ViewerMode::Normal),
+            ])
+        }
+        SearchAction::Cancel => {
+            Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty])
+        }
+    }
 }

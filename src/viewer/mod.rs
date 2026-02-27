@@ -18,8 +18,10 @@
 //!   Since the viewer never reads Kitty responses, this is always safe.
 
 mod input;
+mod mode_command;
+mod mode_normal;
+mod mode_search;
 mod pipeline;
-mod search;
 mod state;
 mod terminal;
 
@@ -36,19 +38,36 @@ use std::time::{Duration, Instant};
 
 use crate::config::{self, CliOverrides, Config};
 use crate::convert::markdown_to_typst_with_map;
-use crate::tile::{TiledDocumentCache, TilePngs, yank_exact, yank_lines};
+use crate::tile::{TiledDocumentCache, TilePngs};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
-use input::{Action, CommandAction, InputAccumulator, map_command_key, map_key_event, map_search_key, SearchAction};
-use search::{LastSearch, SearchState};
-use state::{CommandState, ExitReason, LoadedTiles, ViewState};
+use input::{InputAccumulator, map_command_key, map_key_event, map_search_key};
+use mode_command::CommandState;
+use mode_search::LastSearch;
+use state::{ExitReason, LoadedTiles, ViewState};
 
 /// Viewer mode: normal (tile display), search (picker UI), or command (`:` prompt).
 enum ViewerMode {
     Normal,
-    Search(SearchState),
+    Search(mode_search::SearchState),
     Command(CommandState),
+}
+
+/// Side-effect descriptors produced by mode handlers.
+///
+/// Handlers return `Vec<Effect>` which the apply loop in `run()` executes.
+/// This separates "what to do" (handler) from "how to do it" (apply loop).
+enum Effect {
+    ScrollTo(u32),
+    MarkDirty,
+    Flash(String),
+    RedrawStatusBar,
+    Yank(String),
+    SetMode(ViewerMode),
+    SetLastSearch(LastSearch),
+    DeletePlacements,
+    Exit(ExitReason),
 }
 
 /// Run the terminal viewer.
@@ -211,282 +230,86 @@ pub fn run(md_path: PathBuf, mut config: Config, cli_overrides: &CliOverrides, w
 
                     match ev {
                         Event::Key(key_event) => {
-                            match &mut mode {
+                            let max_y = doc.max_scroll(state.vp_h);
+
+                            let effects = match &mut mode {
                                 ViewerMode::Normal => {
-                                    // Clear flash message on any keypress
                                     let had_flash = flash_msg.is_some();
                                     flash_msg = None;
 
-                                    let max_y = doc.max_scroll(state.vp_h);
-                                    let scroll_step = config.viewer.scroll_step * layout.cell_h as u32;
-                                    let half_page =
-                                        (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
-
                                     match map_key_event(key_event, &mut acc) {
-                                        Some(Action::Quit) => {
-                                            return Ok(ExitReason::Quit);
+                                        Some(action) => {
+                                            let mut ctx = mode_normal::NormalCtx {
+                                                state: &state,
+                                                visual_lines: &doc.visual_lines,
+                                                max_scroll: max_y,
+                                                scroll_step: config.viewer.scroll_step * layout.cell_h as u32,
+                                                half_page: (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32,
+                                                markdown: &markdown,
+                                                last_search: &mut last_search,
+                                            };
+                                            mode_normal::handle(action, &mut ctx)
                                         }
-
-                                        Some(Action::CancelInput) => {
-                                            terminal::draw_status_bar(&layout, &state, None, None)?;
-                                        }
-
-                                        Some(Action::Digit) => {
-                                            terminal::draw_status_bar(&layout, &state, acc.peek(), None)?;
-                                        }
-
-                                        Some(Action::ScrollDown(count)) => {
-                                            let old = state.y_offset;
-                                            state.y_offset = (state.y_offset + count * scroll_step).min(max_y);
-                                            debug!("scroll down: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
-                                            dirty = true;
-                                        }
-                                        Some(Action::ScrollUp(count)) => {
-                                            let old = state.y_offset;
-                                            state.y_offset =
-                                                state.y_offset.saturating_sub(count * scroll_step);
-                                            debug!("scroll up: y_offset {} → {} (count={count}, step={scroll_step}, max={max_y})", old, state.y_offset);
-                                            dirty = true;
-                                        }
-                                        Some(Action::HalfPageDown(count)) => {
-                                            let old = state.y_offset;
-                                            state.y_offset = (state.y_offset + count * half_page).min(max_y);
-                                            debug!("scroll half-down: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
-                                            dirty = true;
-                                        }
-                                        Some(Action::HalfPageUp(count)) => {
-                                            let old = state.y_offset;
-                                            state.y_offset =
-                                                state.y_offset.saturating_sub(count * half_page);
-                                            debug!("scroll half-up: y_offset {} → {} (count={count}, step={half_page}, max={max_y})", old, state.y_offset);
-                                            dirty = true;
-                                        }
-
-                                        Some(Action::JumpToTop) => {
-                                            let old = state.y_offset;
-                                            state.y_offset = 0;
-                                            debug!("scroll top: y_offset {} → 0", old);
-                                            dirty = true;
-                                        }
-                                        Some(Action::JumpToBottom) => {
-                                            let old = state.y_offset;
-                                            state.y_offset = max_y;
-                                            debug!("scroll bottom: y_offset {} → {} (max={max_y})", old, state.y_offset);
-                                            dirty = true;
-                                        }
-                                        Some(Action::JumpToLine(n)) => {
-                                            let old = state.y_offset;
-                                            self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, n);
-                                            debug!("jump to line {n}: y_offset {} → {}", old, state.y_offset);
-                                            dirty = true;
-                                        }
-
-                                        // 検索モード開始
-                                        Some(Action::EnterSearch) => {
-                                            loaded.delete_placements()?;
-                                            let ss = SearchState::new();
-                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
-                                            mode = ViewerMode::Search(ss);
-                                        }
-
-                                        // コマンドモード開始
-                                        Some(Action::EnterCommand) => {
-                                            let cs = CommandState { input: String::new() };
-                                            terminal::draw_command_bar(&layout, &cs.input)?;
-                                            mode = ViewerMode::Command(cs);
-                                        }
-
-                                        // 次のマッチへジャンプ
-                                        Some(Action::SearchNextMatch) => {
-                                            if let Some(ref mut ls) = last_search {
-                                                ls.advance_next();
-                                                if let Some(vl_idx) = ls.current_visual_line_idx() {
-                                                    let line_num = (vl_idx + 1) as u32;
-                                                    self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, line_num);
-                                                    flash_msg = Some(format!("match {}/{}", ls.current_idx + 1, ls.matches.len()));
-                                                    dirty = true;
-                                                }
-                                            } else {
-                                                flash_msg = Some("No search results".into());
-                                                terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                            }
-                                        }
-
-                                        // 前のマッチへジャンプ
-                                        Some(Action::SearchPrevMatch) => {
-                                            if let Some(ref mut ls) = last_search {
-                                                ls.advance_prev();
-                                                if let Some(vl_idx) = ls.current_visual_line_idx() {
-                                                    let line_num = (vl_idx + 1) as u32;
-                                                    self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, line_num);
-                                                    flash_msg = Some(format!("match {}/{}", ls.current_idx + 1, ls.matches.len()));
-                                                    dirty = true;
-                                                }
-                                            } else {
-                                                flash_msg = Some("No search results".into());
-                                                terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                            }
-                                        }
-
-                                        // 精密ヤンク (y): コードブロックでは1行、他はブロック全体
-                                        Some(Action::YankExactPrompt) => {
-                                            flash_msg = Some("Type Ny to yank line N".into());
-                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                        }
-                                        Some(Action::YankExact(n)) => {
-                                            let vl_idx = (n as usize).saturating_sub(1);
-                                            if vl_idx >= doc.visual_lines.len() {
-                                                flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
-                                            } else {
-                                                let text = yank_exact(&markdown, &doc.visual_lines, vl_idx);
-                                                if text.is_empty() {
-                                                    flash_msg = Some(format!("L{n}: no source mapping"));
-                                                } else {
-                                                    let line_count = text.lines().count();
-                                                    if let Err(e) = terminal::send_osc52(&text) {
-                                                        debug!("OSC 52 failed: {e}");
-                                                    }
-                                                    flash_msg = Some(format!("Yanked L{n} ({line_count} line{})", if line_count > 1 { "s" } else { "" }));
-                                                    debug!("yank exact L{n}: {} bytes, {line_count} lines", text.len());
-                                                }
-                                            }
-                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                        }
-
-                                        // ブロックヤンク (Y): 常にブロック全体
-                                        Some(Action::YankBlockPrompt) => {
-                                            flash_msg = Some("Type NY to yank block N".into());
-                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                        }
-                                        Some(Action::YankBlock(n)) => {
-                                            let vl_idx = (n as usize).saturating_sub(1);
-                                            if vl_idx >= doc.visual_lines.len() {
-                                                flash_msg = Some(format!("Line {n} out of range (max {})", doc.visual_lines.len()));
-                                            } else {
-                                                let text = yank_lines(&markdown, &doc.visual_lines, vl_idx, vl_idx);
-                                                if text.is_empty() {
-                                                    flash_msg = Some(format!("L{n}: no source mapping"));
-                                                } else {
-                                                    let line_count = text.lines().count();
-                                                    if let Err(e) = terminal::send_osc52(&text) {
-                                                        debug!("OSC 52 failed: {e}");
-                                                    }
-                                                    flash_msg = Some(format!("Yanked L{n} block ({line_count} lines)"));
-                                                    debug!("yank block L{n}: {} bytes, {line_count} lines", text.len());
-                                                }
-                                            }
-                                            terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
-                                        }
-
                                         None => {
-                                            // Unknown key: reset accumulator
-                                            if acc.is_active() {
+                                            if acc.is_active() || had_flash {
                                                 acc.reset();
-                                                terminal::draw_status_bar(&layout, &state, None, None)?;
-                                            } else if had_flash {
-                                                terminal::draw_status_bar(&layout, &state, None, None)?;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                ViewerMode::Search(ss) => {
-                                    match map_search_key(key_event) {
-                                        Some(SearchAction::Type(c)) => {
-                                            ss.query.push(c);
-                                            ss.matches = search::grep_markdown(&ss.query, &markdown, &doc.visual_lines);
-                                            ss.selected = 0;
-                                            ss.scroll_offset = 0;
-                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
-                                        }
-                                        Some(SearchAction::Backspace) => {
-                                            ss.query.pop();
-                                            ss.matches = search::grep_markdown(&ss.query, &markdown, &doc.visual_lines);
-                                            ss.selected = 0;
-                                            ss.scroll_offset = 0;
-                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
-                                        }
-                                        Some(SearchAction::SelectNext) => {
-                                            if !ss.matches.is_empty() {
-                                                ss.selected = (ss.selected + 1).min(ss.matches.len() - 1);
-                                                // Adjust scroll to keep selected visible
-                                                let visible_count = (layout.status_row - 1) as usize;
-                                                if ss.selected >= ss.scroll_offset + visible_count {
-                                                    ss.scroll_offset = ss.selected - visible_count + 1;
-                                                }
-                                            }
-                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
-                                        }
-                                        Some(SearchAction::SelectPrev) => {
-                                            if !ss.matches.is_empty() {
-                                                ss.selected = ss.selected.saturating_sub(1);
-                                                if ss.selected < ss.scroll_offset {
-                                                    ss.scroll_offset = ss.selected;
-                                                }
-                                            }
-                                            search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
-                                        }
-                                        Some(SearchAction::Confirm) => {
-                                            if !ss.matches.is_empty() {
-                                                let vl_idx = ss.matches[ss.selected].visual_line_idx;
-                                                last_search = Some(LastSearch::from_search_state(ss));
-                                                let max_y = doc.max_scroll(state.vp_h);
-                                                let line_num = (vl_idx + 1) as u32;
-                                                self::state::jump_to_visual_line(&mut state, &doc.visual_lines, max_y, line_num);
-                                                flash_msg = Some(format!("match {}/{}", ss.selected + 1, ss.matches.len()));
-                                            }
-                                            mode = ViewerMode::Normal;
-                                            dirty = true;
-                                        }
-                                        Some(SearchAction::Cancel) => {
-                                            mode = ViewerMode::Normal;
-                                            dirty = true;
-                                        }
-                                        None => {}
-                                    }
-                                }
-
-                                ViewerMode::Command(cs) => {
-                                    match map_command_key(key_event) {
-                                        Some(CommandAction::Type(c)) => {
-                                            cs.input.push(c);
-                                            terminal::draw_command_bar(&layout, &cs.input)?;
-                                        }
-                                        Some(CommandAction::Backspace) => {
-                                            if cs.input.is_empty() {
-                                                // Empty input + Backspace → cancel (vim behavior)
-                                                mode = ViewerMode::Normal;
-                                                dirty = true;
+                                                vec![Effect::RedrawStatusBar]
                                             } else {
-                                                cs.input.pop();
+                                                vec![]
+                                            }
+                                        }
+                                    }
+                                }
+                                ViewerMode::Search(ss) => match map_search_key(key_event) {
+                                    Some(a) => mode_search::handle(a, ss, &markdown, &doc.visual_lines, &layout, max_y)?,
+                                    None => vec![],
+                                },
+                                ViewerMode::Command(cs) => match map_command_key(key_event) {
+                                    Some(a) => mode_command::handle(a, cs, &layout)?,
+                                    None => vec![],
+                                },
+                            };
+
+                            for effect in effects {
+                                match effect {
+                                    Effect::ScrollTo(y) => {
+                                        state.y_offset = y;
+                                        dirty = true;
+                                    }
+                                    Effect::MarkDirty => {
+                                        dirty = true;
+                                    }
+                                    Effect::Flash(msg) => {
+                                        flash_msg = Some(msg);
+                                    }
+                                    Effect::RedrawStatusBar => {
+                                        terminal::draw_status_bar(&layout, &state, acc.peek(), flash_msg.as_deref())?;
+                                    }
+                                    Effect::Yank(text) => {
+                                        let _ = terminal::send_osc52(&text);
+                                    }
+                                    Effect::SetMode(m) => {
+                                        match &m {
+                                            ViewerMode::Search(ss) => {
+                                                mode_search::draw_search_screen(&layout, &ss.query, &ss.matches, ss.selected, ss.scroll_offset)?;
+                                            }
+                                            ViewerMode::Command(cs) => {
                                                 terminal::draw_command_bar(&layout, &cs.input)?;
                                             }
-                                        }
-                                        Some(CommandAction::Execute) => {
-                                            let cmd = cs.input.trim().to_string();
-                                            mode = ViewerMode::Normal;
-                                            match cmd.as_str() {
-                                                "" => {
-                                                    // Empty command → just return to normal
-                                                    dirty = true;
-                                                }
-                                                "reload" | "rel" => {
-                                                    return Ok(ExitReason::ConfigReload);
-                                                }
-                                                "q" | "quit" => {
-                                                    return Ok(ExitReason::Quit);
-                                                }
-                                                _ => {
-                                                    flash_msg = Some(format!("Unknown command: {cmd}"));
-                                                    dirty = true;
-                                                }
+                                            ViewerMode::Normal => {
+                                                dirty = true;
                                             }
                                         }
-                                        Some(CommandAction::Cancel) => {
-                                            mode = ViewerMode::Normal;
-                                            dirty = true;
-                                        }
-                                        None => {}
+                                        mode = m;
+                                    }
+                                    Effect::SetLastSearch(ls) => {
+                                        last_search = Some(ls);
+                                    }
+                                    Effect::DeletePlacements => {
+                                        loaded.delete_placements()?;
+                                    }
+                                    Effect::Exit(reason) => {
+                                        return Ok(reason);
                                     }
                                 }
                             }

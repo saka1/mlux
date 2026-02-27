@@ -46,16 +46,17 @@ pub(super) fn vp_dims(layout: &Layout, img_w: u32, img_h: u32) -> (u32, u32) {
     (vp_w, vp_h)
 }
 
-/// Jump scroll offset so that the given 1-based visual line is near the top of the viewport.
-pub(super) fn jump_to_visual_line(
-    state: &mut ViewState,
+/// Compute the y_offset for a 1-based visual line number (pure function, no mutation).
+pub(super) fn visual_line_offset(
     visual_lines: &[VisualLine],
     max_scroll: u32,
     line_num: u32,
-) {
+) -> u32 {
     let idx = (line_num as usize).saturating_sub(1); // 1-based to 0-based
     if idx < visual_lines.len() {
-        state.y_offset = visual_lines[idx].y_px.min(max_scroll);
+        visual_lines[idx].y_px.min(max_scroll)
+    } else {
+        0
     }
 }
 
@@ -141,11 +142,6 @@ pub(super) enum ExitReason {
     Resize { new_cols: u16, new_rows: u16 },
     Reload,
     ConfigReload,
-}
-
-/// Mutable state for command mode (`:` prompt).
-pub(super) struct CommandState {
-    pub input: String,
 }
 
 /// Full redraw: content tiles + sidebar + status bar.
