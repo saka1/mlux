@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use crate::convert::markdown_to_typst_with_map;
 use crate::tile::{TiledDocumentCache, TilePngs, yank_exact, yank_lines};
+use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
 use input::{Action, InputAccumulator, map_key_event, map_search_key, SearchAction};
@@ -55,7 +56,8 @@ enum ViewerMode {
 ///
 /// `md_path` is the Markdown file to display.
 /// `theme` is a theme name (loaded from `themes/{theme}.typ`).
-pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
+/// `watch` enables automatic reload on file change.
+pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
     let filename = md_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -64,15 +66,10 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
 
     terminal::check_tty()?;
 
-    // 1. Markdownとテーマを読み込み
-    let markdown = std::fs::read_to_string(&md_path)
-        .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", md_path.display()))?;
-
+    // 1. テーマを読み込み (変更なし、ループ外で1回)
     let theme_path = PathBuf::from(format!("themes/{}.typ", theme));
     let theme_text = std::fs::read_to_string(&theme_path)
         .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
-
-    let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
 
     // 2. ターミナルサイズを先に取得してビューポート幅を確定
     let winsize = crossterm_terminal::window_size()
@@ -96,9 +93,21 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
     let mut layout = state::compute_layout(term_cols, term_rows, pixel_w, pixel_h);
     let mut y_offset_carry: u32 = 0;
 
-    // Outer loop: each iteration builds a new TiledDocument (initial + resize)
+    // File watcher (optional)
+    let watcher = if watch {
+        Some(FileWatcher::new(&md_path)?)
+    } else {
+        None
+    };
+
+    // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
-        // 5. Build TiledDocument (content + sidebar compiled & split)
+        // 5a. Read markdown (re-read on each iteration for reload support)
+        let markdown = std::fs::read_to_string(&md_path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", md_path.display()))?;
+        let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
+
+        // 5b. Build TiledDocument (content + sidebar compiled & split)
         info!("building tiled document...");
         let tiled_doc = pipeline::build_tiled_document(
             &theme_text, &content_text, &markdown, &source_map, &layout, &font_cache,
@@ -182,10 +191,15 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                     cache.insert(idx, pngs);
                 }
 
+                let idle_timeout = if watcher.is_some() {
+                    Duration::from_millis(200)
+                } else {
+                    Duration::from_secs(86400)
+                };
                 let timeout = if dirty {
                     FRAME_BUDGET.saturating_sub(last_render.elapsed())
                 } else {
-                    Duration::from_secs(86400)
+                    idle_timeout
                 };
 
                 if event::poll(timeout)? {
@@ -452,6 +466,13 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                     dirty = false;
                 }
                 last_render = Instant::now();
+
+                // Check for file changes (non-blocking)
+                if let Some(ref w) = watcher {
+                    if w.has_changed() {
+                        return Ok(ExitReason::Reload);
+                    }
+                }
             }
             // req_tx dropped here → worker recv() gets Err → worker exits → scope joins
         })?;
@@ -471,6 +492,12 @@ pub fn run(md_path: PathBuf, theme: String) -> anyhow::Result<()> {
                 );
                 terminal::delete_all_images()?;
                 // continue 'outer → new tiled_doc + new scope + new worker
+            }
+            ExitReason::Reload => {
+                y_offset_carry = state.y_offset;
+                debug!("file changed: reloading document");
+                terminal::delete_all_images()?;
+                // continue 'outer → re-read file + rebuild document
             }
         }
     }

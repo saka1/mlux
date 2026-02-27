@@ -25,6 +25,10 @@ struct Cli {
     #[arg(long, default_value = "catppuccin", global = true)]
     theme: String,
 
+    /// Disable automatic file watching (viewer reloads on file change by default)
+    #[arg(long, global = true)]
+    no_watch: bool,
+
     /// Log output file path (enables logging when specified)
     #[arg(long, global = true)]
     log: Option<PathBuf>,
@@ -85,7 +89,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            mlux::viewer::run(input, cli.theme)
+            mlux::viewer::run(input, cli.theme, !cli.no_watch)
         }
     };
 

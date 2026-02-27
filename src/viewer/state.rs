@@ -138,6 +138,7 @@ impl LoadedTiles {
 pub(super) enum ExitReason {
     Quit,
     Resize { new_cols: u16, new_rows: u16 },
+    Reload,
 }
 
 /// Full redraw: content tiles + sidebar + status bar.
