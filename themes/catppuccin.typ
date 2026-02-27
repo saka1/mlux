@@ -20,6 +20,10 @@
   fill: rgb("#313244"), inset: (x: 4pt, y: 2pt), radius: 3pt,
   text(font: "DejaVu Sans Mono", size: 10pt, it))
 
+// リスト
+#set list(marker: ([•], [‣], [–]), indent: 1em, body-indent: 0.7em)
+#set enum(indent: 1em, body-indent: 0.7em)
+
 // 引用ブロック
 #show quote.where(block: true): it => block(
   inset: (left: 16pt, y: 8pt),
