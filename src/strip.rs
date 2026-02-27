@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use log::{debug, info, trace};
 use typst::foundations::Smart;
-use typst::layout::{Abs, Axes, Frame, FrameItem, Page, PagedDocument, Point};
+use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::{Source, Span};
 use typst::visualize::{Geometry, Paint};
 
@@ -349,6 +349,63 @@ pub fn generate_sidebar_typst(
 }
 
 // ---------------------------------------------------------------------------
+// Shared build pipeline: Markdown → Typst → PagedDocument → StripDocument
+// ---------------------------------------------------------------------------
+
+/// Default sidebar width in typst points (used by cmd_render).
+pub const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
+
+/// Build a StripDocument from converted Typst content.
+///
+/// Shared pipeline used by both `cmd_render` and the terminal viewer.
+/// Compiles content, extracts visual lines with source mapping,
+/// generates + compiles sidebar, and assembles into a StripDocument.
+pub fn build_strip_document(
+    theme_text: &str,
+    content_text: &str,
+    md_source: &str,
+    source_map: &SourceMap,
+    width_pt: f64,
+    sidebar_width_pt: f64,
+    strip_height_pt: f64,
+    ppi: f32,
+    fonts: &crate::world::FontCache,
+) -> Result<StripDocument> {
+    let start = Instant::now();
+
+    // 1. Compile content document
+    let content_world = crate::world::MluxWorld::new(theme_text, content_text, width_pt, fonts);
+    let document = crate::render::compile_document(&content_world)?;
+
+    // 2. Extract visual lines with source mapping
+    let mapping_params = SourceMappingParams {
+        source: content_world.main_source(),
+        content_offset: content_world.content_offset(),
+        source_map,
+        md_source,
+    };
+    let visual_lines = extract_visual_lines_with_map(&document, ppi, Some(&mapping_params));
+
+    if document.pages.is_empty() {
+        bail!("[BUG] document has no pages");
+    }
+    let page_height_pt = document.pages[0].frame.size().y.to_pt();
+
+    // 3. Compile sidebar document using visual lines
+    let sidebar_source = generate_sidebar_typst(&visual_lines, sidebar_width_pt, page_height_pt);
+    let sidebar_world = crate::world::MluxWorld::new_raw(&sidebar_source, fonts);
+    let sidebar_doc = crate::render::compile_document(&sidebar_world)?;
+
+    // 4. Build StripDocument with both content + sidebar
+    let strip_doc = StripDocument::new(&document, &sidebar_doc, visual_lines, strip_height_pt, ppi)?;
+    info!(
+        "build_strip_document completed in {:.1}ms",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    Ok(strip_doc)
+}
+
+// ---------------------------------------------------------------------------
 // Frame splitting — split a tall frame into vertical strips
 // ---------------------------------------------------------------------------
 
@@ -613,31 +670,7 @@ impl StripDocument {
     ) -> Result<Vec<u8>> {
         assert!(idx < strips.len(), "{label} strip index out of bounds");
         trace!("rendering {label} strip {idx}");
-        let start = Instant::now();
-
-        let page = Page {
-            frame: strips[idx].clone(),
-            fill: fill.clone(),
-            numbering: None,
-            supplement: typst::foundations::Content::empty(),
-            number: 0,
-        };
-
-        let pixel_per_pt = self.ppi / 72.0;
-        let pixmap = typst_render::render(&page, pixel_per_pt);
-        let png = pixmap
-            .encode_png()
-            .map_err(|e| anyhow::anyhow!("{label} PNG encoding failed: {e}"))?;
-
-        debug!(
-            "render {label} strip {idx}: {}x{}px, {} bytes PNG in {:.1}ms",
-            pixmap.width(),
-            pixmap.height(),
-            png.len(),
-            start.elapsed().as_secs_f64() * 1000.0
-        );
-
-        Ok(png)
+        crate::render::render_frame_to_png(&strips[idx], fill, self.ppi)
     }
 
     /// Determine which strip(s) are visible at a given scroll offset.

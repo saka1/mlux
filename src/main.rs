@@ -6,9 +6,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use log::info;
 
-use mlux::convert::markdown_to_typst;
-use mlux::render::{compile_document, dump_document, render_frame_to_png};
-use mlux::strip::split_frame;
+use mlux::convert::markdown_to_typst_with_map;
+use mlux::render::{compile_document, dump_document};
+use mlux::strip::{DEFAULT_SIDEBAR_WIDTH_PT, build_strip_document};
 use mlux::world::{FontCache, MluxWorld};
 
 #[derive(Parser)]
@@ -111,15 +111,14 @@ fn cmd_render(
     }
 
     // Convert markdown to typst
-    let content_text = markdown_to_typst(&markdown);
+    let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
 
     // Create font cache (one-time filesystem scan)
     let font_cache = FontCache::new();
 
-    // Create world and compile
-    let world = MluxWorld::new(&theme_text, &content_text, width, &font_cache);
     if dump {
-        // Dump generated Typst source
+        // Dump mode: build world directly for source inspection
+        let world = MluxWorld::new(&theme_text, &content_text, width, &font_cache);
         let source_text = world.main_source().text();
         eprintln!("=== Generated main.typ ({} lines) ===", source_text.lines().count());
         for (i, line) in source_text.lines().enumerate() {
@@ -127,7 +126,6 @@ fn cmd_render(
         }
         eprintln!();
 
-        // Compile and dump frame tree (or show errors)
         match compile_document(&world) {
             Ok(doc) => dump_document(&doc),
             Err(e) => eprintln!("{e:#}"),
@@ -135,15 +133,10 @@ fn cmd_render(
         return Ok(());
     }
 
-    let document = compile_document(&world)?;
-    if document.pages.is_empty() {
-        anyhow::bail!("[BUG] typst produced no pages — please report this issue");
-    }
-    let page = &document.pages[0];
-
-    // Split into strips and render each
-    let strips = split_frame(&page.frame, strip_height);
-    let fill = &page.fill;
+    let strip_doc = build_strip_document(
+        &theme_text, &content_text, &markdown, &source_map,
+        width, DEFAULT_SIDEBAR_WIDTH_PT, strip_height, ppi, &font_cache,
+    )?;
 
     let stem = output.file_stem().unwrap_or_default().to_string_lossy().to_string();
     let ext = output.extension().unwrap_or_default().to_string_lossy().to_string();
@@ -151,8 +144,8 @@ fn cmd_render(
     fs::create_dir_all(parent).ok();
 
     let mut files = Vec::new();
-    for (i, strip) in strips.iter().enumerate() {
-        let png_data = render_frame_to_png(strip, fill, ppi)?;
+    for i in 0..strip_doc.strip_count() {
+        let png_data = strip_doc.render_strip(i)?;
         let filename = format!("{}-{:03}.{}", stem, i, ext);
         let path = parent.join(&filename);
         fs::write(&path, &png_data)
@@ -165,7 +158,7 @@ fn cmd_render(
         pipeline_start.elapsed().as_secs_f64() * 1000.0
     );
 
-    eprintln!("rendered {} -> {} strip(s):", input.display(), strips.len());
+    eprintln!("rendered {} -> {} strip(s):", input.display(), strip_doc.strip_count());
     for (filename, size) in &files {
         eprintln!("  {} ({} bytes)", filename, size);
     }
