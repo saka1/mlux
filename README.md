@@ -45,6 +45,44 @@ mlux render input.md -o output.png --width 800 --ppi 144 --theme catppuccin
 | `y` / `Y` | Yank line / block |
 | `q` | Quit |
 
+## Configuration
+
+mlux reads settings from `~/.config/mlux/config.toml` (respects `$XDG_CONFIG_HOME`).
+All fields are optional — omit any to use the default.
+
+```toml
+# Theme name (loaded from themes/{name}.typ)
+theme = "catppuccin"
+
+# Page width in pt (default: 660)
+width = 660.0
+
+# Resolution in pixels per inch (default: 144)
+ppi = 144.0
+
+[viewer]
+# Scroll distance per j/k press in terminal cells (default: 3)
+scroll_step = 3
+
+# Redraw frame budget in milliseconds (default: 32)
+frame_budget_ms = 32
+
+# Minimum tile height in pt (default: 500)
+tile_height = 500.0
+
+# Sidebar width in terminal columns (default: 6)
+sidebar_cols = 6
+
+# LRU tile eviction distance (default: 4)
+evict_distance = 4
+
+# File watch polling interval in milliseconds (default: 200)
+watch_interval_ms = 200
+```
+
+CLI options override config file values. For example, `mlux render input.md --ppi 288`
+uses PPI 288 regardless of the config file.
+
 ## Building
 
 ```

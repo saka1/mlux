@@ -30,8 +30,7 @@ pub(super) struct ViewState {
     pub filename: String,
 }
 
-pub(super) fn compute_layout(term_cols: u16, term_rows: u16, pixel_w: u16, pixel_h: u16) -> Layout {
-    let sidebar_cols: u16 = 6;
+pub(super) fn compute_layout(term_cols: u16, term_rows: u16, pixel_w: u16, pixel_h: u16, sidebar_cols: u16) -> Layout {
     let image_col = sidebar_cols;
     let image_cols = term_cols.saturating_sub(sidebar_cols);
     let image_rows = term_rows.saturating_sub(1);
@@ -75,13 +74,15 @@ pub(super) struct LoadedTiles {
     /// tile_index → Kitty image IDs (content + sidebar)
     pub map: HashMap<usize, TileImageIds>,
     next_id: u32,
+    evict_distance: usize,
 }
 
 impl LoadedTiles {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(evict_distance: usize) -> Self {
         Self {
             map: HashMap::new(),
             next_id: 100, // Reserve 1-99 for future use
+            evict_distance,
         }
     }
 
@@ -109,7 +110,7 @@ impl LoadedTiles {
         let to_evict: Vec<usize> = self
             .map
             .keys()
-            .filter(|&&k| (k as isize - idx as isize).unsigned_abs() > 4)
+            .filter(|&&k| (k as isize - idx as isize).unsigned_abs() > self.evict_distance)
             .copied()
             .collect();
         for k in to_evict {

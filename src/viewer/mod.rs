@@ -34,6 +34,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::config::Config;
 use crate::convert::markdown_to_typst_with_map;
 use crate::tile::{TiledDocumentCache, TilePngs, yank_exact, yank_lines};
 use crate::watch::FileWatcher;
@@ -42,9 +43,6 @@ use crate::world::FontCache;
 use input::{Action, InputAccumulator, map_key_event, map_search_key, SearchAction};
 use search::{LastSearch, SearchState};
 use state::{ExitReason, LoadedTiles, ViewState};
-
-const SCROLL_STEP_CELLS: u32 = 3;
-const FRAME_BUDGET: Duration = Duration::from_millis(32); // ~30fps max
 
 /// Viewer mode: normal (tile display) or search (picker UI).
 enum ViewerMode {
@@ -55,9 +53,9 @@ enum ViewerMode {
 /// Run the terminal viewer.
 ///
 /// `md_path` is the Markdown file to display.
-/// `theme` is a theme name (loaded from `themes/{theme}.typ`).
+/// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
 /// `watch` enables automatic reload on file change.
-pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
+pub fn run(md_path: PathBuf, config: &Config, watch: bool) -> anyhow::Result<()> {
     let filename = md_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -67,7 +65,7 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
     terminal::check_tty()?;
 
     // 1. テーマを読み込み (変更なし、ループ外で1回)
-    let theme_path = PathBuf::from(format!("themes/{}.typ", theme));
+    let theme_path = PathBuf::from(format!("themes/{}.typ", config.theme));
     let theme_text = std::fs::read_to_string(&theme_path)
         .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
 
@@ -90,7 +88,7 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
     // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = terminal::RawGuard::enter()?;
 
-    let mut layout = state::compute_layout(term_cols, term_rows, pixel_w, pixel_h);
+    let mut layout = state::compute_layout(term_cols, term_rows, pixel_w, pixel_h, config.viewer.sidebar_cols);
     let mut y_offset_carry: u32 = 0;
 
     // File watcher (optional)
@@ -110,7 +108,8 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
         // 5b. Build TiledDocument (content + sidebar compiled & split)
         info!("building tiled document...");
         let tiled_doc = pipeline::build_tiled_document(
-            &theme_text, &content_text, &markdown, &source_map, &layout, &font_cache,
+            &theme_text, &content_text, &markdown, &source_map, &layout,
+            config.ppi, config.viewer.tile_height, &font_cache,
         )?;
 
         let img_w = tiled_doc.width_px();
@@ -125,7 +124,7 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
         };
 
         let mut cache = TiledDocumentCache::new();
-        let mut loaded = LoadedTiles::new();
+        let mut loaded = LoadedTiles::new(config.viewer.evict_distance);
 
         // 6. thread::scope — prefetch worker + inner event loop
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
@@ -192,12 +191,12 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
                 }
 
                 let idle_timeout = if watcher.is_some() {
-                    Duration::from_millis(200)
+                    config.viewer.watch_interval
                 } else {
                     Duration::from_secs(86400)
                 };
                 let timeout = if dirty {
-                    FRAME_BUDGET.saturating_sub(last_render.elapsed())
+                    config.viewer.frame_budget.saturating_sub(last_render.elapsed())
                 } else {
                     idle_timeout
                 };
@@ -215,7 +214,7 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
                                     flash_msg = None;
 
                                     let max_y = doc.max_scroll(state.vp_h);
-                                    let scroll_step = SCROLL_STEP_CELLS * layout.cell_h as u32;
+                                    let scroll_step = config.viewer.scroll_step * layout.cell_h as u32;
                                     let half_page =
                                         (layout.image_rows as u32 / 2).max(1) * layout.cell_h as u32;
 
@@ -461,7 +460,7 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
                     self::state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
                     cache.evict_distant(
                         (state.y_offset / doc.tile_height_px()) as usize,
-                        4,
+                        config.viewer.evict_distance,
                     );
                     dirty = false;
                 }
@@ -489,6 +488,7 @@ pub fn run(md_path: PathBuf, theme: String, watch: bool) -> anyhow::Result<()> {
                     new_rows,
                     new_winsize.width,
                     new_winsize.height,
+                    config.viewer.sidebar_cols,
                 );
                 terminal::delete_all_images()?;
                 // continue 'outer → new tiled_doc + new scope + new worker

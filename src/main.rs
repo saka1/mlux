@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use log::info;
 
+use mlux::config;
 use mlux::convert::markdown_to_typst_with_map;
 use mlux::render::{compile_document, dump_document};
 use mlux::tile::{DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
@@ -22,8 +23,8 @@ struct Cli {
     input: Option<PathBuf>,
 
     /// Theme name (loaded from themes/{name}.typ)
-    #[arg(long, default_value = "catppuccin", global = true)]
-    theme: String,
+    #[arg(long, global = true)]
+    theme: Option<String>,
 
     /// Disable automatic file watching (viewer reloads on file change by default)
     #[arg(long, global = true)]
@@ -46,16 +47,16 @@ enum Command {
         output: PathBuf,
 
         /// Page width in pt
-        #[arg(long, default_value_t = 660.0)]
-        width: f64,
+        #[arg(long)]
+        width: Option<f64>,
 
         /// Output resolution in PPI
-        #[arg(long, default_value_t = 144.0)]
-        ppi: f32,
+        #[arg(long)]
+        ppi: Option<f32>,
 
         /// Tile height in pt
-        #[arg(long, default_value_t = 500.0)]
-        tile_height: f64,
+        #[arg(long)]
+        tile_height: Option<f64>,
 
         /// Dump frame tree to stderr
         #[arg(long)]
@@ -77,9 +78,35 @@ fn main() {
     }
     // viewer mode + no --log → logger not initialized (no log output)
 
+    // Load config file and merge CLI overrides
+    let mut cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
+    };
+
+    // Extract render-subcommand CLI overrides (width/ppi/tile_height)
+    let (render_width, render_ppi, render_tile_height) = match &cli.command {
+        Some(Command::Render { width, ppi, tile_height, .. }) => {
+            (*width, *ppi, *tile_height)
+        }
+        None => (None, None, None),
+    };
+
+    cfg.merge_cli(
+        cli.theme,
+        render_width,
+        render_ppi,
+        render_tile_height,
+    );
+
+    let config = cfg.resolve();
+
     let result = match cli.command {
-        Some(Command::Render { input, output, width, ppi, tile_height, dump }) => {
-            cmd_render(input, cli.theme, output, width, ppi, tile_height, dump)
+        Some(Command::Render { input, output, dump, .. }) => {
+            cmd_render(input, &config, output, dump)
         }
         None => {
             let input = match cli.input {
@@ -89,7 +116,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            mlux::viewer::run(input, cli.theme, !cli.no_watch)
+            mlux::viewer::run(input, &config, !cli.no_watch)
         }
     };
 
@@ -106,14 +133,16 @@ fn main() {
 
 fn cmd_render(
     input: PathBuf,
-    theme: String,
+    config: &config::Config,
     output: PathBuf,
-    width: f64,
-    ppi: f32,
-    tile_height: f64,
     dump: bool,
 ) -> Result<()> {
     let pipeline_start = Instant::now();
+
+    let width = config.width;
+    let ppi = config.ppi;
+    let tile_height = config.viewer.tile_height;
+    let theme = &config.theme;
 
     // Read input markdown
     let markdown = fs::read_to_string(&input)

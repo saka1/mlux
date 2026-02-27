@@ -1514,6 +1514,8 @@ dependencies = [
  "log",
  "notify",
  "pulldown-cmark",
+ "serde",
+ "toml",
  "typst",
  "typst-kit",
  "typst-render",
