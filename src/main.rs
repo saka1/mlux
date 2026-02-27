@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 
 use mlux::convert::markdown_to_typst;
-use mlux::render::{compile_document, dump_document, format_diagnostic, render_frame_to_png};
+use mlux::render::{compile_document, dump_document, render_frame_to_png};
 use mlux::strip::split_frame;
 use mlux::world::{FontCache, MluxWorld};
 
@@ -128,17 +128,9 @@ fn cmd_render(
         eprintln!();
 
         // Compile and dump frame tree (or show errors)
-        let warned = typst::compile::<typst::layout::PagedDocument>(&world);
-        for w in &warned.warnings {
-            eprint!("{}", format_diagnostic(w, &world));
-        }
-        match warned.output {
+        match compile_document(&world) {
             Ok(doc) => dump_document(&doc),
-            Err(errors) => {
-                for e in &errors {
-                    eprint!("{}", format_diagnostic(e, &world));
-                }
-            }
+            Err(e) => eprintln!("{e:#}"),
         }
         return Ok(());
     }
