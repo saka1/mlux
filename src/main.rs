@@ -24,6 +24,10 @@ struct Cli {
     /// Theme name (loaded from themes/{name}.typ)
     #[arg(long, default_value = "catppuccin", global = true)]
     theme: String,
+
+    /// Log output file path (enables logging when specified)
+    #[arg(long, global = true)]
+    log: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -56,8 +60,18 @@ enum Command {
 }
 
 fn main() {
-    env_logger::init();
     let cli = Cli::parse();
+
+    if let Some(log_path) = &cli.log {
+        let file = std::fs::File::create(log_path)
+            .expect("failed to open log file");
+        env_logger::Builder::from_default_env()
+            .target(env_logger::Target::Pipe(Box::new(file)))
+            .init();
+    } else if cli.command.is_some() {
+        env_logger::init();
+    }
+    // viewer mode + no --log → logger not initialized (no log output)
 
     let result = match cli.command {
         Some(Command::Render { input, output, width, ppi, tile_height, dump }) => {
