@@ -365,6 +365,10 @@ pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize)
 }
 
 /// Extract URLs from a range of Markdown source lines (1-based, inclusive).
+///
+/// Step 1: Parse with pulldown-cmark to extract `[text](url)` links.
+/// Step 2: Extract bare URLs (e.g., `https://example.com`) from plain text
+///         using regex, deduplicating against URLs already found in step 1.
 pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec<UrlEntry> {
     let lines: Vec<&str> = md_source.lines().collect();
     let start_idx = start.saturating_sub(1);
@@ -374,13 +378,15 @@ pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec
     }
     let block_text = lines[start_idx..end_idx].join("\n");
 
-    // Parse with pulldown-cmark and collect link URLs + text
+    // Step 1: Parse with pulldown-cmark and collect link URLs + text.
+    // Also collect individual plain text fragments for bare URL extraction.
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let parser = Parser::new_ext(&block_text, Options::empty());
     let mut urls = Vec::new();
     let mut in_link = false;
     let mut current_url = String::new();
     let mut current_text = String::new();
+    let mut plain_texts: Vec<String> = Vec::new();
     for event in parser {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -403,9 +409,26 @@ pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec
             Event::Code(c) if in_link => {
                 current_text.push_str(&c);
             }
+            Event::Text(t) => {
+                plain_texts.push(t.into_string());
+            }
             _ => {}
         }
     }
+
+    // Step 2: Extract bare URLs from each text fragment independently,
+    // deduplicating against URLs already found in step 1.
+    for text in &plain_texts {
+        for bare_url in crate::url::extract_bare_urls(text) {
+            if !urls.iter().any(|u| u.url == bare_url) {
+                urls.push(UrlEntry {
+                    url: bare_url.clone(),
+                    text: bare_url,
+                });
+            }
+        }
+    }
+
     urls
 }
 
@@ -983,5 +1006,43 @@ mod tests {
         assert_eq!(urls[0].text, "link1");
         assert_eq!(urls[1].url, "https://two.invalid/");
         assert_eq!(urls[1].text, "link2");
+    }
+
+    #[test]
+    fn test_extract_urls_bare_url() {
+        let md = "Check https://rust-lang.invalid/ for more\n";
+        let urls = extract_urls_from_lines(md, 1, 1);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://rust-lang.invalid/");
+        assert_eq!(urls[0].text, "https://rust-lang.invalid/");
+    }
+
+    #[test]
+    fn test_extract_urls_mixed_link_and_bare() {
+        let md = "[Rust](https://rust-lang.invalid) and https://crates.invalid\n";
+        let urls = extract_urls_from_lines(md, 1, 1);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://rust-lang.invalid");
+        assert_eq!(urls[0].text, "Rust");
+        assert_eq!(urls[1].url, "https://crates.invalid");
+        assert_eq!(urls[1].text, "https://crates.invalid");
+    }
+
+    #[test]
+    fn test_extract_urls_bare_duplicate_with_link() {
+        let md = "[Rust](https://rust-lang.invalid) and https://rust-lang.invalid\n";
+        let urls = extract_urls_from_lines(md, 1, 1);
+        assert_eq!(urls.len(), 1, "duplicate bare URL should be deduplicated");
+        assert_eq!(urls[0].url, "https://rust-lang.invalid");
+        assert_eq!(urls[0].text, "Rust");
+    }
+
+    #[test]
+    fn test_extract_urls_bare_urls_in_list() {
+        let md = "- https://help.x.com/ja/using-x/create-a-thread\n- https://help.x.com/en/using-x/types-of-posts\n";
+        let urls = extract_urls_from_lines(md, 1, 2);
+        assert_eq!(urls.len(), 2, "each list item should produce one URL");
+        assert_eq!(urls[0].url, "https://help.x.com/ja/using-x/create-a-thread");
+        assert_eq!(urls[1].url, "https://help.x.com/en/using-x/types-of-posts");
     }
 }
