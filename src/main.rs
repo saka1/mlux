@@ -151,10 +151,9 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
     let markdown = fs::read_to_string(&input)
         .with_context(|| format!("failed to read {}", input.display()))?;
 
-    // Read theme file
-    let theme_path = PathBuf::from(format!("themes/{}.typ", theme));
-    let theme_text = fs::read_to_string(&theme_path)
-        .with_context(|| format!("failed to read theme {}", theme_path.display()))?;
+    // Look up built-in theme
+    let theme_text =
+        mlux::theme::get(theme).ok_or_else(|| anyhow::anyhow!("unknown theme '{theme}'"))?;
 
     if markdown.trim().is_empty() {
         anyhow::bail!("input file is empty or contains only whitespace");
@@ -168,7 +167,7 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
 
     if dump {
         // Dump mode: build world directly for source inspection
-        let world = MluxWorld::new(&theme_text, &content_text, width, &font_cache);
+        let world = MluxWorld::new(theme_text, &content_text, width, &font_cache);
         let source_text = world.main_source().text();
         eprintln!(
             "=== Generated main.typ ({} lines) ===",
@@ -187,7 +186,7 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
     }
 
     let tiled_doc = build_tiled_document(&BuildParams {
-        theme_text: &theme_text,
+        theme_text,
         content_text: &content_text,
         md_source: &markdown,
         source_map: &source_map,

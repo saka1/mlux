@@ -136,9 +136,8 @@ pub fn run(
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
         // 1. テーマを読み込み (config reload でテーマ名が変わる場合があるのでループ内)
-        let theme_path = PathBuf::from(format!("themes/{}.typ", config.theme));
-        let theme_text = std::fs::read_to_string(&theme_path)
-            .map_err(|e| anyhow::anyhow!("failed to read theme {}: {e}", theme_path.display()))?;
+        let theme_text = crate::theme::get(&config.theme)
+            .ok_or_else(|| anyhow::anyhow!("unknown theme '{}'", config.theme))?;
 
         // 5a. Read markdown (re-read on each iteration for reload support)
         let markdown = std::fs::read_to_string(&md_path)
@@ -148,7 +147,7 @@ pub fn run(
         // 5b. Build TiledDocument (content + sidebar compiled & split)
         info!("building tiled document...");
         let tiled_doc = pipeline::build_tiled_document(&pipeline::PipelineInput {
-            theme_text: &theme_text,
+            theme_text,
             content_text: &content_text,
             md_source: &markdown,
             source_map: &source_map,
@@ -505,17 +504,15 @@ pub fn run(
 
                 match config::reload_config(cli_overrides) {
                     Ok(new_config) => {
-                        // Verify theme file exists before committing
-                        let new_theme_path =
-                            PathBuf::from(format!("themes/{}.typ", new_config.theme));
-                        if !new_theme_path.exists() {
+                        // Verify built-in theme exists before committing
+                        if crate::theme::get(&new_config.theme).is_none() {
                             outer_flash = Some(format!(
-                                "Reload failed: theme '{}': file not found",
+                                "Reload failed: unknown theme '{}'",
                                 new_config.theme
                             ));
                             debug!(
-                                "config reload: theme file {} not found, keeping old config",
-                                new_theme_path.display()
+                                "config reload: unknown theme '{}', keeping old config",
+                                new_config.theme
                             );
                             // Rebuild with old config
                             terminal::delete_all_images()?;

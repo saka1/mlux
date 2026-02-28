@@ -7,8 +7,8 @@ use mlux::tile::{
 };
 use mlux::world::{FontCache, MluxWorld};
 
-fn load_theme() -> String {
-    fs::read_to_string("themes/catppuccin.typ").expect("theme file should exist")
+fn load_theme() -> &'static str {
+    mlux::theme::get("catppuccin").expect("built-in theme should exist")
 }
 
 #[test]
@@ -283,7 +283,10 @@ fn test_source_map_inline_formatting_preserved() {
     assert!(!vlines.is_empty(), "expected at least 1 visual line");
 
     let yanked = yank_lines(md, &vlines, 0, 0);
-    assert_eq!(yanked, "Text with **bold** and [link](http://example.invalid/).");
+    assert_eq!(
+        yanked,
+        "Text with **bold** and [link](http://example.invalid/)."
+    );
 }
 
 #[test]

@@ -79,7 +79,9 @@ impl ConfigFile {
     /// Resolve to a Config by applying defaults to missing fields.
     pub fn resolve(self) -> Config {
         let config = Config {
-            theme: self.theme.unwrap_or_else(|| "catppuccin".into()),
+            theme: self
+                .theme
+                .unwrap_or_else(|| crate::theme::DEFAULT_THEME.into()),
             width: self.width.unwrap_or(660.0),
             ppi: self.ppi.unwrap_or(144.0),
             viewer: ViewerConfig {

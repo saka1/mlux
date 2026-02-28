@@ -199,7 +199,8 @@ mod tests {
 
     #[test]
     fn test_collect_all_url_entries_basic() {
-        let md = "See [Rust](https://rust.invalid/) here.\nPlain line.\n[Docs](https://docs.invalid/)\n";
+        let md =
+            "See [Rust](https://rust.invalid/) here.\nPlain line.\n[Docs](https://docs.invalid/)\n";
         let vls = vec![
             make_vl(Some((1, 1))),
             make_vl(Some((2, 2))),

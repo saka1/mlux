@@ -975,8 +975,7 @@ mod tests {
 
     #[test]
     fn test_extract_urls_multiline_block() {
-        let md =
-            "Line 1\n[link1](https://one.invalid/)\n[link2](https://two.invalid/)\nLine 4\n";
+        let md = "Line 1\n[link1](https://one.invalid/)\n[link2](https://two.invalid/)\nLine 4\n";
         let vls = vec![make_vl(Some((2, 3)))];
         let urls = extract_urls(md, &vls, 0);
         assert_eq!(urls.len(), 2);
