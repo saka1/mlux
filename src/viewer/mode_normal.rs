@@ -5,6 +5,7 @@ use log::debug;
 use super::input::Action;
 use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};
+use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
 use super::state::{ExitReason, ViewState, visual_line_offset};
 use super::{Effect, ViewerMode};
 use crate::tile::{VisualLine, extract_urls, yank_exact, yank_lines};
@@ -125,6 +126,21 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
             ]
         }
         Action::OpenUrl(n) => open_url(ctx, n),
+
+        Action::EnterUrlPicker => {
+            let entries = collect_all_url_entries(ctx.markdown, ctx.visual_lines);
+            if entries.is_empty() {
+                vec![
+                    Effect::Flash("No URLs in document".into()),
+                    Effect::RedrawStatusBar,
+                ]
+            } else {
+                vec![
+                    Effect::DeletePlacements,
+                    Effect::SetMode(ViewerMode::UrlPicker(UrlPickerState::new(entries))),
+                ]
+            }
+        }
     }
 }
 
@@ -189,7 +205,10 @@ fn yank_and_flash(
     ]
 }
 
-/// Open the first URL found on the given visual line in the default browser.
+/// Open URL(s) found on the given visual line.
+///
+/// If exactly one URL, opens it directly. If multiple, enters URL picker
+/// with only the URLs from that line.
 fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
     let vl_idx = (line_num as usize).saturating_sub(1);
     if vl_idx >= ctx.visual_lines.len() {
@@ -214,10 +233,26 @@ fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
             Effect::RedrawStatusBar,
         ];
     }
-    debug!("open_url L{line_num}: {}", urls[0]);
-    vec![
-        Effect::OpenUrl(urls[0].clone()),
-        Effect::Flash(format!("Opening {}", urls[0])),
-        Effect::RedrawStatusBar,
-    ]
+    if urls.len() == 1 {
+        debug!("open_url L{line_num}: {}", urls[0].url);
+        vec![
+            Effect::OpenUrl(urls[0].url.clone()),
+            Effect::Flash(format!("Opening {}", urls[0].url)),
+            Effect::RedrawStatusBar,
+        ]
+    } else {
+        debug!("open_url L{line_num}: {} URLs, entering picker", urls.len());
+        let entries: Vec<UrlPickerEntry> = urls
+            .into_iter()
+            .map(|u| UrlPickerEntry {
+                url: u.url,
+                text: u.text,
+                visual_line: line_num as usize,
+            })
+            .collect();
+        vec![
+            Effect::DeletePlacements,
+            Effect::SetMode(ViewerMode::UrlPicker(UrlPickerState::new(entries))),
+        ]
+    }
 }

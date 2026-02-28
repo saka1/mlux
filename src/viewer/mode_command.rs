@@ -42,6 +42,7 @@ pub(super) fn handle(
                 }
                 "reload" | "rel" => Ok(vec![Effect::Exit(ExitReason::ConfigReload)]),
                 "q" | "quit" => Ok(vec![Effect::Exit(ExitReason::Quit)]),
+                "open" => Ok(vec![Effect::EnterUrlPickerAll]),
                 _ => Ok(vec![
                     Effect::SetMode(ViewerMode::Normal),
                     Effect::Flash(format!("Unknown command: {cmd}")),

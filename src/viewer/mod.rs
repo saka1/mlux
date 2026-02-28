@@ -21,6 +21,7 @@ mod input;
 mod mode_command;
 mod mode_normal;
 mod mode_search;
+mod mode_url;
 mod pipeline;
 mod state;
 mod terminal;
@@ -42,16 +43,17 @@ use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
-use input::{InputAccumulator, map_command_key, map_key_event, map_search_key};
+use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
 use mode_command::CommandState;
 use mode_search::LastSearch;
 use state::{ExitReason, LoadedTiles, ViewState};
 
-/// Viewer mode: normal (tile display), search (picker UI), or command (`:` prompt).
+/// Viewer mode: normal (tile display), search (picker UI), command (`:` prompt), or URL picker.
 enum ViewerMode {
     Normal,
     Search(mode_search::SearchState),
     Command(CommandState),
+    UrlPicker(mode_url::UrlPickerState),
 }
 
 /// Side-effect descriptors produced by mode handlers.
@@ -63,11 +65,13 @@ enum Effect {
     MarkDirty,
     Flash(String),
     RedrawStatusBar,
+    RedrawUrlPicker,
     Yank(String),
     OpenUrl(String),
     SetMode(ViewerMode),
     SetLastSearch(LastSearch),
     DeletePlacements,
+    EnterUrlPickerAll,
     Exit(ExitReason),
 }
 
@@ -311,6 +315,10 @@ pub fn run(
                                     Some(a) => mode_command::handle(a, cs, &layout)?,
                                     None => vec![],
                                 },
+                                ViewerMode::UrlPicker(up) => match map_url_key(key_event) {
+                                    Some(a) => mode_url::handle(a, up)?,
+                                    None => vec![],
+                                },
                             };
 
                             for effect in effects {
@@ -333,6 +341,11 @@ pub fn run(
                                             flash_msg.as_deref(),
                                         )?;
                                     }
+                                    Effect::RedrawUrlPicker => {
+                                        if let ViewerMode::UrlPicker(ref up) = mode {
+                                            mode_url::draw_url_screen(&layout, up)?;
+                                        }
+                                    }
                                     Effect::Yank(text) => {
                                         let _ = terminal::send_osc52(&text);
                                     }
@@ -353,6 +366,9 @@ pub fn run(
                                             ViewerMode::Command(cs) => {
                                                 terminal::draw_command_bar(&layout, &cs.input)?;
                                             }
+                                            ViewerMode::UrlPicker(up) => {
+                                                mode_url::draw_url_screen(&layout, up)?;
+                                            }
                                             ViewerMode::Normal => {
                                                 // Clear text from search/command screen and
                                                 // purge terminal-side image data so that
@@ -370,6 +386,37 @@ pub fn run(
                                     }
                                     Effect::DeletePlacements => {
                                         loaded.delete_placements()?;
+                                    }
+                                    Effect::EnterUrlPickerAll => {
+                                        let entries = mode_url::collect_all_url_entries(
+                                            &markdown,
+                                            &doc.visual_lines,
+                                        );
+                                        if entries.is_empty() {
+                                            // Return to normal with flash; need full
+                                            // redraw if coming from command mode.
+                                            flash_msg = Some("No URLs in document".into());
+                                            if !matches!(mode, ViewerMode::Normal) {
+                                                terminal::clear_screen()?;
+                                                terminal::delete_all_images()?;
+                                                loaded.map.clear();
+                                                mode = ViewerMode::Normal;
+                                                dirty = true;
+                                            } else {
+                                                terminal::draw_status_bar(
+                                                    &layout,
+                                                    &state,
+                                                    acc.peek(),
+                                                    flash_msg.as_deref(),
+                                                )?;
+                                            }
+                                        } else {
+                                            loaded.delete_placements()?;
+                                            terminal::clear_screen()?;
+                                            let up = mode_url::UrlPickerState::new(entries);
+                                            mode_url::draw_url_screen(&layout, &up)?;
+                                            mode = ViewerMode::UrlPicker(up);
+                                        }
                                     }
                                     Effect::Exit(reason) => {
                                         return Ok(reason);

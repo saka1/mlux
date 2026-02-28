@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn test_bracket_in_heading() {
         // crash-b305e5d4: ## text](url) → ] が Typst の unexpected closing bracket
-        let md = "## エanguage](https://doc.rust-lang.org/book/) を参照。";
+        let md = "## エanguage](https://docs.invalid/book/) を参照。";
         let typst = markdown_to_typst(md);
         assert!(
             !typst.contains("]("),
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_link_text_with_bracket() {
-        let md = "[foo]bar](https://example.com)";
+        let md = "[foo]bar](https://example.invalid/)";
         let typst = markdown_to_typst(md);
         // 構造的な ] は convert.rs が直接 push、テキスト中の ] は escape される
         assert!(
@@ -784,9 +784,9 @@ mod tests {
 
     #[test]
     fn test_link() {
-        let md = "[Rust](https://www.rust-lang.org/)";
+        let md = "[Rust](https://rust.invalid/)";
         let typst = markdown_to_typst(md);
-        assert!(typst.contains("#link(\"https://www.rust-lang.org/\")[Rust]"));
+        assert!(typst.contains("#link(\"https://rust.invalid/\")[Rust]"));
     }
 
     #[test]

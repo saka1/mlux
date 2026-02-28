@@ -65,6 +65,7 @@ pub(super) enum Action {
     YankBlockPrompt,
     OpenUrl(u32),
     OpenUrlPrompt,
+    EnterUrlPicker,
     EnterSearch,
     EnterCommand,
     SearchNextMatch,
@@ -148,6 +149,12 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             Some(n) => Some(Action::OpenUrl(n)),
         },
 
+        // URL picker (O)
+        (KeyCode::Char('O'), _) => {
+            acc.reset();
+            Some(Action::EnterUrlPicker)
+        }
+
         // 検索
         (KeyCode::Char('/'), _) => {
             acc.reset();
@@ -204,6 +211,31 @@ pub(super) fn map_command_key(key: KeyEvent) -> Option<CommandAction> {
         (KeyCode::Enter, _) => Some(CommandAction::Execute),
         (KeyCode::Backspace, _) => Some(CommandAction::Backspace),
         (KeyCode::Char(c), _) => Some(CommandAction::Type(c)),
+        _ => None,
+    }
+}
+
+/// Actions specific to URL picker mode.
+pub(super) enum UrlAction {
+    SelectNext,
+    SelectPrev,
+    Confirm,
+    Cancel,
+}
+
+/// Map a key event to a URL picker action.
+pub(super) fn map_url_key(key: KeyEvent) -> Option<UrlAction> {
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
+
+    match (code, modifiers) {
+        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(UrlAction::Cancel),
+        (KeyCode::Enter, _) => Some(UrlAction::Confirm),
+        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
+            Some(UrlAction::SelectNext)
+        }
+        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => Some(UrlAction::SelectPrev),
         _ => None,
     }
 }
@@ -344,6 +376,13 @@ mod tests {
         map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
         let a = map_key_event(simple_key(KeyCode::Char('o')), &mut acc);
         assert!(matches!(a, Some(Action::OpenUrl(5))));
+    }
+
+    #[test]
+    fn test_big_o_enters_url_picker() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(key(KeyCode::Char('O'), KeyModifiers::SHIFT), &mut acc);
+        assert!(matches!(a, Some(Action::EnterUrlPicker)));
     }
 
     // --- Search: normal mode entry ---

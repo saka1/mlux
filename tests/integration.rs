@@ -278,12 +278,12 @@ fn test_source_map_full_document() {
 
 #[test]
 fn test_source_map_inline_formatting_preserved() {
-    let md = "Text with **bold** and [link](http://example.com).\n";
+    let md = "Text with **bold** and [link](http://example.invalid/).\n";
     let vlines = source_map_pipeline(md);
     assert!(!vlines.is_empty(), "expected at least 1 visual line");
 
     let yanked = yank_lines(md, &vlines, 0, 0);
-    assert_eq!(yanked, "Text with **bold** and [link](http://example.com).");
+    assert_eq!(yanked, "Text with **bold** and [link](http://example.invalid/).");
 }
 
 #[test]

@@ -341,11 +341,18 @@ pub fn yank_exact(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -
     }
 }
 
+/// A URL extracted from Markdown source, with its link text.
+#[derive(Debug, Clone)]
+pub struct UrlEntry {
+    pub url: String,
+    pub text: String,
+}
+
 /// Extract URLs from the Markdown source lines corresponding to a visual line.
 ///
 /// Uses `md_line_range` to find the relevant Markdown source lines, then parses
-/// them with pulldown-cmark to extract link destination URLs.
-pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> Vec<String> {
+/// them with pulldown-cmark to extract link destination URLs and link text.
+pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> Vec<UrlEntry> {
     if vl_idx >= visual_lines.len() {
         return Vec::new();
     }
@@ -354,7 +361,11 @@ pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize)
         return Vec::new();
     };
 
-    // Extract the relevant Markdown source lines (1-based, inclusive)
+    extract_urls_from_lines(md_source, start, end)
+}
+
+/// Extract URLs from a range of Markdown source lines (1-based, inclusive).
+pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec<UrlEntry> {
     let lines: Vec<&str> = md_source.lines().collect();
     let start_idx = start.saturating_sub(1);
     let end_idx = end.min(lines.len());
@@ -363,16 +374,36 @@ pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize)
     }
     let block_text = lines[start_idx..end_idx].join("\n");
 
-    // Parse with pulldown-cmark and collect link URLs
-    use pulldown_cmark::{Event, Options, Parser, Tag};
+    // Parse with pulldown-cmark and collect link URLs + text
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let parser = Parser::new_ext(&block_text, Options::empty());
     let mut urls = Vec::new();
+    let mut in_link = false;
+    let mut current_url = String::new();
+    let mut current_text = String::new();
     for event in parser {
-        if let Event::Start(Tag::Link { dest_url, .. }) = event {
-            let url = dest_url.into_string();
-            if !url.is_empty() {
-                urls.push(url);
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                in_link = true;
+                current_url = dest_url.into_string();
+                current_text.clear();
             }
+            Event::End(TagEnd::Link) => {
+                if in_link && !current_url.is_empty() {
+                    urls.push(UrlEntry {
+                        url: current_url.clone(),
+                        text: current_text.clone(),
+                    });
+                }
+                in_link = false;
+            }
+            Event::Text(t) if in_link => {
+                current_text.push_str(&t);
+            }
+            Event::Code(c) if in_link => {
+                current_text.push_str(&c);
+            }
+            _ => {}
         }
     }
     urls
@@ -898,18 +929,24 @@ mod tests {
 
     #[test]
     fn test_extract_urls_single_link() {
-        let md = "Check [Rust](https://www.rust-lang.org/) for details.\n";
+        let md = "Check [Rust](https://rust.invalid/) for details.\n";
         let vls = vec![make_vl(Some((1, 1)))];
         let urls = extract_urls(md, &vls, 0);
-        assert_eq!(urls, vec!["https://www.rust-lang.org/"]);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://rust.invalid/");
+        assert_eq!(urls[0].text, "Rust");
     }
 
     #[test]
     fn test_extract_urls_multiple_links() {
-        let md = "See [A](https://a.example.com) and [B](https://b.example.com).\n";
+        let md = "See [A](https://a.invalid/) and [B](https://b.invalid/).\n";
         let vls = vec![make_vl(Some((1, 1)))];
         let urls = extract_urls(md, &vls, 0);
-        assert_eq!(urls, vec!["https://a.example.com", "https://b.example.com"]);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://a.invalid/");
+        assert_eq!(urls[0].text, "A");
+        assert_eq!(urls[1].url, "https://b.invalid/");
+        assert_eq!(urls[1].text, "B");
     }
 
     #[test]
@@ -922,7 +959,7 @@ mod tests {
 
     #[test]
     fn test_extract_urls_no_source_mapping() {
-        let md = "Has [link](https://example.com) but no mapping.\n";
+        let md = "Has [link](https://example.invalid/) but no mapping.\n";
         let vls = vec![make_vl(None)];
         let urls = extract_urls(md, &vls, 0);
         assert!(urls.is_empty());
@@ -939,12 +976,13 @@ mod tests {
     #[test]
     fn test_extract_urls_multiline_block() {
         let md =
-            "Line 1\n[link1](https://one.example.com)\n[link2](https://two.example.com)\nLine 4\n";
+            "Line 1\n[link1](https://one.invalid/)\n[link2](https://two.invalid/)\nLine 4\n";
         let vls = vec![make_vl(Some((2, 3)))];
         let urls = extract_urls(md, &vls, 0);
-        assert_eq!(
-            urls,
-            vec!["https://one.example.com", "https://two.example.com"]
-        );
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://one.invalid/");
+        assert_eq!(urls[0].text, "link1");
+        assert_eq!(urls[1].url, "https://two.invalid/");
+        assert_eq!(urls[1].text, "link2");
     }
 }
