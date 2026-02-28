@@ -341,6 +341,43 @@ pub fn yank_exact(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -
     }
 }
 
+/// Extract URLs from the Markdown source lines corresponding to a visual line.
+///
+/// Uses `md_line_range` to find the relevant Markdown source lines, then parses
+/// them with pulldown-cmark to extract link destination URLs.
+pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> Vec<String> {
+    if vl_idx >= visual_lines.len() {
+        return Vec::new();
+    }
+    let vl = &visual_lines[vl_idx];
+    let Some((start, end)) = vl.md_line_range else {
+        return Vec::new();
+    };
+
+    // Extract the relevant Markdown source lines (1-based, inclusive)
+    let lines: Vec<&str> = md_source.lines().collect();
+    let start_idx = start.saturating_sub(1);
+    let end_idx = end.min(lines.len());
+    if start_idx >= lines.len() {
+        return Vec::new();
+    }
+    let block_text = lines[start_idx..end_idx].join("\n");
+
+    // Parse with pulldown-cmark and collect link URLs
+    use pulldown_cmark::{Event, Options, Parser, Tag};
+    let parser = Parser::new_ext(&block_text, Options::empty());
+    let mut urls = Vec::new();
+    for event in parser {
+        if let Event::Start(Tag::Link { dest_url, .. }) = event {
+            let url = dest_url.into_string();
+            if !url.is_empty() {
+                urls.push(url);
+            }
+        }
+    }
+    urls
+}
+
 /// Generate Typst source for the sidebar image.
 ///
 /// Uses `#place()` to position line numbers at the exact Y coordinates
@@ -843,5 +880,71 @@ impl TiledDocumentCache {
 
     pub fn clear(&mut self) {
         self.data.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_vl(md_line_range: Option<(usize, usize)>) -> VisualLine {
+        VisualLine {
+            y_pt: 0.0,
+            y_px: 0,
+            md_line_range,
+            md_line_exact: None,
+        }
+    }
+
+    #[test]
+    fn test_extract_urls_single_link() {
+        let md = "Check [Rust](https://www.rust-lang.org/) for details.\n";
+        let vls = vec![make_vl(Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert_eq!(urls, vec!["https://www.rust-lang.org/"]);
+    }
+
+    #[test]
+    fn test_extract_urls_multiple_links() {
+        let md = "See [A](https://a.example.com) and [B](https://b.example.com).\n";
+        let vls = vec![make_vl(Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert_eq!(urls, vec!["https://a.example.com", "https://b.example.com"]);
+    }
+
+    #[test]
+    fn test_extract_urls_no_links() {
+        let md = "Just plain text, no links here.\n";
+        let vls = vec![make_vl(Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_no_source_mapping() {
+        let md = "Has [link](https://example.com) but no mapping.\n";
+        let vls = vec![make_vl(None)];
+        let urls = extract_urls(md, &vls, 0);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_out_of_bounds() {
+        let md = "Some text\n";
+        let vls = vec![make_vl(Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 5);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_multiline_block() {
+        let md =
+            "Line 1\n[link1](https://one.example.com)\n[link2](https://two.example.com)\nLine 4\n";
+        let vls = vec![make_vl(Some((2, 3)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert_eq!(
+            urls,
+            vec!["https://one.example.com", "https://two.example.com"]
+        );
     }
 }

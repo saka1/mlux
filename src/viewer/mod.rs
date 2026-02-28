@@ -64,6 +64,7 @@ enum Effect {
     Flash(String),
     RedrawStatusBar,
     Yank(String),
+    OpenUrl(String),
     SetMode(ViewerMode),
     SetLastSearch(LastSearch),
     DeletePlacements,
@@ -334,6 +335,9 @@ pub fn run(
                                     }
                                     Effect::Yank(text) => {
                                         let _ = terminal::send_osc52(&text);
+                                    }
+                                    Effect::OpenUrl(url) => {
+                                        let _ = open::that_in_background(&url);
                                     }
                                     Effect::SetMode(m) => {
                                         match &m {

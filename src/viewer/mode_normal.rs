@@ -7,7 +7,7 @@ use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};
 use super::state::{ExitReason, ViewState, visual_line_offset};
 use super::{Effect, ViewerMode};
-use crate::tile::{VisualLine, yank_exact, yank_lines};
+use crate::tile::{VisualLine, extract_urls, yank_exact, yank_lines};
 
 pub(super) struct NormalCtx<'a> {
     pub state: &'a ViewState,
@@ -117,6 +117,14 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
             |md, vls, idx| yank_lines(md, vls, idx, idx),
             |n, lc| format!("Yanked L{n} block ({lc} lines)"),
         ),
+
+        Action::OpenUrlPrompt => {
+            vec![
+                Effect::Flash("Type No to open URL on line N".into()),
+                Effect::RedrawStatusBar,
+            ]
+        }
+        Action::OpenUrl(n) => open_url(ctx, n),
     }
 }
 
@@ -177,6 +185,39 @@ fn yank_and_flash(
     vec![
         Effect::Yank(text),
         Effect::Flash(format_msg(line_num, line_count)),
+        Effect::RedrawStatusBar,
+    ]
+}
+
+/// Open the first URL found on the given visual line in the default browser.
+fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
+    let vl_idx = (line_num as usize).saturating_sub(1);
+    if vl_idx >= ctx.visual_lines.len() {
+        return vec![
+            Effect::Flash(format!(
+                "Line {line_num} out of range (max {})",
+                ctx.visual_lines.len()
+            )),
+            Effect::RedrawStatusBar,
+        ];
+    }
+    if ctx.visual_lines[vl_idx].md_line_range.is_none() {
+        return vec![
+            Effect::Flash(format!("L{line_num}: no source mapping")),
+            Effect::RedrawStatusBar,
+        ];
+    }
+    let urls = extract_urls(ctx.markdown, ctx.visual_lines, vl_idx);
+    if urls.is_empty() {
+        return vec![
+            Effect::Flash(format!("L{line_num}: no URL found")),
+            Effect::RedrawStatusBar,
+        ];
+    }
+    debug!("open_url L{line_num}: {}", urls[0]);
+    vec![
+        Effect::OpenUrl(urls[0].clone()),
+        Effect::Flash(format!("Opening {}", urls[0])),
         Effect::RedrawStatusBar,
     ]
 }

@@ -63,6 +63,8 @@ pub(super) enum Action {
     YankExactPrompt,
     YankBlock(u32),
     YankBlockPrompt,
+    OpenUrl(u32),
+    OpenUrlPrompt,
     EnterSearch,
     EnterCommand,
     SearchNextMatch,
@@ -138,6 +140,12 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
         (KeyCode::Char('Y'), _) => match acc.take() {
             None => Some(Action::YankBlockPrompt),
             Some(n) => Some(Action::YankBlock(n)),
+        },
+
+        // URL を開く (o)
+        (KeyCode::Char('o'), _) => match acc.take() {
+            None => Some(Action::OpenUrlPrompt),
+            Some(n) => Some(Action::OpenUrl(n)),
         },
 
         // 検索
@@ -319,6 +327,23 @@ mod tests {
         let mut acc = InputAccumulator::new();
         let a = map_key_event(key(KeyCode::Char('G'), KeyModifiers::SHIFT), &mut acc);
         assert!(matches!(a, Some(Action::JumpToBottom)));
+    }
+
+    // --- Open URL ---
+
+    #[test]
+    fn test_o_open_url_prompt() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('o')), &mut acc);
+        assert!(matches!(a, Some(Action::OpenUrlPrompt)));
+    }
+
+    #[test]
+    fn test_5o_open_url() {
+        let mut acc = InputAccumulator::new();
+        map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
+        let a = map_key_event(simple_key(KeyCode::Char('o')), &mut acc);
+        assert!(matches!(a, Some(Action::OpenUrl(5))));
     }
 
     // --- Search: normal mode entry ---
