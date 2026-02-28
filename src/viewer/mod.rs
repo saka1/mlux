@@ -360,6 +360,7 @@ pub fn run(
                                                     &ss.matches,
                                                     ss.selected,
                                                     ss.scroll_offset,
+                                                    ss.pattern_valid,
                                                 )?;
                                             }
                                             ViewerMode::Command(cs) => {

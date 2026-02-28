@@ -5,6 +5,7 @@ use crossterm::{
     style::{self, Stylize},
     terminal::{Clear, ClearType},
 };
+use regex::RegexBuilder;
 use std::io::{self, Write, stdout};
 
 use super::input::SearchAction;
@@ -33,6 +34,7 @@ pub(super) struct SearchState {
     pub matches: Vec<SearchMatch>,
     pub selected: usize,
     pub scroll_offset: usize,
+    pub pattern_valid: bool,
 }
 
 impl SearchState {
@@ -42,6 +44,7 @@ impl SearchState {
             matches: Vec::new(),
             selected: 0,
             scroll_offset: 0,
+            pattern_valid: true,
         }
     }
 }
@@ -95,24 +98,26 @@ fn find_visual_line(visual_lines: &[VisualLine], md_line: usize) -> Option<usize
     })
 }
 
-/// Search the Markdown source for lines matching `query`.
+/// Search the Markdown source for lines matching `query` as a regular expression.
 ///
 /// Uses smartcase: if `query` is all lowercase, search is case-insensitive;
 /// otherwise it's case-sensitive.
+///
+/// Returns `(matches, pattern_valid)`. On invalid regex, returns empty matches
+/// with `pattern_valid = false`.
 pub(super) fn grep_markdown(
     query: &str,
     markdown: &str,
     visual_lines: &[VisualLine],
-) -> Vec<SearchMatch> {
+) -> (Vec<SearchMatch>, bool) {
     if query.is_empty() {
-        return Vec::new();
+        return (Vec::new(), true);
     }
 
     let smartcase = query.chars().all(|c| !c.is_uppercase());
-    let query_lower = if smartcase {
-        query.to_lowercase()
-    } else {
-        String::new()
+    let re = match RegexBuilder::new(query).case_insensitive(smartcase).build() {
+        Ok(re) => re,
+        Err(_) => return (Vec::new(), false),
     };
 
     let mut matches = Vec::new();
@@ -120,79 +125,20 @@ pub(super) fn grep_markdown(
     for (line_idx, line_text) in markdown.lines().enumerate() {
         let md_line = line_idx + 1; // 1-based
 
-        // Find match position
-        let found = if smartcase {
-            let line_lower = line_text.to_lowercase();
-            find_match_pos(&line_lower, &query_lower)
-        } else {
-            find_match_pos(line_text, query)
-        };
-
-        if let Some((col_start, col_end)) = found {
-            // Map the byte offsets back to the original text.
-            // For smartcase, the byte positions may differ between lowered and original.
-            // Recompute on original text to get correct byte offsets.
-            let (actual_start, actual_end) = if smartcase {
-                // Re-find in original using char-level comparison
-                find_match_pos_caseless(line_text, query).unwrap_or((col_start, col_end))
-            } else {
-                (col_start, col_end)
-            };
-
-            if let Some(vl_idx) = find_visual_line(visual_lines, md_line) {
-                matches.push(SearchMatch {
-                    md_line,
-                    visual_line_idx: vl_idx,
-                    context: line_text.to_string(),
-                    col_start: actual_start,
-                    col_end: actual_end,
-                });
-            }
+        if let Some(m) = re.find(line_text)
+            && let Some(vl_idx) = find_visual_line(visual_lines, md_line)
+        {
+            matches.push(SearchMatch {
+                md_line,
+                visual_line_idx: vl_idx,
+                context: line_text.to_string(),
+                col_start: m.start(),
+                col_end: m.end(),
+            });
         }
     }
 
-    matches
-}
-
-/// Find the byte position of the first occurrence of `needle` in `haystack`.
-fn find_match_pos(haystack: &str, needle: &str) -> Option<(usize, usize)> {
-    haystack
-        .find(needle)
-        .map(|start| (start, start + needle.len()))
-}
-
-/// Case-insensitive match position finder using char-level comparison.
-fn find_match_pos_caseless(haystack: &str, needle: &str) -> Option<(usize, usize)> {
-    let needle_chars: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
-    let needle_len = needle_chars.len();
-    if needle_len == 0 {
-        return None;
-    }
-
-    let haystack_chars: Vec<(usize, char)> = haystack.char_indices().collect();
-    for i in 0..haystack_chars.len() {
-        if i + needle_len > haystack_chars.len() {
-            break;
-        }
-        let mut matched = true;
-        for j in 0..needle_len {
-            let hay_lower: Vec<char> = haystack_chars[i + j].1.to_lowercase().collect();
-            if hay_lower.len() != 1 || hay_lower[0] != needle_chars[j] {
-                matched = false;
-                break;
-            }
-        }
-        if matched {
-            let start = haystack_chars[i].0;
-            let end = if i + needle_len < haystack_chars.len() {
-                haystack_chars[i + needle_len].0
-            } else {
-                haystack.len()
-            };
-            return Some((start, end));
-        }
-    }
-    None
+    (matches, true)
 }
 
 /// Truncate a string to at most `max_bytes`, respecting UTF-8 char boundaries.
@@ -215,6 +161,7 @@ pub(super) fn draw_search_screen(
     matches: &[SearchMatch],
     selected: usize,
     scroll_offset: usize,
+    pattern_valid: bool,
 ) -> io::Result<()> {
     let mut out = stdout();
     out.queue(Clear(ClearType::All))?;
@@ -285,12 +232,20 @@ pub(super) fn draw_search_screen(
 
     // Status line
     out.queue(cursor::MoveTo(0, layout.status_row))?;
-    let status = format!(
-        " {} matches | Enter:jump  Esc:cancel  j/k:select",
-        matches.len()
-    );
+    let status = if !pattern_valid {
+        " invalid pattern | Esc:cancel".to_string()
+    } else {
+        format!(
+            " {} matches | Enter:jump  Esc:cancel  j/k:select",
+            matches.len()
+        )
+    };
     let padded = format!("{:<width$}", status, width = total_cols);
-    write!(out, "{}", padded.on_dark_grey().white())?;
+    if !pattern_valid {
+        write!(out, "{}", padded.on_dark_red().white())?;
+    } else {
+        write!(out, "{}", padded.on_dark_grey().white())?;
+    }
     out.queue(style::ResetColor)?;
 
     out.flush()
@@ -359,7 +314,9 @@ fn re_grep_and_redraw(
     visual_lines: &[VisualLine],
     layout: &Layout,
 ) -> io::Result<Vec<Effect>> {
-    ss.matches = grep_markdown(&ss.query, markdown, visual_lines);
+    let (matches, valid) = grep_markdown(&ss.query, markdown, visual_lines);
+    ss.matches = matches;
+    ss.pattern_valid = valid;
     ss.selected = 0;
     ss.scroll_offset = 0;
     redraw_search(ss, layout)
@@ -373,6 +330,86 @@ fn redraw_search(ss: &SearchState, layout: &Layout) -> io::Result<Vec<Effect>> {
         &ss.matches,
         ss.selected,
         ss.scroll_offset,
+        ss.pattern_valid,
     )?;
     Ok(vec![])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build visual_lines where line N maps to md_line_range (N, N).
+    fn make_visual_lines(n: usize) -> Vec<VisualLine> {
+        (1..=n)
+            .map(|i| VisualLine {
+                y_pt: 0.0,
+                y_px: 0,
+                md_line_range: Some((i, i)),
+                md_line_exact: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn regex_heading_pattern() {
+        let md = "# Title\nsome text\n## Subtitle\nmore text";
+        let vl = make_visual_lines(4);
+        let (matches, valid) = grep_markdown("^#", md, &vl);
+        assert!(valid);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].md_line, 1);
+        assert_eq!(matches[1].md_line, 3);
+    }
+
+    #[test]
+    fn smartcase_all_lower_is_insensitive() {
+        let md = "Hello World\nhello world\nHELLO";
+        let vl = make_visual_lines(3);
+        let (matches, valid) = grep_markdown("hello", md, &vl);
+        assert!(valid);
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[test]
+    fn smartcase_upper_is_sensitive() {
+        let md = "Hello World\nhello world\nHELLO";
+        let vl = make_visual_lines(3);
+        let (matches, valid) = grep_markdown("Hello", md, &vl);
+        assert!(valid);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].md_line, 1);
+    }
+
+    #[test]
+    fn invalid_pattern_returns_empty() {
+        let md = "some [text] here";
+        let vl = make_visual_lines(1);
+        let (matches, valid) = grep_markdown("[", md, &vl);
+        assert!(!valid);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn literal_string_still_works() {
+        let md = "foo bar baz\nqux foo quux";
+        let vl = make_visual_lines(2);
+        let (matches, valid) = grep_markdown("foo", md, &vl);
+        assert!(valid);
+        assert_eq!(matches.len(), 2);
+        // Check highlight positions
+        assert_eq!(matches[0].col_start, 0);
+        assert_eq!(matches[0].col_end, 3);
+        assert_eq!(matches[1].col_start, 4);
+        assert_eq!(matches[1].col_end, 7);
+    }
+
+    #[test]
+    fn empty_query_returns_empty() {
+        let md = "anything";
+        let vl = make_visual_lines(1);
+        let (matches, valid) = grep_markdown("", md, &vl);
+        assert!(valid);
+        assert!(matches.is_empty());
+    }
 }
