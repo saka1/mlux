@@ -19,6 +19,12 @@ The built-in terminal viewer then displays the rendered document directly in you
 - **Heading picker** -- Press `/` to open an interactive picker that lists headings and jumps to your selection.
 - **File watching** -- Automatically re-renders when the source file changes.
 
+## Installation
+
+```
+cargo install mlux
+```
+
 ## Usage
 
 ```console
@@ -82,12 +88,4 @@ watch_interval_ms = 200
 
 CLI options override config file values. For example, `mlux render input.md --ppi 288`
 uses PPI 288 regardless of the config file.
-
-## Building
-
-```
-cargo build --release
-```
-
-Requires Rust 1.85+ (edition 2024).
 
