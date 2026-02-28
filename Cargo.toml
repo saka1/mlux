@@ -1,7 +1,15 @@
 [package]
 name = "mlux"
 version = "0.1.0"
+authors = ["saka1"]
 edition = "2024"
+description = "A rich Markdown viewer for modern terminals"
+license = "MIT"
+repository = "https://github.com/saka1/mlux"
+rust-version = "1.85"
+keywords = ["markdown", "typst", "terminal", "viewer"]
+categories = ["command-line-utilities"]
+exclude = ["docs/", "fuzz/", "tests/", "CLAUDE.md"]
 
 [dependencies]
 typst = "0.14"

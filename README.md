@@ -1,5 +1,5 @@
 # mlux
-A rich Markdown renderer for modern terminals,
+A rich Markdown viewer for modern terminals,
 powered by Rust and [Typst](https://typst.app/).
 
 ## How it works
