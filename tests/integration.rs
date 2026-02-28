@@ -354,7 +354,10 @@ fn test_yank_exact_code_block_line() {
 }
 
 #[test]
-fn test_yank_exact_falls_back_for_paragraph() {
+fn test_yank_exact_single_line_paragraph() {
+    // Paragraphs that follow other blocks have a Typst separator (\n) prepended,
+    // causing a newline mismatch → md_line_exact = None → falls back to yank_lines.
+    // This is correct: the safety check prevents false exactness.
     let md = "# H\n\nA simple paragraph.\n";
     let vlines = source_map_pipeline(md);
 
@@ -364,18 +367,12 @@ fn test_yank_exact_falls_back_for_paragraph() {
         .position(|vl| vl.md_line_range.map_or(false, |(s, _)| s >= 3))
         .expect("should find paragraph visual line");
 
-    // Paragraph should NOT have md_line_exact
-    assert!(
-        vlines[para_idx].md_line_exact.is_none(),
-        "paragraph visual line should have md_line_exact = None"
-    );
-
-    // yank_exact should fall back to block yank
+    // yank_exact should fall back to block yank (same result)
     let exact = yank_exact(md, &vlines, para_idx);
     let block = yank_lines(md, &vlines, para_idx, para_idx);
     assert_eq!(
         exact, block,
-        "yank_exact should fall back to yank_lines for paragraphs"
+        "yank_exact should fall back to yank_lines for paragraph after other blocks"
     );
 }
 
@@ -384,10 +381,12 @@ fn test_yank_exact_vs_block_for_code() {
     let md = "# H\n\n```\nline1\nline2\nline3\n```\n";
     let vlines = source_map_pipeline(md);
 
-    // Find a code block visual line
+    // Find a code block visual line (md_line_range starts at line 3+ for the code block)
     let code_vl = vlines
         .iter()
-        .position(|vl| vl.md_line_exact.is_some())
+        .position(|vl| {
+            vl.md_line_exact.is_some() && vl.md_line_range.map_or(false, |(s, _)| s >= 3)
+        })
         .expect("should find a code block visual line with md_line_exact");
 
     let exact = yank_exact(md, &vlines, code_vl);
@@ -412,4 +411,93 @@ fn test_yank_exact_vs_block_for_code() {
         exact, block,
         "yank_exact and yank_lines should differ for code blocks"
     );
+}
+
+#[test]
+fn test_yank_exact_list_items() {
+    let md = "- Item 1\n- Item 2\n- Item 3\n";
+    let vlines = source_map_pipeline(md);
+
+    // Each list item should have md_line_exact set
+    let list_vls: Vec<usize> = vlines
+        .iter()
+        .enumerate()
+        .filter(|(_, vl)| vl.md_line_range.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        list_vls.len(),
+        3,
+        "expected 3 visual lines for 3 list items"
+    );
+
+    for &idx in &list_vls {
+        assert!(
+            vlines[idx].md_line_exact.is_some(),
+            "list item vl {idx} should have md_line_exact"
+        );
+    }
+
+    // yank_exact should return individual items
+    assert_eq!(yank_exact(md, &vlines, list_vls[0]), "- Item 1");
+    assert_eq!(yank_exact(md, &vlines, list_vls[1]), "- Item 2");
+    assert_eq!(yank_exact(md, &vlines, list_vls[2]), "- Item 3");
+
+    // yank_lines should still return the whole list (unchanged behavior)
+    let block = yank_lines(md, &vlines, list_vls[0], list_vls[0]);
+    assert_eq!(block, "- Item 1\n- Item 2\n- Item 3");
+}
+
+#[test]
+fn test_yank_exact_ordered_list_items() {
+    let md = "1. First\n2. Second\n3. Third\n";
+    let vlines = source_map_pipeline(md);
+
+    let list_vls: Vec<usize> = vlines
+        .iter()
+        .enumerate()
+        .filter(|(_, vl)| vl.md_line_range.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        list_vls.len(),
+        3,
+        "expected 3 visual lines for 3 ordered list items"
+    );
+
+    assert_eq!(yank_exact(md, &vlines, list_vls[0]), "1. First");
+    assert_eq!(yank_exact(md, &vlines, list_vls[1]), "2. Second");
+    assert_eq!(yank_exact(md, &vlines, list_vls[2]), "3. Third");
+}
+
+#[test]
+fn test_yank_exact_table_fallback() {
+    let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let vlines = source_map_pipeline(md);
+
+    // Tables have mismatched newline counts — should fall back to None
+    for (i, vl) in vlines.iter().enumerate() {
+        if vl.md_line_range.is_some() {
+            assert!(
+                vl.md_line_exact.is_none(),
+                "table vl {i} should NOT have md_line_exact (newline mismatch)"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_yank_exact_blockquote_fallback() {
+    let md = "> Quote line 1\n> Quote line 2\n";
+    let vlines = source_map_pipeline(md);
+
+    // Blockquotes have mismatched newline counts — should fall back to None
+    for (i, vl) in vlines.iter().enumerate() {
+        if vl.md_line_range.is_some() {
+            assert!(
+                vl.md_line_exact.is_none(),
+                "blockquote vl {i} should NOT have md_line_exact (newline mismatch)"
+            );
+        }
+    }
 }

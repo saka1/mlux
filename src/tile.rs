@@ -18,7 +18,9 @@ pub struct VisualLine {
     pub y_px: u32, // Pixel Y coordinate (after ppi conversion)
     /// Markdown source line range (1-based, inclusive). None for theme-derived text.
     pub md_line_range: Option<(usize, usize)>,
-    /// Precise 1-based MD line for code blocks (y yank). None for non-code blocks.
+    /// Precise 1-based MD line (y yank). Set for code blocks and any block where
+    /// Typst/MD newline counts match (lists, paragraphs, headings). None when
+    /// line-level resolution is unsafe (tables, nested blockquotes).
     pub md_line_exact: Option<usize>,
 }
 
@@ -163,8 +165,11 @@ pub fn extract_visual_lines_with_map(
 ///
 /// Chain: Span → Source::range() → subtract content_offset → SourceMap lookup → md line range
 ///
-/// For code blocks, also computes `exact`: the precise 1-based MD line
-/// corresponding to this span position within the block.
+/// Also computes `exact`: the precise 1-based MD line corresponding to this
+/// span position within the block. For code blocks, uses a fence-aware offset
+/// (+1 to skip opening fence). For other blocks, uses newline counting when
+/// Typst and MD blocks have matching newline counts (safety check). Blocks that
+/// fail the check (tables, nested blockquotes) get `exact = None`.
 fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdLineInfo> {
     if span.is_detached() {
         trace!("  span detached, skipping");
@@ -198,24 +203,32 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
             .max(block.md_byte_range.start),
     );
 
-    // Compute exact line for code blocks.
-    // Code blocks in Markdown start with "```"; their Typst output preserves
-    // the same line structure (fill_blank_lines inserts spaces but keeps newline count).
-    // We count newlines in the Typst text before the span position to find the
-    // exact source line within the block.
+    // Compute exact line within the block using newline counting.
+    //
+    // For code blocks (fenced with "```"): skip the opening fence line (+1)
+    // and clamp to exclude the closing fence.
+    //
+    // For other blocks: use the same newline counting, but only when the Typst
+    // and MD block texts have matching newline counts (1:1 line correspondence).
+    // This works for lists, paragraphs, headings. Tables and nested blockquotes
+    // have different line structures and safely fall back to None.
+    // See docs/line-exact-generalization.md for detailed analysis.
     let md_block_text = &params.md_source[block.md_byte_range.clone()];
-    let exact = if md_block_text.starts_with("```") {
-        let typst_local_offset = content_offset - block.typst_byte_range.start;
-        let typst_block_text = params.source.text().get(
-            (block.typst_byte_range.start + params.content_offset)
-                ..(block.typst_byte_range.end + params.content_offset),
-        );
-        if let Some(typst_text) = typst_block_text {
-            let clamped = typst_local_offset.min(typst_text.len());
-            let newlines_before = typst_text[..clamped]
-                .bytes()
-                .filter(|&b| b == b'\n')
-                .count();
+    let typst_local_offset = content_offset - block.typst_byte_range.start;
+    let typst_block_text = params.source.text().get(
+        (block.typst_byte_range.start + params.content_offset)
+            ..(block.typst_byte_range.end + params.content_offset),
+    );
+
+    let exact = if let Some(typst_text) = typst_block_text {
+        let is_code_block = md_block_text.starts_with("```");
+        let clamped = typst_local_offset.min(typst_text.len());
+        let newlines_before = typst_text[..clamped]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count();
+
+        if is_code_block {
             // start_line is the "```" fence line; content starts at start_line + 1
             let exact_line = start_line + 1 + newlines_before;
             // Clamp to not exceed end_line - 1 (closing fence)
@@ -228,7 +241,23 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
             );
             Some(exact_line)
         } else {
-            None
+            // Safety check: only compute exact when line structure is preserved.
+            let md_newlines = md_block_text.bytes().filter(|&b| b == b'\n').count();
+            let typst_newlines = typst_text.bytes().filter(|&b| b == b'\n').count();
+            if md_newlines == typst_newlines {
+                let exact_line = (start_line + newlines_before).clamp(start_line, end_line);
+                trace!(
+                    "  generic exact: typst_local_off={}, newlines={}, exact_line={} (md_nl={}, typst_nl={})",
+                    typst_local_offset, newlines_before, exact_line, md_newlines, typst_newlines
+                );
+                Some(exact_line)
+            } else {
+                trace!(
+                    "  newline mismatch: md_nl={}, typst_nl={} — skipping exact",
+                    md_newlines, typst_newlines
+                );
+                None
+            }
         }
     } else {
         None
@@ -320,9 +349,10 @@ pub fn yank_lines(
 
 /// Extract the precise Markdown source line for a visual line.
 ///
-/// For code blocks, returns the single line indicated by `md_line_exact`.
-/// For other blocks (paragraphs, headings, etc.), falls back to block-level
-/// yank via `yank_lines`.
+/// Returns the single line indicated by `md_line_exact` when available
+/// (code blocks, lists, paragraphs, headings — any block where Typst/MD
+/// line structure is 1:1). Falls back to block-level yank via `yank_lines`
+/// for blocks where per-line resolution is unsafe (tables, nested blockquotes).
 pub fn yank_exact(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> String {
     if vl_idx >= visual_lines.len() {
         return String::new();
