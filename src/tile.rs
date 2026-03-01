@@ -744,16 +744,16 @@ impl TiledDocument {
         let sidebar_page = &sidebar_doc.pages[0];
         let sidebar_tiles = split_frame(&sidebar_page.frame, tile_height_pt);
         let pixel_per_pt = ppi as f64 / 72.0;
-        let sidebar_width_px = (sidebar_page.frame.size().x.to_pt() * pixel_per_pt).ceil() as u32;
+        let sidebar_width_px = (sidebar_page.frame.size().x.to_pt() * pixel_per_pt).round() as u32;
         info!(
             "sidebar: {} tiles, {}px wide",
             sidebar_tiles.len(),
             sidebar_width_px
         );
 
-        let width_px = (page_size.x.to_pt() * pixel_per_pt).ceil() as u32;
-        let tile_height_px = (tile_height_pt * pixel_per_pt).ceil() as u32;
-        let total_height_px = (page_size.y.to_pt() * pixel_per_pt).ceil() as u32;
+        let width_px = (page_size.x.to_pt() * pixel_per_pt).round() as u32;
+        let tile_height_px = (tile_height_pt * pixel_per_pt).round() as u32;
+        let total_height_px = (page_size.y.to_pt() * pixel_per_pt).round() as u32;
         let page_height_pt = page_size.y.to_pt();
 
         Ok(Self {
@@ -804,7 +804,7 @@ impl TiledDocument {
     /// Actual pixel height of a specific tile (last tile may be shorter).
     fn tile_actual_height_px(&self, idx: usize) -> u32 {
         let pixel_per_pt = self.ppi as f64 / 72.0;
-        (self.tiles[idx].size().y.to_pt() * pixel_per_pt).ceil() as u32
+        (self.tiles[idx].size().y.to_pt() * pixel_per_pt).round() as u32
     }
 
     /// Render a single content tile to PNG bytes.
