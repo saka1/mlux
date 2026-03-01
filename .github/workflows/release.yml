@@ -1,8 +1,7 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,20 +15,25 @@ jobs:
   validate:
     name: Validate
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify tag matches Cargo.toml version
+        with:
+          fetch-depth: 0
+      - name: Read version and check tag
         id: version
         run: |
-          cargo_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [ "$cargo_version" != "$tag_version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+          version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          tag="v${version}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "::error::Tag $tag already exists. Bump the version in Cargo.toml first."
             exit 1
           fi
-          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -78,16 +82,22 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [validate, build]
+    needs: [validate, build, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create tag
+        run: |
+          git tag "${{ needs.validate.outputs.tag }}"
+          git push origin "${{ needs.validate.outputs.tag }}"
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
       - name: Create release
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes artifacts/*.tar.gz
+        run: gh release create "${{ needs.validate.outputs.tag }}" --generate-notes artifacts/*.tar.gz
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
