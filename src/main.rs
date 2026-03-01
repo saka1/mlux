@@ -13,8 +13,19 @@ use mlux::render::{compile_document, dump_document};
 use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
 use mlux::world::{FontCache, MluxWorld};
 
+fn long_version() -> &'static str {
+    let base = env!("CARGO_PKG_VERSION");
+    let hash = option_env!("MLUX_BUILD_GIT_HASH").unwrap_or("");
+    let profile = option_env!("MLUX_BUILD_PROFILE").unwrap_or("unknown");
+    if hash.is_empty() {
+        format!("{base} ({profile})").leak()
+    } else {
+        format!("{base} (rev {hash}, {profile})").leak()
+    }
+}
+
 #[derive(Parser)]
-#[command(name = "mlux", about = "Markdown viewer and renderer powered by Typst")]
+#[command(name = "mlux", version = long_version(), about = "Markdown viewer and renderer powered by Typst")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
