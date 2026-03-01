@@ -104,11 +104,32 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     block_starts.push((output.len(), md_range));
                 }
                 block_depth += 1;
-                if !output.is_empty() && !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                if !output.is_empty() {
-                    output.push('\n');
+                let in_item = stack.iter().any(|c| matches!(c, Container::Item));
+                if in_item {
+                    // Inside a list item (loose list): first paragraph follows
+                    // the marker directly; subsequent paragraphs get blank line
+                    // + indent to stay within the item.
+                    if !output.ends_with("- ") && !output.ends_with("+ ") {
+                        if !output.ends_with('\n') {
+                            output.push('\n');
+                        }
+                        output.push('\n');
+                        let list_depth = stack
+                            .iter()
+                            .filter(|c| matches!(c, Container::List { .. }))
+                            .count();
+                        let indent = list_depth.saturating_sub(1) * 2 + 2;
+                        for _ in 0..indent {
+                            output.push(' ');
+                        }
+                    }
+                } else {
+                    if !output.is_empty() && !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
                 }
             }
             Event::Start(Tag::Heading { level, .. }) => {
@@ -457,8 +478,21 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
             Event::SoftBreak => {
                 if in_code_block {
                     code_block_buf.push('\n');
+                } else if cell_buf.is_some() {
+                    cell_buf.as_mut().unwrap().push('\n');
                 } else {
-                    push_to_target(&mut output, &mut cell_buf, "\n");
+                    output.push('\n');
+                    let in_item = stack.iter().any(|c| matches!(c, Container::Item));
+                    if in_item {
+                        let list_depth = stack
+                            .iter()
+                            .filter(|c| matches!(c, Container::List { .. }))
+                            .count();
+                        let indent = list_depth.saturating_sub(1) * 2 + 2;
+                        for _ in 0..indent {
+                            output.push(' ');
+                        }
+                    }
                 }
             }
             Event::HardBreak => {
@@ -1024,6 +1058,83 @@ mod tests {
         assert_eq!(
             max_indent, 14,
             "max indent should be 14 (7 levels × 2 spaces), got: {max_indent}\n{typst}"
+        );
+    }
+
+    #[test]
+    fn test_loose_unordered_list() {
+        // Loose list (blank line between items): text must follow marker directly
+        let md = "- a\n\n- b";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("- a\n"),
+            "first item text should follow marker: {typst}"
+        );
+        assert!(
+            typst.contains("- b\n"),
+            "second item text should follow marker: {typst}"
+        );
+        assert!(
+            !typst.contains("- \n"),
+            "marker and text should not be separated: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_loose_ordered_list() {
+        // Loose ordered list: text must follow + marker directly
+        let md = "1. a\n\n2. b";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("+ a\n"),
+            "first item text should follow marker: {typst}"
+        );
+        assert!(
+            typst.contains("+ b\n"),
+            "second item text should follow marker: {typst}"
+        );
+        assert!(
+            !typst.contains("+ \n"),
+            "marker and text should not be separated: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_list_item_softbreak() {
+        // SoftBreak inside a list item must produce indented continuation
+        let md = "- first\nsecond";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("- first\n  second"),
+            "continuation line should be indented by 2 spaces: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_loose_nested_list() {
+        // Nested loose list: inner items should be properly indented
+        let md = "- outer\n\n  - inner1\n\n  - inner2";
+        let typst = markdown_to_typst(md);
+        assert!(typst.contains("- outer\n"), "outer item: {typst}");
+        assert!(
+            typst.contains("  - inner1\n"),
+            "nested items should be indented: {typst}"
+        );
+        assert!(
+            typst.contains("  - inner2\n"),
+            "nested items should be indented: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_table_cell_softbreak() {
+        // SoftBreak outside a list should NOT add indentation
+        // (regression: ensure non-list SoftBreak is unchanged)
+        let md = "para line1\nline2";
+        let typst = markdown_to_typst(md);
+        assert_eq!(
+            typst, "para line1\nline2\n",
+            "non-list softbreak should not add indent"
         );
     }
 }

@@ -94,9 +94,48 @@ List 内 (`block_depth == 1`) で Rule が発火すると:
 
 ---
 
+## ~~Bug 4: ルーズリスト・SoftBreakでリストアイテムのテキスト折り返しインデントが壊れる~~ (修正済み)
+
+**重要度**: Medium — レンダリング結果のレイアウト崩れ
+**発見**: 手動テスト（test-list-wrap2.md）
+**ステータス**: **修正済み** — `Start(Paragraph)` と `SoftBreak` のリストアイテム内処理を修正。
+
+### 症状
+
+ルーズリスト（アイテム間に空行があるリスト）で、マーカー `- ` とテキストが分離し、
+テキストがリストアイテムの外に出る。また SoftBreak による継続行にインデントがなく、
+Typst 的にリストアイテム外のテキストとして扱われる。
+
+### 原因
+
+1. `Event::Start(Tag::Paragraph)` がリストアイテム内でもコンテキストを見ずに `\n\n` を挿入
+   → `- \n\nテキスト` となりマーカーとテキストが分離
+2. `Event::SoftBreak` がリストアイテム内でもインデントなしの `\n` を出力
+   → 継続行がリストアイテム外に出る
+
+### 修正内容
+
+`convert.rs` で2箇所を修正:
+
+1. **`Start(Paragraph)` のリストアイテム内処理**: スタックに `Container::Item` がある場合、
+   最初のパラグラフ（マーカー直後）は何も挿入せず、2つ目以降は `\n\n` + インデントを挿入。
+2. **`SoftBreak` のリストアイテム内処理**: スタックに `Container::Item` がある場合、
+   `\n` の後に `(list_depth - 1) * 2 + 2` スペースのインデントを挿入。
+   テーブルセル内（`cell_buf` あり）の場合はインデント不要。
+
+### 追加テスト
+
+- `test_loose_unordered_list` — ルーズ箇条書きでテキストがマーカー直後に付く
+- `test_loose_ordered_list` — ルーズ番号リストで同上
+- `test_list_item_softbreak` — 継続行がインデント付き
+- `test_loose_nested_list` — ネストされたルーズリストの正しいインデント
+- `test_table_cell_softbreak` — 非リスト SoftBreak でインデントが入らない
+
+---
+
 ## 備考
 
-- Bug 1, 2, 3 はすべて修正済み。
+- Bug 1, 2, 3, 4 はすべて修正済み。
 - fuzz_pipeline ターゲットは `compile_document` のエラーを `panic!` で処理している
   (`fuzz_pipeline.rs:25`)。未知の入力で Typst コンパイルエラーが
   起きうるため、`panic!` → `return` への変更も検討すべき。
