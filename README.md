@@ -2,6 +2,8 @@
 A rich Markdown viewer for modern terminals,
 powered by Rust and [Typst](https://typst.app/).
 
+<img src="docs/ss.png" alt="mlux terminal viewer" width="700">
+
 ## How it works
 
 Modern terminals like [Kitty](https://sw.kovidgoyal.net/kitty/) and [Ghostty](https://ghostty.org/) that support the
@@ -18,6 +20,12 @@ The built-in terminal viewer then displays the rendered document directly in you
   Requires a terminal that supports the Kitty Graphics Protocol (e.g. Ghostty, Kitty).
 - **Heading picker** -- Press `/` to open an interactive picker that lists headings and jumps to your selection.
 - **File watching** -- Automatically re-renders when the source file changes.
+
+## Requirements
+
+mlux requires a terminal that supports the
+[Kitty Graphics Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+Compatible terminals include [Kitty](https://sw.kovidgoyal.net/kitty/) and [Ghostty](https://ghostty.org/).
 
 ## Installation
 
