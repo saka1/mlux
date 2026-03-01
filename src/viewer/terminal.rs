@@ -271,7 +271,9 @@ pub(super) fn send_osc52(text: &str) -> io::Result<()> {
 
 pub(super) fn check_tty() -> anyhow::Result<()> {
     use std::io::IsTerminal;
-    if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
+    // Only stdout matters. crossterm's `use-dev-tty` reads keyboard from /dev/tty
+    // (Unix) or Console API (Windows), so stdin being a pipe is always fine.
+    if !io::stdout().is_terminal() {
         anyhow::bail!(
             "mlux viewer requires an interactive terminal.\n\
              \n\

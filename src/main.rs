@@ -8,6 +8,7 @@ use log::info;
 
 use mlux::config;
 use mlux::convert::markdown_to_typst_with_map;
+use mlux::input::{self, InputSource};
 use mlux::render::{compile_document, dump_document};
 use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
 use mlux::world::{FontCache, MluxWorld};
@@ -18,7 +19,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Input Markdown file (for view mode)
+    /// Input Markdown file (for view mode; use `-` for stdin)
     #[arg(global = true)]
     input: Option<PathBuf>,
 
@@ -39,7 +40,7 @@ struct Cli {
 enum Command {
     /// Render Markdown to PNG
     Render {
-        /// Input Markdown file
+        /// Input Markdown file (use `-` for stdin)
         input: PathBuf,
 
         /// Output PNG file
@@ -117,14 +118,18 @@ fn main() {
             ..
         }) => cmd_render(input, &config, output, dump),
         None => {
-            let input = match cli.input {
-                Some(p) => p,
-                None => {
-                    eprintln!("Error: input file required");
-                    std::process::exit(1);
+            let input_source = if input::is_stdin_input(cli.input.as_deref()) {
+                InputSource::Stdin(input::StdinReader::new())
+            } else {
+                match cli.input {
+                    Some(p) => InputSource::File(p),
+                    None => {
+                        eprintln!("Error: input file required (or pipe via stdin)");
+                        std::process::exit(1);
+                    }
                 }
             };
-            mlux::viewer::run(input, config, &cli_overrides, !cli.no_watch)
+            mlux::viewer::run(input_source, config, &cli_overrides, !cli.no_watch)
         }
     };
 
@@ -147,9 +152,13 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
     let tile_height = config.viewer.tile_height;
     let theme = &config.theme;
 
-    // Read input markdown
-    let markdown = fs::read_to_string(&input)
-        .with_context(|| format!("failed to read {}", input.display()))?;
+    // Read input markdown (support `-` for stdin)
+    let is_stdin = input.as_os_str() == "-";
+    let markdown = if is_stdin {
+        input::read_stdin_to_string().context("failed to read stdin")?
+    } else {
+        fs::read_to_string(&input).with_context(|| format!("failed to read {}", input.display()))?
+    };
 
     // Look up built-in theme
     let theme_text =
@@ -225,9 +234,14 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
         pipeline_start.elapsed().as_secs_f64() * 1000.0
     );
 
+    let input_name = if is_stdin {
+        "<stdin>".to_string()
+    } else {
+        input.display().to_string()
+    };
     eprintln!(
         "rendered {} -> {} tile(s):",
-        input.display(),
+        input_name,
         tiled_doc.tile_count()
     );
     for (filename, size) in &files {

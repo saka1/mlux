@@ -22,7 +22,7 @@ ecow = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 anyhow = "1"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
 base64 = "0.22"
 notify = "8"
 open = "5"

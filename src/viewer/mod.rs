@@ -32,13 +32,13 @@ use crossterm::{
 };
 use log::{debug, info};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::{self, CliOverrides, Config};
 use crate::convert::markdown_to_typst_with_map;
+use crate::input::InputSource;
 use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
@@ -77,21 +77,17 @@ enum Effect {
 
 /// Run the terminal viewer.
 ///
-/// `md_path` is the Markdown file to display.
+/// `input` is the input source (file path or stdin pipe).
 /// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
 /// `cli_overrides` are preserved across config reloads.
 /// `watch` enables automatic reload on file change.
 pub fn run(
-    md_path: PathBuf,
+    input: InputSource,
     mut config: Config,
     cli_overrides: &CliOverrides,
     watch: bool,
 ) -> anyhow::Result<()> {
-    let filename = md_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let filename = input.display_name().to_string();
 
     terminal::check_tty()?;
 
@@ -126,12 +122,19 @@ pub fn run(
     // Flash message to pass from outer loop into inner loop (e.g. "Config reloaded")
     let mut outer_flash: Option<String> = None;
 
-    // File watcher (optional)
+    // File watcher (optional, file mode only)
     let watcher = if watch {
-        Some(FileWatcher::new(&md_path)?)
+        match &input {
+            InputSource::File(path) => Some(FileWatcher::new(path)?),
+            InputSource::Stdin(_) => None,
+        }
     } else {
         None
     };
+
+    // Stdin buffer and EOF flag (stdin mode only)
+    let mut stdin_buf = String::new();
+    let mut stdin_eof = false;
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
@@ -140,8 +143,21 @@ pub fn run(
             .ok_or_else(|| anyhow::anyhow!("unknown theme '{}'", config.theme))?;
 
         // 5a. Read markdown (re-read on each iteration for reload support)
-        let markdown = std::fs::read_to_string(&md_path)
-            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", md_path.display()))?;
+        // For stdin mode, drain any available data first
+        if let InputSource::Stdin(ref reader) = input {
+            stdin_eof |= reader.drain_into(&mut stdin_buf).eof;
+        }
+        let markdown = match &input {
+            InputSource::File(path) => std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?,
+            InputSource::Stdin(_) => {
+                if stdin_buf.trim().is_empty() {
+                    "*(waiting for input...)*".into()
+                } else {
+                    stdin_buf.clone()
+                }
+            }
+        };
         let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
 
         // 5b. Build TiledDocument (content + sidebar compiled & split)
@@ -247,7 +263,9 @@ pub fn run(
                     cache.insert(idx, pngs);
                 }
 
-                let idle_timeout = if watcher.is_some() {
+                let has_live_source =
+                    watcher.is_some() || (matches!(&input, InputSource::Stdin(_)) && !stdin_eof);
+                let idle_timeout = if has_live_source {
                     config.viewer.watch_interval
                 } else {
                     Duration::from_secs(86400)
@@ -466,10 +484,16 @@ pub fn run(
                 }
                 last_render = Instant::now();
 
-                // Check for file changes (non-blocking)
-                if let Some(ref w) = watcher
-                    && w.has_changed()
-                {
+                // Check for content changes (file watcher or stdin new data)
+                let content_changed = match &input {
+                    InputSource::File(_) => watcher.as_ref().is_some_and(|w| w.has_changed()),
+                    InputSource::Stdin(reader) => {
+                        let result = reader.drain_into(&mut stdin_buf);
+                        stdin_eof |= result.eof;
+                        result.got_data
+                    }
+                };
+                if content_changed {
                     return Ok(ExitReason::Reload);
                 }
             }
