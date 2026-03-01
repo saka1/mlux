@@ -1,4 +1,7 @@
 # mlux
+
+[![CI](https://github.com/saka1/mlux/actions/workflows/ci.yml/badge.svg)](https://github.com/saka1/mlux/actions/workflows/ci.yml)
+
 A rich Markdown viewer for modern terminals,
 powered by Rust and [Typst](https://typst.app/).
 
