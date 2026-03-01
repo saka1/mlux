@@ -14,9 +14,19 @@ fn main() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
+    // git describe (tag + distance + hash, or hash only)
+    let describe = Command::new("git")
+        .args(["describe", "--tags", "--always"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
     // Cargo build profile (debug / release)
     let profile = std::env::var("PROFILE").unwrap_or_default();
 
     println!("cargo:rustc-env=MLUX_BUILD_GIT_HASH={hash}");
+    println!("cargo:rustc-env=MLUX_BUILD_GIT_DESCRIBE={describe}");
     println!("cargo:rustc-env=MLUX_BUILD_PROFILE={profile}");
 }

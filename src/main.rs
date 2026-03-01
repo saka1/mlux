@@ -17,10 +17,24 @@ fn long_version() -> &'static str {
     let base = env!("CARGO_PKG_VERSION");
     let hash = option_env!("MLUX_BUILD_GIT_HASH").unwrap_or("");
     let profile = option_env!("MLUX_BUILD_PROFILE").unwrap_or("unknown");
-    if hash.is_empty() {
-        format!("{base} ({profile})").leak()
+    let describe = option_env!("MLUX_BUILD_GIT_DESCRIBE").unwrap_or("");
+
+    // git describe --tags --always output patterns:
+    //   ""                     → no git (tarball, crates.io): use Cargo version
+    //   starts with 'v'       → tag present: use as-is (e.g. "v0.4.1" or "v0.4.1-3-ge0e4555")
+    //   otherwise             → no tags (shallow clone etc): "{base}-dev+{hash}"
+    let version = if describe.is_empty() {
+        base.to_string()
+    } else if describe.starts_with('v') {
+        describe.to_string()
     } else {
-        format!("{base} (rev {hash}, {profile})").leak()
+        format!("{base}-dev+{describe}")
+    };
+
+    if hash.is_empty() {
+        format!("{version} ({profile})").leak()
+    } else {
+        format!("{version} (rev {hash}, {profile})").leak()
     }
 }
 
