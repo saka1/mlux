@@ -82,7 +82,7 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [validate, build, publish]
+    needs: [validate, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +103,7 @@ jobs:
 
   publish:
     name: Publish to crates.io
-    needs: validate
+    needs: [validate, build]
     runs-on: ubuntu-latest
     environment: release
     steps:
