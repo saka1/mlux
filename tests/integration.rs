@@ -18,7 +18,7 @@ fn test_paragraph_ja_renders() {
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
+    let world = MluxWorld::new(theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
     let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
@@ -44,7 +44,7 @@ fn test_empty_input() {
     let theme = load_theme();
     let content = markdown_to_typst("");
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
+    let world = MluxWorld::new(theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
     let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
@@ -60,7 +60,7 @@ fn test_full_document_renders() {
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(&theme, &content, 800.0, &font_cache);
+    let world = MluxWorld::new(theme, &content, 800.0, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
 
@@ -107,7 +107,7 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let theme = load_theme();
     let (content, source_map) = markdown_to_typst_with_map(md);
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(&theme, &content, WIDTH_PT, &font_cache);
+    let world = MluxWorld::new(theme, &content, WIDTH_PT, &font_cache);
     let document = compile_document(&world).expect("compilation should succeed");
 
     let params = SourceMappingParams {
@@ -168,7 +168,7 @@ fn test_source_map_code_block() {
     let code_vl = vlines
         .iter()
         .position(|vl| {
-            vl.md_line_range.map_or(false, |(s, _)| s >= 3) // code block starts at line 3
+            vl.md_line_range.is_some_and(|(s, _)| s >= 3) // code block starts at line 3
         })
         .expect("should find a visual line for the code block");
     let yanked = yank_lines(md, &vlines, code_vl, code_vl);
@@ -319,7 +319,7 @@ fn test_yank_exact_code_block_line() {
     let code_vls: Vec<usize> = vlines
         .iter()
         .enumerate()
-        .filter(|(_, vl)| vl.md_line_range.map_or(false, |(s, _)| s >= 3))
+        .filter(|(_, vl)| vl.md_line_range.is_some_and(|(s, _)| s >= 3))
         .map(|(i, _)| i)
         .collect();
     assert!(
@@ -364,7 +364,7 @@ fn test_yank_exact_single_line_paragraph() {
     // Find the paragraph visual line (not heading)
     let para_idx = vlines
         .iter()
-        .position(|vl| vl.md_line_range.map_or(false, |(s, _)| s >= 3))
+        .position(|vl| vl.md_line_range.is_some_and(|(s, _)| s >= 3))
         .expect("should find paragraph visual line");
 
     // yank_exact should fall back to block yank (same result)
@@ -384,9 +384,7 @@ fn test_yank_exact_vs_block_for_code() {
     // Find a code block visual line (md_line_range starts at line 3+ for the code block)
     let code_vl = vlines
         .iter()
-        .position(|vl| {
-            vl.md_line_exact.is_some() && vl.md_line_range.map_or(false, |(s, _)| s >= 3)
-        })
+        .position(|vl| vl.md_line_exact.is_some() && vl.md_line_range.is_some_and(|(s, _)| s >= 3))
         .expect("should find a code block visual line with md_line_exact");
 
     let exact = yank_exact(md, &vlines, code_vl);
