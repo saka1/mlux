@@ -173,11 +173,20 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     block_starts.push((output.len(), md_range));
                 }
                 block_depth += 1;
-                if !output.is_empty() && !output.ends_with('\n') {
-                    output.push('\n');
-                }
-                if !output.is_empty() {
-                    output.push('\n');
+                let is_nested = stack.iter().any(|c| matches!(c, Container::List { .. }));
+                if is_nested {
+                    // Nested list: newline only (no blank line)
+                    if !output.is_empty() && !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                } else {
+                    // Top-level list: blank line before
+                    if !output.is_empty() && !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
                 }
                 stack.push(Container::List {
                     ordered: start.is_some(),
@@ -186,6 +195,16 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
             Event::Start(Tag::Item) => {
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
+                }
+                // Indent based on list nesting depth (0-indexed, capped at 7)
+                let depth = stack
+                    .iter()
+                    .filter(|c| matches!(c, Container::List { .. }))
+                    .count()
+                    .saturating_sub(1)
+                    .min(7);
+                for _ in 0..depth {
+                    output.push_str("  ");
                 }
                 // Determine marker from parent list
                 let marker = stack
@@ -959,5 +978,52 @@ mod tests {
         assert_eq!(fill_blank_lines("a\n\n\nb\n"), "a\n \n \nb\n");
         assert_eq!(fill_blank_lines("a\nb\n"), "a\nb\n"); // no blanks
         assert_eq!(fill_blank_lines("a\n"), "a\n"); // trailing newline preserved
+    }
+
+    #[test]
+    fn test_nested_unordered_list() {
+        let md = "- a\n  - b\n- c";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("- a\n  - b\n- c"),
+            "nested unordered list should be indented, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_nested_ordered_list() {
+        let md = "1. a\n   1. b\n2. c";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("+ a\n  + b\n+ c"),
+            "nested ordered list should be indented, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_nested_mixed_list() {
+        let md = "- a\n  1. b\n- c";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("- a\n  + b\n- c"),
+            "nested mixed list should be indented, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_list() {
+        // 10 levels deep — depth should cap at 7
+        let md = "- L0\n  - L1\n    - L2\n      - L3\n        - L4\n          - L5\n            - L6\n              - L7\n                - L8\n                  - L9";
+        let typst = markdown_to_typst(md);
+        // Level 8 and 9 should both be capped at 7 (14 spaces indent)
+        let max_indent = typst
+            .lines()
+            .map(|line| line.len() - line.trim_start().len())
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            max_indent, 14,
+            "max indent should be 14 (7 levels × 2 spaces), got: {max_indent}\n{typst}"
+        );
     }
 }
