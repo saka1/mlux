@@ -1,6 +1,6 @@
 [package]
 name = "mlux"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["saka1"]
 edition = "2024"
 description = "A rich Markdown viewer for modern terminals"
