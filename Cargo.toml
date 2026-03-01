@@ -33,5 +33,5 @@ env_logger = "0.11"
 
 [profile.release]
 strip = "debuginfo"
-lto = true
+lto = "thin"
 panic = "abort"
