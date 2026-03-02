@@ -64,8 +64,12 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../mlux-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz mlux
+          dir="mlux-v${{ needs.validate.outputs.version }}-${{ matrix.target }}"
+          mkdir "$dir"
+          cp "target/${{ matrix.target }}/release/mlux" "$dir/"
+          cp LICENSE "$dir/"
+          cp fonts/OFL.txt "$dir/FONT-LICENSE-OFL.txt"
+          tar czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
         with:
           name: mlux-v${{ needs.validate.outputs.version }}-${{ matrix.target }}

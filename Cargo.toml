@@ -9,7 +9,11 @@ repository = "https://github.com/saka1/mlux"
 rust-version = "1.91"
 keywords = ["markdown", "typst", "terminal", "viewer"]
 categories = ["command-line-utilities"]
-exclude = ["docs/", "fuzz/", "tests/", "CLAUDE.md"]
+exclude = ["docs/", "fuzz/", "tests/", "fonts/", "CLAUDE.md"]
+
+[features]
+default = ["embed-noto-fonts"]
+embed-noto-fonts = []
 
 [dependencies]
 typst = "0.14"
