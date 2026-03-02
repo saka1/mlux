@@ -61,14 +61,28 @@ impl FontCache {
     }
 
     fn load_embedded_fonts(book: &mut FontBook) -> Vec<Font> {
+        let start = Instant::now();
         let mut custom = Vec::new();
+        let mut total_compressed = 0usize;
+        let mut total_decompressed = 0usize;
         for data in embedded_font_data() {
-            let buffer = Bytes::new(data);
+            total_compressed += data.len();
+            let decompressed =
+                zstd::decode_all(&data[..]).expect("failed to decompress embedded font");
+            total_decompressed += decompressed.len();
+            let buffer = Bytes::new(decompressed);
             for font in Font::iter(buffer) {
                 book.push(font.info().clone());
                 custom.push(font);
             }
         }
+        info!(
+            "world: decompressed {} embedded fonts ({:.1} MB -> {:.1} MB) in {:.1}ms",
+            custom.len(),
+            total_compressed as f64 / (1024.0 * 1024.0),
+            total_decompressed as f64 / (1024.0 * 1024.0),
+            start.elapsed().as_secs_f64() * 1000.0,
+        );
         custom
     }
 
