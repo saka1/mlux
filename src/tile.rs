@@ -11,6 +11,16 @@ use typst::visualize::{Geometry, Paint};
 
 use crate::convert::SourceMap;
 
+/// Compute pixel size matching typst_render's formula exactly.
+///
+/// typst_render uses `(pixel_per_pt: f32 * size.to_f32()).round().max(1.0) as u32`.
+/// We must use the same f32 arithmetic + round() to avoid off-by-one mismatches
+/// (ceil on f64 can produce values 1px larger than the actual rendered image).
+fn pt_to_px(pt: f64, ppi: f32) -> u32 {
+    let pixel_per_pt = ppi / 72.0;
+    (pixel_per_pt * pt as f32).round().max(1.0) as u32
+}
+
 /// A visual line extracted from the PagedDocument frame tree.
 #[derive(Debug, Clone)]
 pub struct VisualLine {
@@ -98,7 +108,6 @@ pub fn extract_visual_lines_with_map(
         }
     }
 
-    let pixel_per_pt = ppi as f64 / 72.0;
     let lines: Vec<VisualLine> = deduped
         .into_iter()
         .enumerate()
@@ -121,7 +130,7 @@ pub fn extract_visual_lines_with_map(
             });
             VisualLine {
                 y_pt,
-                y_px: (y_pt * pixel_per_pt).round() as u32,
+                y_px: pt_to_px(y_pt, ppi),
                 md_line_range: info.as_ref().map(|i| i.range),
                 md_line_exact: info.as_ref().and_then(|i| i.exact),
             }
@@ -743,17 +752,16 @@ impl TiledDocument {
         }
         let sidebar_page = &sidebar_doc.pages[0];
         let sidebar_tiles = split_frame(&sidebar_page.frame, tile_height_pt);
-        let pixel_per_pt = ppi as f64 / 72.0;
-        let sidebar_width_px = (sidebar_page.frame.size().x.to_pt() * pixel_per_pt).ceil() as u32;
+        let sidebar_width_px = pt_to_px(sidebar_page.frame.size().x.to_pt(), ppi);
         info!(
             "sidebar: {} tiles, {}px wide",
             sidebar_tiles.len(),
             sidebar_width_px
         );
 
-        let width_px = (page_size.x.to_pt() * pixel_per_pt).ceil() as u32;
-        let tile_height_px = (tile_height_pt * pixel_per_pt).ceil() as u32;
-        let total_height_px = (page_size.y.to_pt() * pixel_per_pt).ceil() as u32;
+        let width_px = pt_to_px(page_size.x.to_pt(), ppi);
+        let tile_height_px = pt_to_px(tile_height_pt, ppi);
+        let total_height_px = pt_to_px(page_size.y.to_pt(), ppi);
         let page_height_pt = page_size.y.to_pt();
 
         Ok(Self {
@@ -803,8 +811,7 @@ impl TiledDocument {
 
     /// Actual pixel height of a specific tile (last tile may be shorter).
     fn tile_actual_height_px(&self, idx: usize) -> u32 {
-        let pixel_per_pt = self.ppi as f64 / 72.0;
-        (self.tiles[idx].size().y.to_pt() * pixel_per_pt).ceil() as u32
+        pt_to_px(self.tiles[idx].size().y.to_pt(), self.ppi)
     }
 
     /// Render a single content tile to PNG bytes.
