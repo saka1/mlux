@@ -140,7 +140,6 @@ cargo test      # all tests pass
 - clap 4 (derive), serde 1 + toml 0.8 (config)
 - crossterm 0.28, base64 0.22 (viewer terminal I/O)
 - notify 8 (file watching via inotify)
-- comemo 0.5, ecow 0.2 (typst lazy hashing / compact strings)
 - anyhow 1 (error handling), log 0.4 + env_logger 0.11
 - Rust edition 2024
 
