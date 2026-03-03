@@ -77,7 +77,9 @@ pub(super) fn visual_line_offset(
 ) -> u32 {
     let idx = (line_num as usize).saturating_sub(1); // 1-based to 0-based
     if idx < visual_lines.len() {
-        visual_lines[idx].y_px.min(max_scroll)
+        // Use the previous line's baseline as the scroll target so that line N
+        // appears fully visible at the top (y_px is the baseline, not the ascender).
+        visual_lines[idx.saturating_sub(1)].y_px.min(max_scroll)
     } else {
         0
     }
