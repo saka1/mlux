@@ -12,6 +12,7 @@ use crate::tile::{TiledDocument, TiledDocumentCache, VisibleTiles, VisualLine};
 // Layout / ViewState
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 pub(super) struct Layout {
     pub sidebar_cols: u16,
     pub image_col: u16,  // 画像領域の開始列 (= sidebar_cols)

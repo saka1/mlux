@@ -27,7 +27,7 @@ mod state;
 mod terminal;
 
 use crossterm::{
-    event::{self, Event},
+    event::{self, Event, KeyCode, KeyModifiers},
     terminal as crossterm_terminal,
 };
 use log::{debug, info};
@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use crate::config::{self, CliOverrides, Config};
 use crate::convert::markdown_to_typst_with_map;
 use crate::input::InputSource;
-use crate::tile::{TilePngs, TiledDocumentCache};
+use crate::tile::{TilePngs, TiledDocument, TiledDocumentCache};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
@@ -75,6 +75,69 @@ enum Effect {
     Exit(ExitReason),
 }
 
+/// Result of an async build attempt.
+enum BuildOutcome {
+    Done(TiledDocument),
+    Quit,
+    Resize { new_cols: u16, new_rows: u16 },
+}
+
+/// Fast threshold: if the build completes within this window, skip the loading screen entirely.
+const FAST_THRESHOLD: Duration = Duration::from_millis(100);
+
+/// Build a `TiledDocument` on a background thread.
+///
+/// * Phase 1 (`recv_timeout(100ms)`): fast path — no loading screen, imperceptible wait.
+/// * Phase 2 (timeout exceeded): show loading screen and poll events so `q`/Esc/Ctrl-C
+///   can abort immediately without waiting for the build to finish.
+fn build_async_with_threshold(
+    build_fn: impl FnOnce() -> anyhow::Result<TiledDocument> + Send + 'static,
+    layout: &state::Layout,
+    filename: &str,
+) -> anyhow::Result<BuildOutcome> {
+    let (tx, rx) = mpsc::channel::<anyhow::Result<TiledDocument>>();
+    thread::spawn(move || {
+        let _ = tx.send(build_fn());
+    });
+
+    // Phase 1: fast path — q not responsive but 100ms is imperceptible
+    match rx.recv_timeout(FAST_THRESHOLD) {
+        Ok(result) => return Ok(BuildOutcome::Done(result?)),
+        Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("build thread panicked"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+    }
+
+    // Phase 2: loading screen + event polling
+    terminal::draw_loading_screen(layout, filename)?;
+    loop {
+        match rx.try_recv() {
+            Ok(result) => return Ok(BuildOutcome::Done(result?)),
+            Err(mpsc::TryRecvError::Disconnected) => anyhow::bail!("build thread panicked"),
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if event::poll(Duration::from_millis(16))? {
+            match event::read()? {
+                Event::Key(k)
+                    if k.code == KeyCode::Char('q')
+                        || k.code == KeyCode::Esc
+                        || (k.code == KeyCode::Char('c')
+                            && k.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    // rx dropped → build thread detaches naturally
+                    return Ok(BuildOutcome::Quit);
+                }
+                Event::Resize(c, r) => {
+                    return Ok(BuildOutcome::Resize {
+                        new_cols: c,
+                        new_rows: r,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Run the terminal viewer.
 ///
 /// `input` is the input source (file path or stdin pipe).
@@ -106,7 +169,18 @@ pub fn run(
     }
 
     // 3. Font cache (one-time filesystem scan, shared across rebuilds)
-    let font_cache = FontCache::new();
+    //
+    // `Box::leak` turns the heap allocation into a `&'static` reference.
+    // This is sound here because:
+    //   - `font_cache` is intentionally immortal: it must outlive every build
+    //     thread, the inner event loop, and all outer-loop rebuilds.
+    //   - The process exits immediately after `run()` returns, so the leak
+    //     has no practical consequence (the OS reclaims the memory anyway).
+    //   - The alternative — `Arc<FontCache>` — would require cloning the Arc
+    //     into every `thread::spawn` / `thread::scope` closure.  Since the
+    //     lifetime is truly "until process exit", `&'static` is both simpler
+    //     and more honest about the intent than reference-counting.
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
 
     // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = terminal::RawGuard::enter()?;
@@ -161,17 +235,48 @@ pub fn run(
         let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
 
         // 5b. Build TiledDocument (content + sidebar compiled & split)
+        //
+        // Uses a background thread with a 100ms fast-path threshold.
+        // If the build finishes in time, no loading screen is shown.
+        // Beyond the threshold, a loading screen appears and q/Esc/Ctrl-C
+        // can abort immediately.
         info!("building tiled document...");
-        let tiled_doc = pipeline::build_tiled_document(&pipeline::PipelineInput {
-            theme_text,
-            content_text: &content_text,
-            md_source: &markdown,
-            source_map: &source_map,
-            layout: &layout,
-            ppi: config.ppi,
-            tile_height_min: config.viewer.tile_height,
-            fonts: &font_cache,
-        })?;
+        let markdown_clone = markdown.clone(); // markdown also needed by inner loop
+        let layout_copy = layout;
+        let ppi = config.ppi;
+        let tile_height = config.viewer.tile_height;
+        // content_text and source_map move into the closure (not used by inner loop)
+        let tiled_doc = match build_async_with_threshold(
+            move || {
+                pipeline::build_tiled_document(&pipeline::PipelineInput {
+                    theme_text,
+                    content_text: &content_text,
+                    md_source: &markdown_clone,
+                    source_map: &source_map,
+                    layout: &layout_copy,
+                    ppi,
+                    tile_height_min: tile_height,
+                    fonts: font_cache,
+                })
+            },
+            &layout,
+            &filename,
+        )? {
+            BuildOutcome::Done(doc) => doc,
+            BuildOutcome::Quit => break 'outer,
+            BuildOutcome::Resize { new_cols, new_rows } => {
+                let new_winsize = crossterm_terminal::window_size()?;
+                layout = state::compute_layout(
+                    new_cols,
+                    new_rows,
+                    new_winsize.width,
+                    new_winsize.height,
+                    config.viewer.sidebar_cols,
+                );
+                terminal::delete_all_images()?;
+                continue 'outer;
+            }
+        };
 
         let img_w = tiled_doc.width_px();
         let img_h = tiled_doc.total_height_px();

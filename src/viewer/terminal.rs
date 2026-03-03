@@ -248,6 +248,22 @@ pub(super) fn draw_status_bar(
     out.flush()
 }
 
+/// ローディング画面: 画面クリア + ステータスバーに "Building… q:quit" 表示。
+///
+/// 100ms の fast path を超えた場合のみ呼ばれる。
+pub(super) fn draw_loading_screen(layout: &Layout, filename: &str) -> io::Result<()> {
+    let mut out = stdout();
+    out.queue(terminal::Clear(terminal::ClearType::All))?;
+    out.queue(cursor::MoveTo(0, layout.status_row))?;
+
+    let total_cols = (layout.sidebar_cols + layout.image_cols) as usize;
+    let msg = format!(" {filename} | Building\u{2026}  q:quit");
+    let padded = format!("{:<width$}", msg, width = total_cols);
+    write!(out, "{}", padded.on_dark_grey().white())?;
+    out.queue(style::ResetColor)?;
+    out.flush()
+}
+
 /// Draw command input bar on the status row (`:input_` prompt).
 pub(super) fn draw_command_bar(layout: &Layout, input: &str) -> io::Result<()> {
     let mut out = stdout();
