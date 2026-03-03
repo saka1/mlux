@@ -201,7 +201,13 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
 
     if dump {
         // Dump mode: build world directly for source inspection
-        let world = MluxWorld::new(theme_text, &content_text, width, &font_cache);
+        let world = MluxWorld::new(
+            theme_text,
+            mlux::theme::data_files(theme),
+            &content_text,
+            width,
+            &font_cache,
+        );
         let source_text = world.main_source().text();
         eprintln!(
             "=== Generated main.typ ({} lines) ===",
@@ -221,6 +227,7 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
 
     let tiled_doc = build_tiled_document(&BuildParams {
         theme_text,
+        data_files: mlux::theme::data_files(theme),
         content_text: &content_text,
         md_source: &markdown,
         source_map: &source_map,

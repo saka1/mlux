@@ -110,16 +110,25 @@ pub struct MluxWorld<'f> {
     main_source: Source,
     /// Byte offset where content_text begins within main.typ.
     content_offset: usize,
+    /// Additional virtual files served by this world (e.g. tmTheme files).
+    data_files: crate::theme::DataFiles,
 }
 
 impl<'f> MluxWorld<'f> {
     /// Create a new MluxWorld.
     ///
     /// - `theme_text`: contents of the theme.typ file
+    /// - `data_files`: additional virtual files for the theme (e.g. tmTheme)
     /// - `content_text`: Typst markup converted from Markdown
     /// - `width`: page width in pt
     /// - `fonts`: cached font search results
-    pub fn new(theme_text: &str, content_text: &str, width: f64, fonts: &'f FontCache) -> Self {
+    pub fn new(
+        theme_text: &str,
+        data_files: crate::theme::DataFiles,
+        content_text: &str,
+        width: f64,
+        fonts: &'f FontCache,
+    ) -> Self {
         let start = Instant::now();
         // Inline theme + width override + content into a single source
         let prefix = format!("{theme_text}\n#set page(width: {width}pt)\n");
@@ -127,6 +136,7 @@ impl<'f> MluxWorld<'f> {
         let main_text = format!("{prefix}{content_text}\n");
 
         let mut world = Self::from_source(&main_text, fonts);
+        world.data_files = data_files;
         world.content_offset = content_offset;
         info!(
             "world: new() completed in {:.1}ms",
@@ -162,6 +172,7 @@ impl<'f> MluxWorld<'f> {
             main_id,
             main_source,
             content_offset: 0,
+            data_files: &[],
         }
     }
 }
@@ -190,12 +201,16 @@ impl World for MluxWorld<'_> {
     }
 
     fn file(&self, id: FileId) -> FileResult<Bytes> {
+        let path = id.vpath().as_rootless_path();
+        for &(name, data) in self.data_files {
+            if path == std::path::Path::new(name) {
+                return Ok(Bytes::new(data.to_vec()));
+            }
+        }
         if id == self.main_id {
             Ok(Bytes::from_string(self.main_source.clone()))
         } else {
-            Err(typst::diag::FileError::NotFound(
-                id.vpath().as_rootless_path().into(),
-            ))
+            Err(typst::diag::FileError::NotFound(path.into()))
         }
     }
 

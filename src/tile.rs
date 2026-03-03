@@ -517,6 +517,7 @@ pub const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 /// Parameters for [`build_tiled_document`].
 pub struct BuildParams<'a> {
     pub theme_text: &'a str,
+    pub data_files: crate::theme::DataFiles,
     pub content_text: &'a str,
     pub md_source: &'a str,
     pub source_map: &'a SourceMap,
@@ -535,6 +536,7 @@ pub struct BuildParams<'a> {
 pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let BuildParams {
         theme_text,
+        data_files,
         content_text,
         md_source,
         source_map,
@@ -547,7 +549,8 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let start = Instant::now();
 
     // 1. Compile content document
-    let content_world = crate::world::MluxWorld::new(theme_text, content_text, *width_pt, fonts);
+    let content_world =
+        crate::world::MluxWorld::new(theme_text, data_files, content_text, *width_pt, fonts);
     let document = crate::render::compile_document(&content_world)?;
 
     // 2. Extract visual lines with source mapping

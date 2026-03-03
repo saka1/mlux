@@ -6,6 +6,7 @@ use crate::world::FontCache;
 
 pub(super) struct PipelineInput<'a> {
     pub theme_text: &'a str,
+    pub data_files: crate::theme::DataFiles,
     pub content_text: &'a str,
     pub md_source: &'a str,
     pub source_map: &'a crate::convert::SourceMap,
@@ -30,6 +31,7 @@ pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<
 
     crate::tile::build_tiled_document(&BuildParams {
         theme_text: input.theme_text,
+        data_files: input.data_files,
         content_text: input.content_text,
         md_source: input.md_source,
         source_map: input.source_map,

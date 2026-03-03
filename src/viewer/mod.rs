@@ -245,11 +245,13 @@ pub fn run(
         let layout_copy = layout;
         let ppi = config.ppi;
         let tile_height = config.viewer.tile_height;
+        let data_files = crate::theme::data_files(&config.theme);
         // content_text and source_map move into the closure (not used by inner loop)
         let tiled_doc = match build_async_with_threshold(
             move || {
                 pipeline::build_tiled_document(&pipeline::PipelineInput {
                     theme_text,
+                    data_files,
                     content_text: &content_text,
                     md_source: &markdown_clone,
                     source_map: &source_map,

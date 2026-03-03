@@ -18,7 +18,13 @@ fn test_paragraph_ja_renders() {
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(theme, &content, 800.0, &font_cache);
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+    );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
     let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
@@ -44,7 +50,13 @@ fn test_empty_input() {
     let theme = load_theme();
     let content = markdown_to_typst("");
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(theme, &content, 800.0, &font_cache);
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+    );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
     let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
@@ -60,7 +72,13 @@ fn test_full_document_renders() {
     let theme = load_theme();
     let content = markdown_to_typst(&markdown);
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(theme, &content, 800.0, &font_cache);
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+    );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
 
@@ -107,7 +125,13 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let theme = load_theme();
     let (content, source_map) = markdown_to_typst_with_map(md);
     let font_cache = FontCache::new();
-    let world = MluxWorld::new(theme, &content, WIDTH_PT, &font_cache);
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        WIDTH_PT,
+        &font_cache,
+    );
     let document = compile_document(&world).expect("compilation should succeed");
 
     let params = SourceMappingParams {
