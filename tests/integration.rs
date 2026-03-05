@@ -523,3 +523,62 @@ fn test_yank_exact_blockquote_fallback() {
         }
     }
 }
+
+#[test]
+fn test_all_features_renders() {
+    let markdown =
+        fs::read_to_string("tests/fixtures/09_all_features.md").expect("fixture should exist");
+    let theme = load_theme();
+    let content = markdown_to_typst(&markdown);
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+    );
+    let document = compile_document(&world).expect("compilation should succeed");
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
+
+    // Comprehensive document should produce multiple tiles
+    assert!(
+        tiles.len() >= 3,
+        "all-features document should produce at least 3 tiles, got {}",
+        tiles.len()
+    );
+
+    // Verify every tile renders to valid PNG
+    for (i, tile) in tiles.iter().enumerate() {
+        let png_data = render_frame_to_png(tile, &document.pages[0].fill, 144.0)
+            .unwrap_or_else(|e| panic!("tile {i} should render: {e}"));
+        assert_eq!(
+            &png_data[..8],
+            b"\x89PNG\r\n\x1a\n",
+            "tile {i} should be valid PNG"
+        );
+        assert!(
+            png_data.len() > 1000,
+            "tile {i} PNG should be >1KB, got {} bytes",
+            png_data.len()
+        );
+    }
+}
+
+#[test]
+fn test_all_features_source_map() {
+    let md =
+        fs::read_to_string("tests/fixtures/09_all_features.md").expect("fixture should exist");
+    let vlines = source_map_pipeline(&md);
+
+    // Should have many visual lines
+    assert!(
+        vlines.len() > 20,
+        "expected >20 visual lines for all-features document, got {}",
+        vlines.len()
+    );
+
+    // First visual line should be the main heading
+    let yanked_first = yank_lines(&md, &vlines, 0, 0);
+    assert_eq!(yanked_first, "# mlux 全機能テストドキュメント");
+}
