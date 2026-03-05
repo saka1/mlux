@@ -68,7 +68,8 @@ jobs:
           mkdir "$dir"
           cp "target/${{ matrix.target }}/release/mlux" "$dir/"
           cp LICENSE "$dir/"
-          cp fonts/OFL.txt "$dir/FONT-LICENSE-OFL.txt"
+          cp fonts/OFL-NotoSansJP.txt "$dir/"
+          cp fonts/OFL-STIXTwoMath.txt "$dir/"
           tar czf "$dir.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
         with:
