@@ -54,6 +54,9 @@
 #show heading.where(level: 6): it => block(below: 1em, above: 1.0em,
   text(12pt, weight: "bold", fill: rgb("#a6adc8"), it.body))
 
+// 数式: 本文フォントとのバランス調整
+#show math.equation: set text(font: "STIX Two Math", size: 13pt)
+
 // 水平線: Surface 2
 #show line: set line(stroke: 1pt + rgb("#585b70"))
 
