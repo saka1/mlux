@@ -4,6 +4,20 @@ use std::time::Instant;
 use log::info;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
+/// Convert a LaTeX math expression to Typst math markup using mitex.
+/// Returns the original LaTeX string (prefixed with indicators for debugging)
+/// if conversion fails.
+fn latex_to_typst_math(latex: &str) -> String {
+    match mitex::convert_math(latex, None) {
+        Ok(typst_math) => typst_math,
+        Err(_) => {
+            // Fallback: emit as-is in a Typst math block so it's visible
+            // (though likely broken). This avoids silently dropping content.
+            latex.to_string()
+        }
+    }
+}
+
 /// Markdown source line → Typst output byte range mapping for a single block.
 #[derive(Debug, Clone)]
 pub struct BlockMapping {
@@ -75,6 +89,7 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_MATH);
     let parser = Parser::new_ext(markdown, options);
 
     let mut output = String::new();
@@ -513,6 +528,32 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     source_map_blocks.push(BlockMapping {
                         typst_byte_range: rule_start..output.len(),
                         md_byte_range: md_range,
+                    });
+                }
+            }
+            Event::InlineMath(latex) => {
+                let typst_math = latex_to_typst_math(&latex);
+                let s = format!("${typst_math}$");
+                push_to_target(&mut output, &mut cell_buf, &s);
+            }
+            Event::DisplayMath(latex) => {
+                if block_depth == 0 {
+                    block_starts.push((output.len(), md_range));
+                }
+                if !output.is_empty() && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                let typst_math = latex_to_typst_math(&latex);
+                output.push_str(&format!("$ {typst_math} $\n"));
+                if block_depth == 0
+                    && let Some((typst_start, md_range_start)) = block_starts.pop()
+                {
+                    source_map_blocks.push(BlockMapping {
+                        typst_byte_range: typst_start..output.len(),
+                        md_byte_range: md_range_start,
                     });
                 }
             }
@@ -1136,5 +1177,80 @@ mod tests {
             typst, "para line1\nline2\n",
             "non-list softbreak should not add indent"
         );
+    }
+
+    #[test]
+    fn test_inline_math() {
+        let md = "The formula $\\frac{a}{b}$ is inline.";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("$") && typst.contains("frac"),
+            "inline math should produce Typst $...$ with converted content, got: {typst}"
+        );
+        // Should not be escaped as plain text ($)
+        assert!(
+            !typst.contains("\\$"),
+            "math delimiters should not be escaped, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_display_math() {
+        let md = "$$\n\\sum_{i=1}^{n} x_i\n$$";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("$") && typst.contains("sum"),
+            "display math should produce Typst $ ... $ with converted content, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_inline_math_simple() {
+        let md = "Value $x + y$ here.";
+        let typst = markdown_to_typst(md);
+        // mitex adds spacing around operators; just verify it's wrapped in $...$
+        assert!(
+            typst.contains("$") && typst.contains("x") && typst.contains("y"),
+            "simple math should be wrapped in $...$, got: {typst}"
+        );
+        assert!(
+            !typst.contains("\\$"),
+            "math delimiters should not be escaped, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_math_in_table() {
+        let md = "| Formula |\n|---------|\n| $x^2$ |";
+        let typst = markdown_to_typst(md);
+        assert!(
+            typst.contains("#table("),
+            "should produce table, got: {typst}"
+        );
+        assert!(
+            typst.contains("$"),
+            "table cell should contain math, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_display_math_source_map() {
+        let md = "before\n\n$$\nx^2\n$$\n\nafter";
+        let (_typst, map) = markdown_to_typst_with_map(md);
+        // Display math should produce a source map block
+        assert!(
+            map.blocks.len() >= 2,
+            "should have at least 2 blocks (paragraph + math), got: {}",
+            map.blocks.len()
+        );
+        // No overlaps
+        for pair in map.blocks.windows(2) {
+            assert!(
+                pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
+                "overlapping typst ranges: {:?} and {:?}",
+                pair[0].typst_byte_range,
+                pair[1].typst_byte_range,
+            );
+        }
     }
 }
