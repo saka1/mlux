@@ -567,8 +567,7 @@ fn test_all_features_renders() {
 
 #[test]
 fn test_all_features_source_map() {
-    let md =
-        fs::read_to_string("tests/fixtures/09_all_features.md").expect("fixture should exist");
+    let md = fs::read_to_string("tests/fixtures/09_all_features.md").expect("fixture should exist");
     let vlines = source_map_pipeline(&md);
 
     // Should have many visual lines
