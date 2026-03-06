@@ -127,6 +127,8 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         }
         Action::OpenUrl(n) => open_url(ctx, n),
 
+        Action::GoBack => vec![Effect::GoBack],
+
         Action::EnterUrlPicker => {
             let entries = collect_all_url_entries(ctx.markdown, ctx.visual_lines);
             if entries.is_empty() {

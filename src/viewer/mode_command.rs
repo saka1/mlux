@@ -42,6 +42,7 @@ pub(super) fn handle(
                 }
                 "reload" | "rel" => Ok(vec![Effect::Exit(ExitReason::ConfigReload)]),
                 "q" | "quit" => Ok(vec![Effect::Exit(ExitReason::Quit)]),
+                "back" | "b" => Ok(vec![Effect::Exit(ExitReason::GoBack)]),
                 "open" => Ok(vec![Effect::EnterUrlPickerAll]),
                 _ => Ok(vec![
                     Effect::SetMode(ViewerMode::Normal),

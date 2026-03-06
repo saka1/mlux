@@ -32,6 +32,7 @@ use crossterm::{
 };
 use log::{debug, info};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -72,6 +73,7 @@ enum Effect {
     SetLastSearch(LastSearch),
     DeletePlacements,
     EnterUrlPickerAll,
+    GoBack,
     Exit(ExitReason),
 }
 
@@ -150,7 +152,8 @@ pub fn run(
     cli_overrides: &CliOverrides,
     watch: bool,
 ) -> anyhow::Result<()> {
-    let filename = input.display_name().to_string();
+    let mut input = input;
+    let mut filename = input.display_name().to_string();
 
     terminal::check_tty()?;
 
@@ -196,8 +199,11 @@ pub fn run(
     // Flash message to pass from outer loop into inner loop (e.g. "Config reloaded")
     let mut outer_flash: Option<String> = None;
 
+    // Jump stack for markdown link navigation (tag-jump)
+    let mut jump_stack: Vec<JumpEntry> = Vec::new();
+
     // File watcher (optional, file mode only)
-    let watcher = if watch {
+    let mut watcher = if watch {
         match &input {
             InputSource::File(path) => Some(FileWatcher::new(path)?),
             InputSource::Stdin(_) => None,
@@ -487,6 +493,12 @@ pub fn run(
                                         let _ = terminal::send_osc52(&text);
                                     }
                                     Effect::OpenUrl(url) => {
+                                        if let InputSource::File(ref cur) = input
+                                            && is_local_markdown_link(&url)
+                                            && let Some(path) = resolve_link_path(&url, cur)
+                                        {
+                                            return Ok(ExitReason::Navigate { path });
+                                        }
                                         let _ = open::that_in_background(&url);
                                     }
                                     Effect::SetMode(m) => {
@@ -555,6 +567,9 @@ pub fn run(
                                             mode_url::draw_url_screen(&layout, &up)?;
                                             mode = ViewerMode::UrlPicker(up);
                                         }
+                                    }
+                                    Effect::GoBack => {
+                                        return Ok(ExitReason::GoBack);
                                     }
                                     Effect::Exit(reason) => {
                                         return Ok(reason);
@@ -688,9 +703,120 @@ pub fn run(
                 terminal::delete_all_images()?;
                 // continue 'outer → rebuild document with new (or old) config
             }
+            ExitReason::Navigate { path } => {
+                if !path.exists() {
+                    outer_flash = Some(format!("File not found: {}", path.display()));
+                    terminal::delete_all_images()?;
+                    continue 'outer;
+                }
+                // Push current location onto jump stack
+                if let InputSource::File(ref cur) = input {
+                    jump_stack.push(JumpEntry {
+                        path: cur.clone(),
+                        y_offset: state.y_offset,
+                    });
+                }
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                debug!("navigate: jumping to {}", canonical.display());
+                input = InputSource::File(canonical.clone());
+                filename = input.display_name().to_string();
+                y_offset_carry = 0;
+                if watch {
+                    watcher = Some(FileWatcher::new(&canonical)?);
+                }
+                terminal::delete_all_images()?;
+                // continue 'outer → load new file
+            }
+            ExitReason::GoBack => {
+                if let Some(entry) = jump_stack.pop() {
+                    debug!("go back: returning to {}", entry.path.display());
+                    input = InputSource::File(entry.path.clone());
+                    filename = input.display_name().to_string();
+                    y_offset_carry = entry.y_offset;
+                    if watch {
+                        watcher = Some(FileWatcher::new(&entry.path)?);
+                    }
+                    terminal::delete_all_images()?;
+                } else {
+                    outer_flash = Some("No previous file".into());
+                    terminal::delete_all_images()?;
+                }
+                // continue 'outer
+            }
         }
     }
 
     guard.cleanup();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Markdown link navigation helpers
+// ---------------------------------------------------------------------------
+
+struct JumpEntry {
+    path: PathBuf,
+    y_offset: u32,
+}
+
+/// Check if a URL points to a local markdown file (not a web URL).
+fn is_local_markdown_link(url: &str) -> bool {
+    if url.contains("://") || url.starts_with("mailto:") {
+        return false;
+    }
+    let path_part = url.split('#').next().unwrap_or(url);
+    path_part.ends_with(".md") || path_part.ends_with(".markdown")
+}
+
+/// Resolve a relative link URL against the current file's directory.
+fn resolve_link_path(url: &str, current_file: &Path) -> Option<PathBuf> {
+    let path_part = url.split('#').next().unwrap_or(url);
+    if path_part.is_empty() {
+        return None;
+    }
+    let base_dir = current_file.parent()?;
+    Some(base_dir.join(path_part))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_local_markdown_link() {
+        assert!(is_local_markdown_link("./other.md"));
+        assert!(is_local_markdown_link("other.md"));
+        assert!(is_local_markdown_link("../docs/guide.md"));
+        assert!(is_local_markdown_link("file.md#section"));
+        assert!(is_local_markdown_link("notes.markdown"));
+
+        assert!(!is_local_markdown_link("https://example.com"));
+        assert!(!is_local_markdown_link("http://example.com/page.md"));
+        assert!(!is_local_markdown_link("mailto:user@example.com"));
+        assert!(!is_local_markdown_link("data.csv"));
+        assert!(!is_local_markdown_link("image.png"));
+        assert!(!is_local_markdown_link(""));
+    }
+
+    #[test]
+    fn test_resolve_link_path() {
+        let current = Path::new("/home/user/docs/readme.md");
+
+        assert_eq!(
+            resolve_link_path("other.md", current),
+            Some(PathBuf::from("/home/user/docs/other.md"))
+        );
+        assert_eq!(
+            resolve_link_path("../guide.md", current),
+            Some(PathBuf::from("/home/user/docs/../guide.md"))
+        );
+        assert_eq!(
+            resolve_link_path("sub/page.md#heading", current),
+            Some(PathBuf::from("/home/user/docs/sub/page.md"))
+        );
+        // Fragment-only link → None
+        assert_eq!(resolve_link_path("#heading", current), None);
+        // Empty → None
+        assert_eq!(resolve_link_path("", current), None);
+    }
 }
