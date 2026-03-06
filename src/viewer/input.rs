@@ -70,6 +70,7 @@ pub(super) enum Action {
     EnterCommand,
     SearchNextMatch,
     SearchPrevMatch,
+    GoBack,
     CancelInput,
     /// A digit was accumulated; caller should redraw status bar.
     Digit,
@@ -142,6 +143,12 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             None => Some(Action::YankBlockPrompt),
             Some(n) => Some(Action::YankBlock(n)),
         },
+
+        // Go back (Ctrl-O: jump stack pop)
+        (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+            acc.reset();
+            Some(Action::GoBack)
+        }
 
         // URL を開く (o)
         (KeyCode::Char('o'), _) => match acc.take() {
@@ -359,6 +366,24 @@ mod tests {
         let mut acc = InputAccumulator::new();
         let a = map_key_event(key(KeyCode::Char('G'), KeyModifiers::SHIFT), &mut acc);
         assert!(matches!(a, Some(Action::JumpToBottom)));
+    }
+
+    // --- Go back (Ctrl-O) ---
+
+    #[test]
+    fn test_ctrl_o_goes_back() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(key(KeyCode::Char('o'), KeyModifiers::CONTROL), &mut acc);
+        assert!(matches!(a, Some(Action::GoBack)));
+    }
+
+    #[test]
+    fn test_ctrl_o_resets_accumulator() {
+        let mut acc = InputAccumulator::new();
+        map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
+        assert!(acc.is_active());
+        map_key_event(key(KeyCode::Char('o'), KeyModifiers::CONTROL), &mut acc);
+        assert!(!acc.is_active());
     }
 
     // --- Open URL ---

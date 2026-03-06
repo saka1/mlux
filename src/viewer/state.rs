@@ -173,6 +173,8 @@ pub(super) enum ExitReason {
     Resize { new_cols: u16, new_rows: u16 },
     Reload,
     ConfigReload,
+    Navigate { path: std::path::PathBuf },
+    GoBack,
 }
 
 /// Full redraw: content tiles + sidebar + status bar.
