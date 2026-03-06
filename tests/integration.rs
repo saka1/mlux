@@ -1,6 +1,7 @@
 use std::fs;
 
 use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
+use mlux::image::LoadedImages;
 use mlux::render::{compile_document, render_frame_to_png};
 use mlux::tile::{
     SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
@@ -24,6 +25,7 @@ fn test_paragraph_ja_renders() {
         &content,
         800.0,
         &font_cache,
+        LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
@@ -56,6 +58,7 @@ fn test_empty_input() {
         &content,
         800.0,
         &font_cache,
+        LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
@@ -78,6 +81,7 @@ fn test_full_document_renders() {
         &content,
         800.0,
         &font_cache,
+        LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
@@ -123,7 +127,7 @@ const WIDTH_PT: f64 = 400.0;
 fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
-    let (content, source_map) = markdown_to_typst_with_map(md);
+    let (content, source_map) = markdown_to_typst_with_map(md, None);
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -131,6 +135,7 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
         &content,
         WIDTH_PT,
         &font_cache,
+        LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
 
@@ -537,6 +542,7 @@ fn test_all_features_renders() {
         &content,
         800.0,
         &font_cache,
+        LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
@@ -580,4 +586,55 @@ fn test_all_features_source_map() {
     // First visual line should be the main heading
     let yanked_first = yank_lines(&md, &vlines, 0, 0);
     assert_eq!(yanked_first, "# mlux 全機能テストドキュメント");
+}
+
+#[test]
+fn test_image_renders() {
+    let markdown = fs::read_to_string("tests/fixtures/11_image.md").expect("fixture should exist");
+    let theme = load_theme();
+
+    // Load images (same flow as cmd_render)
+    let base_dir = std::path::Path::new("tests/fixtures");
+    let image_paths = mlux::convert::extract_image_paths(&markdown);
+    let (image_files, errors) = mlux::image::load_images(&image_paths, Some(base_dir));
+    assert!(errors.is_empty(), "image load errors: {errors:?}");
+    assert!(
+        image_files.get("test_image.png").is_some(),
+        "should have loaded test_image.png"
+    );
+
+    let loaded_set = image_files.key_set();
+    let (content, _source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
+
+    // Verify #image() is in the generated Typst
+    assert!(
+        content.contains("#image(\"test_image.png\""),
+        "should contain #image() call, got: {content}"
+    );
+
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+        image_files,
+    );
+    let document = compile_document(&world).expect("compilation should succeed with image");
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
+    assert!(!tiles.is_empty(), "should produce at least one tile");
+
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+        .expect("rendering should succeed");
+    assert_eq!(
+        &png_data[..8],
+        b"\x89PNG\r\n\x1a\n",
+        "output should be valid PNG"
+    );
+    assert!(
+        png_data.len() > 1000,
+        "PNG should be >1KB with image, got {} bytes",
+        png_data.len()
+    );
 }

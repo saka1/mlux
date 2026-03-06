@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 
 use mlux::config;
-use mlux::convert::markdown_to_typst_with_map;
+use mlux::convert::{extract_image_paths, markdown_to_typst_with_map};
 use mlux::input::{self, InputSource};
 use mlux::render::{compile_document, dump_document};
 use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
@@ -193,8 +193,17 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
         anyhow::bail!("input file is empty or contains only whitespace");
     }
 
+    // Load images
+    let base_dir = if is_stdin { None } else { input.parent() };
+    let image_paths = extract_image_paths(&markdown);
+    let (image_files, image_errors) = mlux::image::load_images(&image_paths, base_dir);
+    for err in &image_errors {
+        eprintln!("warning: {err}");
+    }
+    let loaded_set = image_files.key_set();
+
     // Convert markdown to typst
-    let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
+    let (content_text, source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
 
     // Create font cache (one-time filesystem scan)
     let font_cache = FontCache::new();
@@ -207,6 +216,7 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
             &content_text,
             width,
             &font_cache,
+            image_files.clone(),
         );
         let source_text = world.main_source().text();
         eprintln!(
@@ -236,6 +246,7 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
         tile_height_pt: tile_height,
         ppi,
         fonts: &font_cache,
+        image_files,
     })?;
 
     let stem = output

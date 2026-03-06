@@ -526,6 +526,7 @@ pub struct BuildParams<'a> {
     pub tile_height_pt: f64,
     pub ppi: f32,
     pub fonts: &'a crate::world::FontCache,
+    pub image_files: crate::image::LoadedImages,
 }
 
 /// Build a TiledDocument from converted Typst content.
@@ -545,12 +546,19 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
         tile_height_pt,
         ppi,
         fonts,
+        image_files,
     } = params;
     let start = Instant::now();
 
     // 1. Compile content document
-    let content_world =
-        crate::world::MluxWorld::new(theme_text, data_files, content_text, *width_pt, fonts);
+    let content_world = crate::world::MluxWorld::new(
+        theme_text,
+        data_files,
+        content_text,
+        *width_pt,
+        fonts,
+        image_files.clone(),
+    );
     let document = crate::render::compile_document(&content_world)?;
 
     // 2. Extract visual lines with source mapping

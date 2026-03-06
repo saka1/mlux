@@ -10,7 +10,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Run both APIs — they must not panic.
     let simple = markdown_to_typst(markdown);
-    let (with_map, source_map) = markdown_to_typst_with_map(markdown);
+    let (with_map, source_map) = markdown_to_typst_with_map(markdown, None);
 
     // Both must produce identical Typst output.
     assert_eq!(simple, with_map);

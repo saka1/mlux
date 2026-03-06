@@ -18,7 +18,14 @@ fuzz_target!(|data: &[u8]| {
 
     let fonts = FONTS.get_or_init(FontCache::new);
     let typst_content = markdown_to_typst(markdown);
-    let world = MluxWorld::new(THEME, &typst_content, 660.0, fonts);
+    let world = MluxWorld::new(
+        THEME,
+        mlux::theme::data_files("catppuccin"),
+        &typst_content,
+        660.0,
+        fonts,
+        mlux::image::LoadedImages::default(),
+    );
 
     let document = match compile_document(&world) {
         Ok(doc) => doc,

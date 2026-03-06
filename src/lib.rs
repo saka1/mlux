@@ -1,5 +1,6 @@
 pub mod config;
 pub mod convert;
+pub mod image;
 pub mod input;
 pub mod render;
 pub mod theme;

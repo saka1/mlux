@@ -14,6 +14,7 @@ pub(super) struct PipelineInput<'a> {
     pub ppi: f32,
     pub tile_height_min: f64,
     pub fonts: &'a FontCache,
+    pub image_files: crate::image::LoadedImages,
 }
 
 pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<TiledDocument> {
@@ -40,5 +41,6 @@ pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<
         tile_height_pt,
         ppi,
         fonts: input.fonts,
+        image_files: input.image_files.clone(),
     })
 }

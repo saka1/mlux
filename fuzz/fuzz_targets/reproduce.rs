@@ -42,7 +42,14 @@ fn main() {
         let iter_start = Instant::now();
 
         let typst_content = markdown_to_typst(markdown);
-        let world = MluxWorld::new(THEME, &typst_content, 660.0, &font_cache);
+        let world = MluxWorld::new(
+            THEME,
+            mlux::theme::data_files("catppuccin"),
+            &typst_content,
+            660.0,
+            &font_cache,
+            mlux::image::LoadedImages::default(),
+        );
 
         let document = match compile_document(&world) {
             Ok(doc) => doc,

@@ -112,6 +112,8 @@ pub struct MluxWorld<'f> {
     content_offset: usize,
     /// Additional virtual files served by this world (e.g. tmTheme files).
     data_files: crate::theme::DataFiles,
+    /// Pre-loaded image files (path → bytes), served via `World::file()`.
+    image_files: crate::image::LoadedImages,
 }
 
 impl<'f> MluxWorld<'f> {
@@ -128,6 +130,7 @@ impl<'f> MluxWorld<'f> {
         content_text: &str,
         width: f64,
         fonts: &'f FontCache,
+        image_files: crate::image::LoadedImages,
     ) -> Self {
         let start = Instant::now();
         // Inline theme + mitex compat shims + width override + content into a single source
@@ -139,6 +142,7 @@ impl<'f> MluxWorld<'f> {
         let mut world = Self::from_source(&main_text, fonts);
         world.data_files = data_files;
         world.content_offset = content_offset;
+        world.image_files = image_files;
         info!(
             "world: new() completed in {:.1}ms",
             start.elapsed().as_secs_f64() * 1000.0
@@ -174,6 +178,7 @@ impl<'f> MluxWorld<'f> {
             main_source,
             content_offset: 0,
             data_files: &[],
+            image_files: crate::image::LoadedImages::default(),
         }
     }
 }
@@ -207,6 +212,11 @@ impl World for MluxWorld<'_> {
             if path == std::path::Path::new(name) {
                 return Ok(Bytes::new(data.to_vec()));
             }
+        }
+        // Check pre-loaded image files
+        let path_str = path.to_str().unwrap_or("");
+        if let Some(bytes) = self.image_files.get(path_str) {
+            return Ok(bytes.clone());
         }
         if id == self.main_id {
             Ok(Bytes::from_string(self.main_source.clone()))

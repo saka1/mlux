@@ -232,7 +232,19 @@ pub fn run(
                 }
             }
         };
-        let (content_text, source_map) = markdown_to_typst_with_map(&markdown);
+        // Load images
+        let base_dir = match &input {
+            InputSource::File(path) => path.parent(),
+            InputSource::Stdin(_) => None,
+        };
+        let image_paths = crate::convert::extract_image_paths(&markdown);
+        let (image_files, image_errors) = crate::image::load_images(&image_paths, base_dir);
+        for err in &image_errors {
+            eprintln!("warning: {err}");
+        }
+        let loaded_set = image_files.key_set();
+
+        let (content_text, source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
 
         // 5b. Build TiledDocument (content + sidebar compiled & split)
         //
@@ -259,6 +271,7 @@ pub fn run(
                     ppi,
                     tile_height_min: tile_height,
                     fonts: font_cache,
+                    image_files,
                 })
             },
             &layout,

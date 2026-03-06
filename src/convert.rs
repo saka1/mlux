@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::Range;
 use std::time::Instant;
 
@@ -62,6 +63,7 @@ enum Container {
     Emphasis,
     Strikethrough,
     Link { _url: String },
+    Image { path: String },
     BlockQuote,
     BlockQuoteCapped,
     List { ordered: bool },
@@ -75,16 +77,46 @@ enum Container {
 
 const MAX_BLOCKQUOTE_DEPTH: usize = 10;
 
+/// Extract image paths from Markdown source.
+///
+/// Lightweight parse that collects `dest_url` from all `![alt](dest_url)` images.
+pub fn extract_image_paths(markdown: &str) -> Vec<String> {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_MATH);
+    let parser = Parser::new_ext(markdown, options);
+
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for event in parser {
+        if let Event::Start(Tag::Image { dest_url, .. }) = event {
+            let url = dest_url.to_string();
+            if !url.is_empty() && seen.insert(url.clone()) {
+                paths.push(url);
+            }
+        }
+    }
+    paths
+}
+
 /// Convert Markdown text to Typst markup (compatibility wrapper).
 pub fn markdown_to_typst(markdown: &str) -> String {
-    markdown_to_typst_with_map(markdown).0
+    markdown_to_typst_with_map(markdown, None).0
 }
 
 /// Convert Markdown text to Typst markup with source mapping.
 ///
+/// `available_images` is the set of image paths that were successfully loaded.
+/// When `Some`, images in the set produce `#image()` calls; others produce a
+/// placeholder block. When `None`, all images produce placeholders.
+///
 /// Returns the Typst markup string and a `SourceMap` that maps Typst byte
 /// ranges back to the original Markdown byte ranges (block-level granularity).
-pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
+pub fn markdown_to_typst_with_map(
+    markdown: &str,
+    available_images: Option<&HashSet<String>>,
+) -> (String, SourceMap) {
     let start = Instant::now();
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -303,6 +335,11 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                 }
                 stack.push(Container::Link { _url: url });
             }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                stack.push(Container::Image {
+                    path: dest_url.to_string(),
+                });
+            }
 
             // === End tags ===
             Event::End(TagEnd::Paragraph) => {
@@ -464,9 +501,38 @@ pub fn markdown_to_typst_with_map(markdown: &str) -> (String, SourceMap) {
                     }
                 }
             }
+            Event::End(TagEnd::Image) => match stack.pop() {
+                Some(Container::Image { path }) => {
+                    let is_available = available_images.is_some_and(|set| set.contains(&path));
+                    if is_available {
+                        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+                        push_to_target(
+                            &mut output,
+                            &mut cell_buf,
+                            &format!("#image(\"{escaped}\", width: 100%)\n"),
+                        );
+                    } else {
+                        let escaped = escape_typst(&path);
+                        push_to_target(
+                            &mut output,
+                            &mut cell_buf,
+                            &format!(
+                                "#block(fill: luma(230), inset: 8pt, radius: 4pt)[Image: {escaped}]\n"
+                            ),
+                        );
+                    }
+                }
+                other => {
+                    debug_assert!(false, "Expected Image, got {other:?}");
+                }
+            },
 
             // === Leaf events ===
             Event::Text(text) => {
+                // Suppress alt text inside images
+                if stack.iter().any(|c| matches!(c, Container::Image { .. })) {
+                    continue;
+                }
                 if in_code_block {
                     // Insert a space on blank lines so Typst generates a TextItem
                     // (needed for visual line extraction in the sidebar).
@@ -597,6 +663,7 @@ fn pop_expect(stack: &mut Vec<Container>, expected: &str) {
                     | (Container::Emphasis, "Emphasis")
                     | (Container::Strikethrough, "Strikethrough")
                     | (Container::Link { .. }, "Link")
+                    | (Container::Image { .. }, "Image")
                     | (Container::BlockQuote, "BlockQuote")
                     | (Container::BlockQuoteCapped, "BlockQuote")
                     | (Container::List { .. }, "List")
@@ -950,7 +1017,7 @@ mod tests {
         // crash-823d13a0: list item containing --- emitted a Rule source mapping
         // that overlapped with the enclosing List block mapping.
         let md = "+\t---\t\t";
-        let (typst, map) = markdown_to_typst_with_map(md);
+        let (typst, map) = markdown_to_typst_with_map(md, None);
         for pair in map.blocks.windows(2) {
             assert!(
                 pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
@@ -1236,7 +1303,7 @@ mod tests {
     #[test]
     fn test_display_math_source_map() {
         let md = "before\n\n$$\nx^2\n$$\n\nafter";
-        let (_typst, map) = markdown_to_typst_with_map(md);
+        let (_typst, map) = markdown_to_typst_with_map(md, None);
         // Display math should produce a source map block
         assert!(
             map.blocks.len() >= 2,
@@ -1252,5 +1319,68 @@ mod tests {
                 pair[1].typst_byte_range,
             );
         }
+    }
+
+    #[test]
+    fn test_image_basic() {
+        let md = "![alt](photo.png)";
+        let available: HashSet<String> = ["photo.png".to_string()].into_iter().collect();
+        let typst = markdown_to_typst_with_map(md, Some(&available)).0;
+        assert!(
+            typst.contains("#image(\"photo.png\", width: 100%)"),
+            "should contain #image() call, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_image_alt_suppressed() {
+        let md = "![alt text](photo.png)";
+        let available: HashSet<String> = ["photo.png".to_string()].into_iter().collect();
+        let typst = markdown_to_typst_with_map(md, Some(&available)).0;
+        assert!(
+            !typst.contains("alt text"),
+            "alt text should be suppressed, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_image_missing() {
+        let md = "![alt](missing.png)";
+        let available: HashSet<String> = HashSet::new();
+        let typst = markdown_to_typst_with_map(md, Some(&available)).0;
+        assert!(
+            typst.contains("#block(fill: luma(230)"),
+            "missing image should produce placeholder, got: {typst}"
+        );
+        assert!(
+            typst.contains("missing.png"),
+            "placeholder should contain path, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_image_no_available_images() {
+        let md = "![alt](photo.png)";
+        let typst = markdown_to_typst_with_map(md, None).0;
+        assert!(
+            typst.contains("#block(fill: luma(230)"),
+            "no available images should produce placeholder, got: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_extract_image_paths() {
+        let md = "![a](img1.png)\n\n![b](img2.jpg)\n\n![c](img1.png)";
+        let paths = extract_image_paths(md);
+        assert_eq!(paths.len(), 2, "should deduplicate: {paths:?}");
+        assert!(paths.contains(&"img1.png".to_string()));
+        assert!(paths.contains(&"img2.jpg".to_string()));
+    }
+
+    #[test]
+    fn test_extract_image_paths_empty() {
+        let md = "No images here.";
+        let paths = extract_image_paths(md);
+        assert!(paths.is_empty());
     }
 }
