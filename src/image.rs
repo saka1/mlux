@@ -211,7 +211,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND
             0xAE, 0x42, 0x60, 0x82,
         ];
-        fs::write(&img_path, &png_data).unwrap();
+        fs::write(&img_path, png_data).unwrap();
 
         let paths = vec!["test.png".to_string()];
         let (loaded, errors) = load_images(&paths, Some(&dir));
