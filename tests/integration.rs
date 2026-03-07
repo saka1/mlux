@@ -565,8 +565,7 @@ fn test_display_math_single_visual_line() {
 fn test_inline_math_no_line_split() {
     // Inline math should not cause extra visual lines
     let md_no_math = "The eigenvalue problem is called the characteristic equation.\n";
-    let md_with_math =
-        "The eigenvalue problem $\\det(A - \\lambda I) = 0$ is called the characteristic equation.\n";
+    let md_with_math = "The eigenvalue problem $\\det(A - \\lambda I) = 0$ is called the characteristic equation.\n";
 
     let vlines_no = source_map_pipeline(md_no_math);
     let vlines_with = source_map_pipeline(md_with_math);
