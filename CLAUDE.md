@@ -13,16 +13,16 @@ Includes a terminal viewer using Kitty Graphics Protocol with tile-based lazy re
 ### Render pipeline (`mlux render`)
 
 ```
-Markdown → pulldown-cmark → Event stream → convert.rs → Typst markup
-  → world.rs (single main.typ: theme + width + content)
-  → render.rs: typst::compile → PagedDocument → typst_render → PNG
+Markdown → pulldown-cmark → Event stream → pipeline/convert.rs → Typst markup
+  → pipeline/world.rs (single main.typ: theme + width + content)
+  → pipeline/render.rs: typst::compile → PagedDocument → typst_render → PNG
 ```
 
 ### Terminal viewer pipeline (`mlux <file>`)
 
 ```
-Markdown → convert.rs → Typst markup (with SourceMap)
-  → render.rs: compile_document() → PagedDocument
+Markdown → pipeline/convert.rs → Typst markup (with SourceMap)
+  → pipeline/render.rs: compile_document() → PagedDocument
   → tile.rs: split_frame() → Vec<Frame> (vertical tiles)
   → TiledDocument: lazy per-tile PNG rendering with LRU cache
   → viewer/: Kitty Graphics Protocol display + scroll + modes
@@ -57,7 +57,6 @@ Submodule responsibilities:
 - `state.rs` — Layout calculation, ViewState, redraw, prefetch dispatch
 - `input.rs` — Key event mapping, Action enum, InputAccumulator
 - `terminal.rs` — Raw mode guard, Kitty Graphics Protocol commands, status bar
-- `pipeline.rs` — Markdown → TiledDocument build (bridges viewer layout to tile.rs)
 - `mode_normal.rs` — Normal mode handler (scroll, jump, yank, mode transitions)
 - `mode_search.rs` — Search/heading picker mode
 - `mode_command.rs` — Command mode (`:reload`, `:quit`)
@@ -76,9 +75,11 @@ Typst byte offsets back to Markdown line numbers. `tile.rs` uses this to annotat
 
 ## Key Files
 
-- `src/convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, Container enum + stack for nested markup)
-- `src/world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
-- `src/render.rs` — Typst compile (`compile_document`) + tile PNG render (`render_frame_to_png`) + debug dump
+- `src/pipeline/` — Render pipeline submodules (convert, world, render, build)
+  - `convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, Container enum + stack for nested markup)
+  - `world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
+  - `render.rs` — Typst compile (`compile_document`) + tile PNG render (`render_frame_to_png`) + debug dump
+  - `build.rs` — BuildParams, build_tiled_document (orchestrates convert→world→render→tile)
 - `src/tile.rs` — Tile-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
 - `src/viewer/` — Terminal viewer (see Viewer architecture above)
 - `src/config.rs` — Config file loading, CLI override merging, default resolution
@@ -173,6 +174,6 @@ All configurable via `~/.config/mlux/config.toml` (defaults shown):
 - FontBook uses lowercased family names for lookups
 - The `typst/` directory contains typst source for API reference only (not used as dependency)
 - typst-kit feature name is `embed-fonts` (not `embedded-fonts`)
-- convert.rs uses a Container enum + stack for nested markup state tracking
+- pipeline/convert.rs uses a Container enum + stack for nested markup state tracking
 - File watcher monitors the parent directory (not the file itself) because Linux inotify
   loses the watch handle on atomic-save (rename)

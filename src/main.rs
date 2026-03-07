@@ -7,11 +7,9 @@ use clap::{Parser, Subcommand};
 use log::info;
 
 use mlux::config;
-use mlux::convert::{extract_image_paths, markdown_to_typst_with_map};
 use mlux::input::{self, InputSource};
-use mlux::render::{compile_document, dump_document};
-use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT};
-use mlux::world::{FontCache, MluxWorld};
+use mlux::pipeline::render::dump_document;
+use mlux::pipeline::{self, BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, FontCache, MluxWorld};
 
 fn long_version() -> &'static str {
     let base = env!("CARGO_PKG_VERSION");
@@ -211,7 +209,7 @@ fn cmd_render(
 
     // Load images
     let base_dir = if is_stdin { None } else { input.parent() };
-    let image_paths = extract_image_paths(&markdown);
+    let image_paths = pipeline::extract_image_paths(&markdown);
     let (image_files, image_errors) = mlux::image::load_images(&image_paths, base_dir);
     for err in &image_errors {
         eprintln!("warning: {err}");
@@ -219,7 +217,8 @@ fn cmd_render(
     let loaded_set = image_files.key_set();
 
     // Convert markdown to typst
-    let (content_text, source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
+    let (content_text, source_map) =
+        pipeline::markdown_to_typst_with_map(&markdown, Some(&loaded_set));
 
     if dump {
         let font_cache = FontCache::new();
@@ -242,7 +241,7 @@ fn cmd_render(
         }
         eprintln!();
 
-        match compile_document(&world) {
+        match pipeline::compile_document(&world) {
             Ok(doc) => dump_document(&doc),
             Err(e) => eprintln!("{e:#}"),
         }

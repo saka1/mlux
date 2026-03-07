@@ -8,7 +8,7 @@ use typst::layout::{Frame, FrameItem, Page, PagedDocument, Point};
 use typst::visualize::Paint;
 use typst::{World, WorldExt};
 
-use crate::world::MluxWorld;
+use super::world::MluxWorld;
 
 /// Format a SourceDiagnostic with source location, hints, and trace.
 pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld<'_>) -> String {

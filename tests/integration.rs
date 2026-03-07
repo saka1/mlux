@@ -1,12 +1,13 @@
 use std::fs;
 
-use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
 use mlux::image::LoadedImages;
-use mlux::render::{compile_document, render_frame_to_png};
+use mlux::pipeline::{
+    FontCache, MluxWorld, compile_document, markdown_to_typst, markdown_to_typst_with_map,
+    render_frame_to_png,
+};
 use mlux::tile::{
     SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
 };
-use mlux::world::{FontCache, MluxWorld};
 
 fn load_theme() -> &'static str {
     mlux::theme::get("catppuccin").expect("built-in theme should exist")
@@ -789,7 +790,7 @@ fn test_image_renders() {
 
     // Load images (same flow as cmd_render)
     let base_dir = std::path::Path::new("tests/fixtures");
-    let image_paths = mlux::convert::extract_image_paths(&markdown);
+    let image_paths = mlux::pipeline::extract_image_paths(&markdown);
     let (image_files, errors) = mlux::image::load_images(&image_paths, Some(base_dir));
     assert!(errors.is_empty(), "image load errors: {errors:?}");
     assert!(

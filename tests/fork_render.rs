@@ -4,11 +4,13 @@
 //! processes. We use `harness = false` to avoid the test runner's thread pool
 //! and run each test sequentially in a single thread.
 
-use mlux::convert::markdown_to_typst_with_map;
 use mlux::fork_render::{Request, Response, spawn_renderer};
 use mlux::image::LoadedImages;
-use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, VisibleTiles, build_tiled_document};
-use mlux::world::FontCache;
+use mlux::pipeline::{
+    BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, FontCache, build_tiled_document,
+    markdown_to_typst_with_map,
+};
+use mlux::tile::VisibleTiles;
 
 fn load_theme() -> &'static str {
     mlux::theme::get("catppuccin").expect("built-in theme should exist")

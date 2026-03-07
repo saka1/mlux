@@ -23,7 +23,6 @@ mod mode_command;
 mod mode_normal;
 mod mode_search;
 mod mode_url;
-mod pipeline;
 mod state;
 mod terminal;
 
@@ -38,11 +37,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::{CliOverrides, Config};
-use crate::convert::markdown_to_typst_with_map;
 use crate::input::InputSource;
+use crate::pipeline::FontCache;
 use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
-use crate::world::FontCache;
 
 use effect::{BuildOutcome, Effect, Session, ViewContext, ViewerMode, Viewport};
 use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
@@ -234,14 +232,15 @@ pub fn run(
             InputSource::File(path) => path.parent(),
             InputSource::Stdin(_) => None,
         };
-        let image_paths = crate::convert::extract_image_paths(&markdown);
+        let image_paths = crate::pipeline::extract_image_paths(&markdown);
         let (image_files, image_errors) = crate::image::load_images(&image_paths, base_dir);
         for err in &image_errors {
             eprintln!("warning: {err}");
         }
         let loaded_set = image_files.key_set();
 
-        let (content_text, source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
+        let (content_text, source_map) =
+            crate::pipeline::markdown_to_typst_with_map(&markdown, Some(&loaded_set));
 
         // 5b. Build document (content + sidebar compiled & split)
         //
@@ -263,19 +262,27 @@ pub fn run(
 
         // Build: fork a child process, compile/render there, communicate via IPC.
         let (meta, renderer) = {
-            let pi = pipeline::PipelineInput {
+            let layout = &layout_copy;
+            let viewport_px_w = layout.image_cols as f64 * layout.cell_w as f64;
+            let width_pt = viewport_px_w * 72.0 / ppi as f64;
+            let vp_height_pt = layout.image_rows as f64 * layout.cell_h as f64 * 72.0 / ppi as f64;
+            let tile_height_pt = tile_height.max(vp_height_pt);
+            let sidebar_width_pt =
+                layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
+
+            let params = crate::pipeline::BuildParams {
                 theme_text,
                 data_files,
                 content_text: &content_text,
                 md_source: &markdown_clone,
                 source_map: &source_map,
-                layout: &layout_copy,
+                width_pt,
+                sidebar_width_pt,
+                tile_height_pt,
                 ppi,
-                tile_height_min: tile_height,
                 fonts: font_cache,
                 image_files,
             };
-            let params = pipeline::to_build_params(&pi);
             let read_base = match &session.input {
                 InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),
                 InputSource::Stdin(_) => None,

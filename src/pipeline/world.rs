@@ -134,7 +134,7 @@ impl<'f> MluxWorld<'f> {
     ) -> Self {
         let start = Instant::now();
         // Inline theme + mitex compat shims + width override + content into a single source
-        let mitex_compat = include_str!("../themes/mitex-compat.typ");
+        let mitex_compat = include_str!("../../themes/mitex-compat.typ");
         let prefix = format!("{theme_text}\n{mitex_compat}\n#set page(width: {width}pt)\n");
         let content_offset = prefix.len();
         let main_text = format!("{prefix}{content_text}\n");

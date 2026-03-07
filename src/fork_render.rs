@@ -9,8 +9,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::pipeline::{BuildParams, build_tiled_document};
 use crate::process::{ChildProcess, TypedReader, TypedWriter, fork_with_channels};
-use crate::tile::{BuildParams, DocumentMeta, TilePngs, build_tiled_document};
+use crate::tile::{DocumentMeta, TilePngs};
 
 /// Request from parent to child.
 #[derive(Serialize, Deserialize)]
@@ -68,7 +69,7 @@ pub fn fork_renderer(
             }
 
             // Font cache created in child (filesystem scan, not serializable)
-            let fonts = crate::world::FontCache::new();
+            let fonts = crate::pipeline::world::FontCache::new();
 
             let doc = match build_tiled_document(&BuildParams {
                 theme_text: &theme_text,
