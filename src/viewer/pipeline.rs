@@ -1,7 +1,7 @@
 //! Document build pipeline: Markdown → Typst → TiledDocument.
 
 use super::state::Layout;
-use crate::tile::{BuildParams, TiledDocument};
+use crate::tile::BuildParams;
 use crate::world::FontCache;
 
 pub(super) struct PipelineInput<'a> {
@@ -43,8 +43,4 @@ pub(super) fn to_build_params<'a>(input: &'a PipelineInput<'a>) -> BuildParams<'
         fonts: input.fonts,
         image_files: input.image_files.clone(),
     }
-}
-
-pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<TiledDocument> {
-    crate::tile::build_tiled_document(&to_build_params(input))
 }

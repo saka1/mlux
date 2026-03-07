@@ -39,7 +39,7 @@ fn test_fork_render_matches_local() {
     let local_meta = local_doc.metadata();
 
     // Fork render
-    let (fork_meta, mut tx, mut rx, mut _child) = spawn_renderer(&params, None).unwrap();
+    let (fork_meta, mut tx, mut rx, mut _child) = spawn_renderer(&params, None, true).unwrap();
 
     // Metadata should match
     assert_eq!(fork_meta.tile_count, local_meta.tile_count);
@@ -89,7 +89,7 @@ fn test_fork_render_metadata_methods() {
         image_files: LoadedImages::default(),
     };
 
-    let (meta, _tx, _rx, mut _child) = spawn_renderer(&params, None).unwrap();
+    let (meta, _tx, _rx, mut _child) = spawn_renderer(&params, None, true).unwrap();
 
     // DocumentMeta methods should work
     assert!(meta.tile_count > 0);

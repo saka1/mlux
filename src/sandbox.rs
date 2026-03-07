@@ -76,32 +76,6 @@ mod imp {
     }
 }
 
-/// Apply filesystem sandbox for render mode.
-///
-/// - `read_base`: input file's parent directory (canonicalized). None for stdin.
-/// - `output_dir`: output directory (canonicalized).
-/// - `no_sandbox`: skip if true.
-pub fn enforce_fs_sandbox(
-    read_base: Option<&Path>,
-    output_dir: &Path,
-    no_sandbox: bool,
-) -> Result<()> {
-    if no_sandbox {
-        log::info!("sandbox: disabled by --no-sandbox flag");
-        return Ok(());
-    }
-
-    let scope = read_base.map(read_scope);
-
-    match imp::enforce(scope.as_deref(), Some(output_dir)) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            log::warn!("sandbox: failed to apply Landlock, continuing without sandbox: {e:#}");
-            Ok(())
-        }
-    }
-}
-
 /// Apply read-only filesystem sandbox (no write access).
 ///
 /// Used by fork child processes that only need to compile/render.

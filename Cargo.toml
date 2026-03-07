@@ -34,12 +34,10 @@ env_logger = "0.11"
 zstd = "0.13"
 mitex = "0.2"
 bincode = { version = "2", features = ["serde"] }
+nix = { version = "0.29", features = ["process", "signal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
-
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["process", "signal"] }
 
 [build-dependencies]
 zstd = "0.13"

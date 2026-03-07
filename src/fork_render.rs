@@ -42,6 +42,7 @@ pub enum Response {
 pub fn fork_renderer(
     params: &BuildParams<'_>,
     sandbox_read_base: Option<&Path>,
+    no_sandbox: bool,
 ) -> Result<(TypedWriter<Request>, TypedReader<Response>, ChildProcess)> {
     // Clone owned data for the child closure (BuildParams borrows).
     let theme_text = params.theme_text.to_string();
@@ -59,7 +60,9 @@ pub fn fork_renderer(
     fork_with_channels::<Request, Response, _>(
         move |mut req_rx: TypedReader<Request>, mut resp_tx: TypedWriter<Response>| {
             // Apply sandbox in child before any compilation
-            if let Err(e) = crate::sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
+            if !no_sandbox
+                && let Err(e) =
+                    crate::sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
             {
                 log::warn!("child: sandbox failed: {e:#}");
             }
@@ -130,13 +133,14 @@ pub fn fork_renderer(
 pub fn spawn_renderer(
     params: &BuildParams<'_>,
     sandbox_read_base: Option<&Path>,
+    no_sandbox: bool,
 ) -> Result<(
     DocumentMeta,
     TypedWriter<Request>,
     TypedReader<Response>,
     ChildProcess,
 )> {
-    let (tx, mut rx, child) = fork_renderer(params, sandbox_read_base)?;
+    let (tx, mut rx, child) = fork_renderer(params, sandbox_read_base, no_sandbox)?;
 
     // Read metadata (first message from child)
     let meta = match rx.recv().context("failed to receive metadata from child")? {

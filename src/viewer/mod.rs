@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use crate::config::{CliOverrides, Config};
 use crate::convert::markdown_to_typst_with_map;
 use crate::input::InputSource;
-use crate::tile::{TilePngs, TiledDocument, TiledDocumentCache};
+use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
@@ -48,42 +48,27 @@ use effect::{BuildOutcome, Effect, Session, ViewContext, ViewerMode, Viewport};
 use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
 use state::{ExitReason, LoadedTiles, PrefetchChannels, ViewState};
 
-/// Abstraction over direct (in-process) and forked (IPC) tile rendering.
-///
-/// On unix with sandbox enabled, the renderer runs in a forked child process
-/// communicating via typed IPC channels. Otherwise, rendering is done directly.
-enum TileRenderer {
-    Direct(TiledDocument),
-    #[cfg(unix)]
-    Forked {
-        tx: crate::process::TypedWriter<crate::fork_render::Request>,
-        rx: crate::process::TypedReader<crate::fork_render::Response>,
-    },
+/// Tile renderer communicating with a forked child process via typed IPC.
+struct TileRenderer {
+    tx: crate::process::TypedWriter<crate::fork_render::Request>,
+    rx: crate::process::TypedReader<crate::fork_render::Response>,
 }
 
 impl TileRenderer {
     fn render_tile_pair(&mut self, idx: usize) -> anyhow::Result<TilePngs> {
-        match self {
-            Self::Direct(doc) => doc.render_tile_pair(idx),
-            #[cfg(unix)]
-            Self::Forked { tx, rx } => {
-                tx.send(&crate::fork_render::Request::RenderTile(idx))?;
-                match rx.recv()? {
-                    crate::fork_render::Response::Tile(pngs) => Ok(pngs),
-                    crate::fork_render::Response::Error(e) => anyhow::bail!("{e}"),
-                    crate::fork_render::Response::Meta(_) => {
-                        anyhow::bail!("unexpected Meta response")
-                    }
-                }
+        self.tx
+            .send(&crate::fork_render::Request::RenderTile(idx))?;
+        match self.rx.recv()? {
+            crate::fork_render::Response::Tile(pngs) => Ok(pngs),
+            crate::fork_render::Response::Error(e) => anyhow::bail!("{e}"),
+            crate::fork_render::Response::Meta(_) => {
+                anyhow::bail!("unexpected Meta response")
             }
         }
     }
 
-    fn shutdown(self) {
-        #[cfg(unix)]
-        if let Self::Forked { mut tx, .. } = self {
-            let _ = tx.send(&crate::fork_render::Request::Shutdown);
-        }
+    fn shutdown(mut self) {
+        let _ = self.tx.send(&crate::fork_render::Request::Shutdown);
     }
 }
 
@@ -149,7 +134,7 @@ fn build_async_with_threshold<T: Send + 'static>(
 /// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
 /// `cli_overrides` are preserved across config reloads.
 /// `watch` enables automatic reload on file change.
-/// `no_sandbox` disables fork+Landlock sandbox (falls back to direct rendering).
+/// `no_sandbox` disables Landlock sandbox (fork is always used).
 pub fn run(
     input: InputSource,
     config: Config,
@@ -274,90 +259,53 @@ pub fn run(
 
         // ChildProcess handle kept alive for the duration of the inner loop.
         // Dropped on reload/resize/quit → sends SIGKILL to child.
-        #[cfg(unix)]
         let mut _fork_child: Option<crate::process::ChildProcess> = None;
 
-        // Build: fork path (unix + sandbox) or direct path (fallback).
-        // The labeled block yields (DocumentMeta, TileRenderer).
-        let (meta, renderer) = 'build: {
-            // Fork path: compile in sandboxed child process
-            #[cfg(unix)]
-            if !no_sandbox {
-                let pi = pipeline::PipelineInput {
-                    theme_text,
-                    data_files,
-                    content_text: &content_text,
-                    md_source: &markdown_clone,
-                    source_map: &source_map,
-                    layout: &layout_copy,
-                    ppi,
-                    tile_height_min: tile_height,
-                    fonts: font_cache,
-                    image_files,
-                };
-                let params = pipeline::to_build_params(&pi);
-                let read_base = match &session.input {
-                    InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),
-                    InputSource::Stdin(_) => None,
-                };
-                // Fork before any threads (fork safety).
-                // The child starts building immediately; we wait for meta below.
-                let (tx, rx, child) =
-                    crate::fork_render::fork_renderer(&params, read_base.as_deref())?;
-                _fork_child = Some(child);
+        // Build: fork a child process, compile/render there, communicate via IPC.
+        let (meta, renderer) = {
+            let pi = pipeline::PipelineInput {
+                theme_text,
+                data_files,
+                content_text: &content_text,
+                md_source: &markdown_clone,
+                source_map: &source_map,
+                layout: &layout_copy,
+                ppi,
+                tile_height_min: tile_height,
+                fonts: font_cache,
+                image_files,
+            };
+            let params = pipeline::to_build_params(&pi);
+            let read_base = match &session.input {
+                InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),
+                InputSource::Stdin(_) => None,
+            };
+            // Fork before any threads (fork safety).
+            // The child starts building immediately; we wait for meta below.
+            let (tx, rx, child) =
+                crate::fork_render::fork_renderer(&params, read_base.as_deref(), no_sandbox)?;
+            _fork_child = Some(child);
 
-                // Wait for metadata from child with loading UI
-                match build_async_with_threshold(
-                    move || {
-                        let mut rx = rx;
-                        match rx.recv()? {
-                            crate::fork_render::Response::Meta(m) => Ok((m, tx, rx)),
-                            crate::fork_render::Response::Error(e) => {
-                                anyhow::bail!("child build error: {e}")
-                            }
-                            crate::fork_render::Response::Tile(_) => {
-                                anyhow::bail!("unexpected Tile response, expected Meta")
-                            }
-                        }
-                    },
-                    &session.layout,
-                    &session.filename,
-                )? {
-                    BuildOutcome::Done((m, tx, rx)) => {
-                        info!("fork build complete: {} tiles", m.tile_count);
-                        break 'build (m, TileRenderer::Forked { tx, rx });
-                    }
-                    BuildOutcome::Quit => break 'outer,
-                    BuildOutcome::Resize { new_cols, new_rows } => {
-                        session.update_layout_for_resize(new_cols, new_rows)?;
-                        continue 'outer;
-                    }
-                }
-            }
-
-            // Direct path: build in-process (non-unix or --no-sandbox)
-            // content_text and source_map move into the closure (not used by inner loop)
+            // Wait for metadata from child with loading UI
             match build_async_with_threshold(
                 move || {
-                    pipeline::build_tiled_document(&pipeline::PipelineInput {
-                        theme_text,
-                        data_files,
-                        content_text: &content_text,
-                        md_source: &markdown_clone,
-                        source_map: &source_map,
-                        layout: &layout_copy,
-                        ppi,
-                        tile_height_min: tile_height,
-                        fonts: font_cache,
-                        image_files,
-                    })
+                    let mut rx = rx;
+                    match rx.recv()? {
+                        crate::fork_render::Response::Meta(m) => Ok((m, tx, rx)),
+                        crate::fork_render::Response::Error(e) => {
+                            anyhow::bail!("child build error: {e}")
+                        }
+                        crate::fork_render::Response::Tile(_) => {
+                            anyhow::bail!("unexpected Tile response, expected Meta")
+                        }
+                    }
                 },
                 &session.layout,
                 &session.filename,
             )? {
-                BuildOutcome::Done(doc) => {
-                    let m = doc.metadata();
-                    (m, TileRenderer::Direct(doc))
+                BuildOutcome::Done((m, tx, rx)) => {
+                    info!("fork build complete: {} tiles", m.tile_count);
+                    (m, TileRenderer { tx, rx })
                 }
                 BuildOutcome::Quit => break 'outer,
                 BuildOutcome::Resize { new_cols, new_rows } => {

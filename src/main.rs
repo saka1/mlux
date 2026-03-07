@@ -10,7 +10,7 @@ use mlux::config;
 use mlux::convert::{extract_image_paths, markdown_to_typst_with_map};
 use mlux::input::{self, InputSource};
 use mlux::render::{compile_document, dump_document};
-use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, build_tiled_document};
+use mlux::tile::{BuildParams, DEFAULT_SIDEBAR_WIDTH_PT};
 use mlux::world::{FontCache, MluxWorld};
 
 fn long_version() -> &'static str {
@@ -56,7 +56,7 @@ struct Cli {
     #[arg(long, global = true)]
     no_watch: bool,
 
-    /// Disable filesystem sandbox (Landlock on Linux)
+    /// Disable Landlock filesystem sandbox (Linux only; fork is always used)
     #[arg(long, global = true)]
     no_sandbox: bool,
 
@@ -221,10 +221,8 @@ fn cmd_render(
     // Convert markdown to typst
     let (content_text, source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
 
-    // Create font cache (one-time filesystem scan)
-    let font_cache = FontCache::new();
-
     if dump {
+        let font_cache = FontCache::new();
         // Dump mode: build world directly for source inspection
         let world = MluxWorld::new(
             theme_text,
@@ -267,6 +265,7 @@ fn cmd_render(
 
     let data_files = mlux::theme::data_files(theme);
 
+    let font_cache = FontCache::new();
     let params = BuildParams {
         theme_text,
         data_files,
@@ -292,63 +291,20 @@ fn cmd_render(
         .to_string_lossy()
         .to_string();
 
-    // Fork path: Linux + sandbox enabled → compile/render in sandboxed child
-    #[cfg(unix)]
-    if !no_sandbox {
-        return cmd_render_fork(
-            &params,
-            read_base.as_deref(),
-            output_parent,
-            &stem,
-            &ext,
-            is_stdin,
-            &input,
-            pipeline_start,
-        );
-    }
-
-    // Local path: non-Linux or --no-sandbox
-    let output_dir_canonical = output_parent
-        .canonicalize()
-        .context("failed to canonicalize output directory")?;
-    mlux::sandbox::enforce_fs_sandbox(read_base.as_deref(), &output_dir_canonical, no_sandbox)?;
-
-    let tiled_doc = build_tiled_document(&params)?;
-
-    let mut files = Vec::new();
-    for i in 0..tiled_doc.tile_count() {
-        let png_data = tiled_doc.render_tile(i)?;
-        let filename = format!("{}-{:03}.{}", stem, i, ext);
-        let path = output_parent.join(&filename);
-        fs::write(&path, &png_data)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        files.push((filename, png_data.len()));
-    }
-
-    info!(
-        "cmd_render: total pipeline completed in {:.1}ms",
-        pipeline_start.elapsed().as_secs_f64() * 1000.0
-    );
-
-    let input_name = if is_stdin {
-        "<stdin>".to_string()
-    } else {
-        input.display().to_string()
-    };
-    eprintln!(
-        "rendered {} -> {} tile(s):",
-        input_name,
-        tiled_doc.tile_count()
-    );
-    for (filename, size) in &files {
-        eprintln!("  {} ({} bytes)", filename, size);
-    }
-
-    Ok(())
+    cmd_render_fork(
+        &params,
+        read_base.as_deref(),
+        output_parent,
+        &stem,
+        &ext,
+        is_stdin,
+        &input,
+        pipeline_start,
+        no_sandbox,
+    )
 }
 
-/// Render via fork+IPC: child compiles/renders in a sandboxed process.
-#[cfg(unix)]
+/// Render via fork+IPC: child compiles/renders in a forked process.
 #[allow(clippy::too_many_arguments)]
 fn cmd_render_fork(
     params: &BuildParams<'_>,
@@ -359,10 +315,11 @@ fn cmd_render_fork(
     is_stdin: bool,
     input: &Path,
     pipeline_start: Instant,
+    no_sandbox: bool,
 ) -> Result<()> {
     use mlux::fork_render::{Request, Response, spawn_renderer};
 
-    let (meta, mut tx, mut rx, mut _child) = spawn_renderer(params, read_base)?;
+    let (meta, mut tx, mut rx, mut _child) = spawn_renderer(params, read_base, no_sandbox)?;
 
     let mut files = Vec::new();
     for i in 0..meta.tile_count {
