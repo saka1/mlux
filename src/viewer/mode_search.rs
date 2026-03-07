@@ -8,9 +8,10 @@ use crossterm::{
 use regex::RegexBuilder;
 use std::io::{self, Write, stdout};
 
+use super::Effect;
+use super::ViewerMode;
 use super::input::SearchAction;
 use super::state::{Layout, visual_line_offset};
-use super::{Effect, ViewerMode};
 use crate::tile::VisualLine;
 
 /// A single search match within the Markdown source.
@@ -256,27 +257,28 @@ pub(super) fn handle(
     ss: &mut SearchState,
     markdown: &str,
     visual_lines: &[VisualLine],
-    layout: &Layout,
+    visible_count: usize,
     max_scroll: u32,
-) -> io::Result<Vec<Effect>> {
+) -> Vec<Effect> {
     match action {
         SearchAction::Type(c) => {
             ss.query.push(c);
-            re_grep_and_redraw(ss, markdown, visual_lines, layout)
+            update_grep(ss, markdown, visual_lines);
+            vec![Effect::RedrawSearch]
         }
         SearchAction::Backspace => {
             ss.query.pop();
-            re_grep_and_redraw(ss, markdown, visual_lines, layout)
+            update_grep(ss, markdown, visual_lines);
+            vec![Effect::RedrawSearch]
         }
         SearchAction::SelectNext => {
             if !ss.matches.is_empty() {
                 ss.selected = (ss.selected + 1).min(ss.matches.len() - 1);
-                let visible_count = (layout.status_row - 1) as usize;
                 if ss.selected >= ss.scroll_offset + visible_count {
                     ss.scroll_offset = ss.selected - visible_count + 1;
                 }
             }
-            redraw_search(ss, layout)
+            vec![Effect::RedrawSearch]
         }
         SearchAction::SelectPrev => {
             if !ss.matches.is_empty() {
@@ -285,54 +287,35 @@ pub(super) fn handle(
                     ss.scroll_offset = ss.selected;
                 }
             }
-            redraw_search(ss, layout)
+            vec![Effect::RedrawSearch]
         }
         SearchAction::Confirm => {
             if ss.matches.is_empty() {
-                return Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]);
+                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
             }
             let vl_idx = ss.matches[ss.selected].visual_line_idx;
             let last = LastSearch::from_search_state(ss);
             let line_num = (vl_idx + 1) as u32;
             let y = visual_line_offset(visual_lines, max_scroll, line_num);
             let flash = format!("match {}/{}", ss.selected + 1, ss.matches.len());
-            Ok(vec![
+            vec![
                 Effect::SetLastSearch(last),
                 Effect::ScrollTo(y),
                 Effect::Flash(flash),
                 Effect::SetMode(ViewerMode::Normal),
-            ])
+            ]
         }
-        SearchAction::Cancel => Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]),
+        SearchAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
     }
 }
 
-/// Re-run grep on the current query, reset selection, and redraw.
-fn re_grep_and_redraw(
-    ss: &mut SearchState,
-    markdown: &str,
-    visual_lines: &[VisualLine],
-    layout: &Layout,
-) -> io::Result<Vec<Effect>> {
+/// Re-run grep on the current query and reset selection.
+fn update_grep(ss: &mut SearchState, markdown: &str, visual_lines: &[VisualLine]) {
     let (matches, valid) = grep_markdown(&ss.query, markdown, visual_lines);
     ss.matches = matches;
     ss.pattern_valid = valid;
     ss.selected = 0;
     ss.scroll_offset = 0;
-    redraw_search(ss, layout)
-}
-
-/// Redraw the search screen from current state and return empty effects.
-fn redraw_search(ss: &SearchState, layout: &Layout) -> io::Result<Vec<Effect>> {
-    draw_search_screen(
-        layout,
-        &ss.query,
-        &ss.matches,
-        ss.selected,
-        ss.scroll_offset,
-        ss.pattern_valid,
-    )?;
-    Ok(vec![])
 }
 
 #[cfg(test)]
@@ -411,5 +394,118 @@ mod tests {
         let (matches, valid) = grep_markdown("", md, &vl);
         assert!(valid);
         assert!(matches.is_empty());
+    }
+
+    // --- handle() tests (pure, no I/O) ---
+
+    #[test]
+    fn handle_type_updates_query_and_redraws() {
+        let md = "hello world\nfoo bar";
+        let vl = make_visual_lines(2);
+        let mut ss = SearchState::new();
+        let effects = handle(SearchAction::Type('h'), &mut ss, md, &vl, 20, 1000);
+        assert_eq!(ss.query, "h");
+        assert!(!ss.matches.is_empty()); // "hello" matches
+        assert!(matches!(effects[0], Effect::RedrawSearch));
+    }
+
+    #[test]
+    fn handle_backspace_pops_query() {
+        let md = "hello";
+        let vl = make_visual_lines(1);
+        let mut ss = SearchState::new();
+        ss.query = "he".into();
+        let effects = handle(SearchAction::Backspace, &mut ss, md, &vl, 20, 1000);
+        assert_eq!(ss.query, "h");
+        assert!(matches!(effects[0], Effect::RedrawSearch));
+    }
+
+    #[test]
+    fn handle_select_next_moves_selection() {
+        let md = "aaa\naaa\naaa";
+        let vl = make_visual_lines(3);
+        let mut ss = SearchState::new();
+        // Pre-populate with matches
+        handle(SearchAction::Type('a'), &mut ss, md, &vl, 20, 1000);
+        assert_eq!(ss.selected, 0);
+        handle(SearchAction::SelectNext, &mut ss, md, &vl, 20, 1000);
+        assert_eq!(ss.selected, 1);
+    }
+
+    #[test]
+    fn handle_select_prev_clamps_at_zero() {
+        let md = "aaa\naaa";
+        let vl = make_visual_lines(2);
+        let mut ss = SearchState::new();
+        handle(SearchAction::Type('a'), &mut ss, md, &vl, 20, 1000);
+        assert_eq!(ss.selected, 0);
+        handle(SearchAction::SelectPrev, &mut ss, md, &vl, 20, 1000);
+        assert_eq!(ss.selected, 0);
+    }
+
+    #[test]
+    fn handle_confirm_sets_last_search_and_scrolls() {
+        let md = "hello world";
+        let vl = make_visual_lines(1);
+        let mut ss = SearchState::new();
+        handle(SearchAction::Type('h'), &mut ss, md, &vl, 20, 1000);
+        let effects = handle(SearchAction::Confirm, &mut ss, md, &vl, 20, 1000);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetLastSearch(_)))
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+        );
+    }
+
+    #[test]
+    fn handle_confirm_empty_returns_normal() {
+        let md = "hello";
+        let vl = make_visual_lines(1);
+        let mut ss = SearchState::new();
+        // No matches (empty query)
+        let effects = handle(SearchAction::Confirm, &mut ss, md, &vl, 20, 1000);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
+    }
+
+    #[test]
+    fn handle_cancel_returns_normal() {
+        let md = "hello";
+        let vl = make_visual_lines(1);
+        let mut ss = SearchState::new();
+        let effects = handle(SearchAction::Cancel, &mut ss, md, &vl, 20, 1000);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
+    }
+
+    #[test]
+    fn handle_select_next_scrolls_when_past_visible() {
+        let md = "a\nb\nc\nd\ne";
+        let vl = make_visual_lines(5);
+        let mut ss = SearchState::new();
+        // Search with visible_count = 2 (only 2 rows visible)
+        handle(SearchAction::Type('a'), &mut ss, md, &vl, 2, 1000);
+        // This matches only line 1, so we need a query that matches all
+        ss.query.clear();
+        handle(SearchAction::Type('.'), &mut ss, md, &vl, 2, 1000);
+        assert_eq!(ss.matches.len(), 5);
+        handle(SearchAction::SelectNext, &mut ss, md, &vl, 2, 1000);
+        handle(SearchAction::SelectNext, &mut ss, md, &vl, 2, 1000);
+        // selected=2, visible_count=2, should scroll
+        assert!(ss.scroll_offset > 0);
     }
 }

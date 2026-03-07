@@ -147,17 +147,20 @@ pub(super) fn draw_url_screen(layout: &Layout, state: &UrlPickerState) -> io::Re
 }
 
 /// Handle a URL picker action, returning effects.
-pub(super) fn handle(action: UrlAction, state: &mut UrlPickerState) -> io::Result<Vec<Effect>> {
+pub(super) fn handle(
+    action: UrlAction,
+    state: &mut UrlPickerState,
+    visible_count: usize,
+) -> Vec<Effect> {
     match action {
         UrlAction::SelectNext => {
             if !state.entries.is_empty() {
                 state.selected = (state.selected + 1).min(state.entries.len() - 1);
-                let layout_rows = 20; // will be recalculated via draw
-                if state.selected >= state.scroll_offset + layout_rows {
-                    state.scroll_offset = state.selected - layout_rows + 1;
+                if state.selected >= state.scroll_offset + visible_count {
+                    state.scroll_offset = state.selected - visible_count + 1;
                 }
             }
-            Ok(vec![Effect::RedrawUrlPicker])
+            vec![Effect::RedrawUrlPicker]
         }
         UrlAction::SelectPrev => {
             if !state.entries.is_empty() {
@@ -166,20 +169,20 @@ pub(super) fn handle(action: UrlAction, state: &mut UrlPickerState) -> io::Resul
                     state.scroll_offset = state.selected;
                 }
             }
-            Ok(vec![Effect::RedrawUrlPicker])
+            vec![Effect::RedrawUrlPicker]
         }
         UrlAction::Confirm => {
             if state.entries.is_empty() {
-                return Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]);
+                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
             }
             let url = state.entries[state.selected].url.clone();
-            Ok(vec![
+            vec![
                 Effect::OpenUrl(url.clone()),
                 Effect::Flash(format!("Opening {url}")),
                 Effect::SetMode(ViewerMode::Normal),
-            ])
+            ]
         }
-        UrlAction::Cancel => Ok(vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]),
+        UrlAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
     }
 }
 
@@ -248,10 +251,10 @@ mod tests {
         ];
         let mut state = UrlPickerState::new(entries);
         assert_eq!(state.selected, 0);
-        let _ = handle(UrlAction::SelectNext, &mut state);
+        let _ = handle(UrlAction::SelectNext, &mut state, 20);
         assert_eq!(state.selected, 1);
         // Should clamp at end
-        let _ = handle(UrlAction::SelectNext, &mut state);
+        let _ = handle(UrlAction::SelectNext, &mut state, 20);
         assert_eq!(state.selected, 1);
     }
 
@@ -271,10 +274,10 @@ mod tests {
         ];
         let mut state = UrlPickerState::new(entries);
         state.selected = 1;
-        let _ = handle(UrlAction::SelectPrev, &mut state);
+        let _ = handle(UrlAction::SelectPrev, &mut state, 20);
         assert_eq!(state.selected, 0);
         // Should clamp at 0
-        let _ = handle(UrlAction::SelectPrev, &mut state);
+        let _ = handle(UrlAction::SelectPrev, &mut state, 20);
         assert_eq!(state.selected, 0);
     }
 
@@ -294,7 +297,7 @@ mod tests {
         ];
         let mut state = UrlPickerState::new(entries);
         state.selected = 1;
-        let effects = handle(UrlAction::Confirm, &mut state).unwrap();
+        let effects = handle(UrlAction::Confirm, &mut state, 20);
         assert!(
             effects
                 .iter()
@@ -310,7 +313,7 @@ mod tests {
             visual_line: 1,
         }];
         let mut state = UrlPickerState::new(entries);
-        let effects = handle(UrlAction::Cancel, &mut state).unwrap();
+        let effects = handle(UrlAction::Cancel, &mut state, 20);
         assert!(
             effects
                 .iter()

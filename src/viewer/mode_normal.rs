@@ -258,3 +258,167 @@ fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_vl(y_px: u32, md_range: Option<(usize, usize)>) -> VisualLine {
+        VisualLine {
+            y_pt: 0.0,
+            y_px,
+            md_line_range: md_range,
+            md_line_exact: None,
+        }
+    }
+
+    fn make_ctx<'a>(
+        state: &'a ViewState,
+        visual_lines: &'a [VisualLine],
+        markdown: &'a str,
+        last_search: &'a mut Option<LastSearch>,
+    ) -> NormalCtx<'a> {
+        NormalCtx {
+            state,
+            visual_lines,
+            max_scroll: 1000,
+            scroll_step: 30,
+            half_page: 200,
+            markdown,
+            last_search,
+        }
+    }
+
+    fn make_state(y_offset: u32) -> ViewState {
+        ViewState {
+            y_offset,
+            img_h: 2000,
+            vp_w: 800,
+            vp_h: 600,
+            filename: "test.md".into(),
+        }
+    }
+
+    #[test]
+    fn scroll_down_clamps_to_max() {
+        let state = make_state(990);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        ctx.max_scroll = 1000;
+        let effects = handle(Action::ScrollDown(1), &mut ctx);
+        assert!(matches!(effects[0], Effect::ScrollTo(y) if y == 1000));
+    }
+
+    #[test]
+    fn scroll_up_clamps_to_zero() {
+        let state = make_state(10);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::ScrollUp(1), &mut ctx);
+        assert!(matches!(effects[0], Effect::ScrollTo(0)));
+    }
+
+    #[test]
+    fn half_page_down() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::HalfPageDown(1), &mut ctx);
+        assert!(matches!(effects[0], Effect::ScrollTo(200)));
+    }
+
+    #[test]
+    fn half_page_up() {
+        let state = make_state(500);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::HalfPageUp(2), &mut ctx);
+        assert!(matches!(effects[0], Effect::ScrollTo(100)));
+    }
+
+    #[test]
+    fn jump_to_top() {
+        let state = make_state(500);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::JumpToTop, &mut ctx);
+        assert!(matches!(effects[0], Effect::ScrollTo(0)));
+    }
+
+    #[test]
+    fn jump_to_bottom() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::JumpToBottom, &mut ctx);
+        assert!(matches!(effects[0], Effect::ScrollTo(1000)));
+    }
+
+    #[test]
+    fn quit_returns_exit() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::Quit, &mut ctx);
+        assert!(matches!(effects[0], Effect::Exit(ExitReason::Quit)));
+    }
+
+    #[test]
+    fn enter_search_deletes_placements_and_sets_mode() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::EnterSearch, &mut ctx);
+        assert_eq!(effects.len(), 2);
+        assert!(matches!(effects[0], Effect::DeletePlacements));
+        assert!(matches!(effects[1], Effect::SetMode(ViewerMode::Search(_))));
+    }
+
+    #[test]
+    fn yank_out_of_range_flashes_error() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, Some((1, 1)))];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "hello", &mut ls);
+        let effects = handle(Action::YankExact(99), &mut ctx);
+        assert!(matches!(&effects[0], Effect::Flash(msg) if msg.contains("out of range")));
+    }
+
+    #[test]
+    fn open_url_no_source_mapping_flashes_error() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)]; // no md_line_range
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "hello", &mut ls);
+        let effects = handle(Action::OpenUrl(1), &mut ctx);
+        assert!(matches!(&effects[0], Effect::Flash(msg) if msg.contains("no source mapping")));
+    }
+
+    #[test]
+    fn search_next_without_results_flashes() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::SearchNextMatch, &mut ctx);
+        assert!(matches!(&effects[0], Effect::Flash(msg) if msg.contains("No search results")));
+    }
+
+    #[test]
+    fn go_back_returns_effect() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0, None)];
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let effects = handle(Action::GoBack, &mut ctx);
+        assert!(matches!(effects[0], Effect::GoBack));
+    }
+}
