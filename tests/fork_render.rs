@@ -4,7 +4,7 @@
 //! processes. We use `harness = false` to avoid the test runner's thread pool
 //! and run each test sequentially in a single thread.
 
-use mlux::fork_render::{Request, Response, spawn_renderer};
+use mlux::fork_render::spawn_renderer;
 use mlux::image::LoadedImages;
 use mlux::pipeline::{BuildParams, FontCache, build_tiled_document, markdown_to_typst};
 use mlux::tile::VisibleTiles;
@@ -40,7 +40,7 @@ fn test_fork_render_matches_local() {
     let local_meta = local_doc.metadata();
 
     // Fork render
-    let (fork_meta, mut tx, mut rx, mut _child) = spawn_renderer(&params, None, true).unwrap();
+    let (fork_meta, mut renderer, mut _child) = spawn_renderer(&params, None, true).unwrap();
 
     // Metadata should match
     assert_eq!(fork_meta.tile_count, local_meta.tile_count);
@@ -52,11 +52,7 @@ fn test_fork_render_matches_local() {
 
     // Rendered tiles should match
     for i in 0..fork_meta.tile_count {
-        tx.send(&Request::RenderTile(i)).unwrap();
-        let fork_pngs = match rx.recv().unwrap() {
-            Response::Tile(pngs) => pngs,
-            other => panic!("expected Tile, got {:?}", std::mem::discriminant(&other)),
-        };
+        let fork_pngs = renderer.render_tile_pair(i).unwrap();
         let local_pngs = local_doc.render_tile_pair(i).unwrap();
         assert_eq!(
             fork_pngs.content, local_pngs.content,
@@ -67,7 +63,7 @@ fn test_fork_render_matches_local() {
             "sidebar tile {i} should match"
         );
     }
-    tx.send(&Request::Shutdown).unwrap();
+    renderer.shutdown();
 }
 
 fn test_fork_render_metadata_methods() {
@@ -90,7 +86,7 @@ fn test_fork_render_metadata_methods() {
         image_files: LoadedImages::default(),
     };
 
-    let (meta, _tx, _rx, mut _child) = spawn_renderer(&params, None, true).unwrap();
+    let (meta, _renderer, mut _child) = spawn_renderer(&params, None, true).unwrap();
 
     // DocumentMeta methods should work
     assert!(meta.tile_count > 0);

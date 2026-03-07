@@ -46,30 +46,6 @@ use effect::{BuildOutcome, Effect, Session, ViewContext, ViewerMode, Viewport};
 use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
 use state::{ExitReason, LoadedTiles, PrefetchChannels, ViewState};
 
-/// Tile renderer communicating with a forked child process via typed IPC.
-struct TileRenderer {
-    tx: crate::process::TypedWriter<crate::fork_render::Request>,
-    rx: crate::process::TypedReader<crate::fork_render::Response>,
-}
-
-impl TileRenderer {
-    fn render_tile_pair(&mut self, idx: usize) -> anyhow::Result<TilePngs> {
-        self.tx
-            .send(&crate::fork_render::Request::RenderTile(idx))?;
-        match self.rx.recv()? {
-            crate::fork_render::Response::Tile(pngs) => Ok(pngs),
-            crate::fork_render::Response::Error(e) => anyhow::bail!("{e}"),
-            crate::fork_render::Response::Meta(_) => {
-                anyhow::bail!("unexpected Meta response")
-            }
-        }
-    }
-
-    fn shutdown(mut self) {
-        let _ = self.tx.send(&crate::fork_render::Request::Shutdown);
-    }
-}
-
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
 const FAST_THRESHOLD: Duration = Duration::from_millis(100);
 
@@ -258,7 +234,7 @@ pub fn run(
 
         // ChildProcess handle kept alive for the duration of the inner loop.
         // Dropped on reload/resize/quit → sends SIGKILL to child.
-        let mut _fork_child: Option<crate::process::ChildProcess> = None;
+        let mut _fork_child: Option<crate::fork_render::ChildProcess> = None;
 
         // Build: fork a child process, compile/render there, communicate via IPC.
         let (meta, renderer) = {
@@ -289,30 +265,23 @@ pub fn run(
             };
             // Fork before any threads (fork safety).
             // The child starts building immediately; we wait for meta below.
-            let (tx, rx, child) =
+            let (renderer, child) =
                 crate::fork_render::fork_renderer(&params, read_base.as_deref(), no_sandbox)?;
             _fork_child = Some(child);
 
             // Wait for metadata from child with loading UI
             match build_async_with_threshold(
                 move || {
-                    let mut rx = rx;
-                    match rx.recv()? {
-                        crate::fork_render::Response::Meta(m) => Ok((m, tx, rx)),
-                        crate::fork_render::Response::Error(e) => {
-                            anyhow::bail!("child build error: {e}")
-                        }
-                        crate::fork_render::Response::Tile(_) => {
-                            anyhow::bail!("unexpected Tile response, expected Meta")
-                        }
-                    }
+                    let mut renderer = renderer;
+                    let meta = renderer.wait_for_meta()?;
+                    Ok((meta, renderer))
                 },
                 &session.layout,
                 &session.filename,
             )? {
-                BuildOutcome::Done((m, tx, rx)) => {
+                BuildOutcome::Done((m, renderer)) => {
                     info!("fork build complete: {} tiles", m.tile_count);
-                    (m, TileRenderer { tx, rx })
+                    (m, renderer)
                 }
                 BuildOutcome::Quit => break 'outer,
                 BuildOutcome::Resize { new_cols, new_rows } => {

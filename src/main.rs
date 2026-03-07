@@ -318,26 +318,20 @@ fn cmd_render_fork(
     pipeline_start: Instant,
     no_sandbox: bool,
 ) -> Result<()> {
-    use mlux::fork_render::{Request, Response, spawn_renderer};
+    use mlux::fork_render::spawn_renderer;
 
-    let (meta, mut tx, mut rx, mut _child) = spawn_renderer(params, read_base, no_sandbox)?;
+    let (meta, mut renderer, mut _child) = spawn_renderer(params, read_base, no_sandbox)?;
 
     let mut files = Vec::new();
     for i in 0..meta.tile_count {
-        tx.send(&Request::RenderTile(i))?;
-        match rx.recv()? {
-            Response::Tile(pngs) => {
-                let filename = format!("{}-{:03}.{}", stem, i, ext);
-                let path = output_parent.join(&filename);
-                fs::write(&path, &pngs.content)
-                    .with_context(|| format!("failed to write {}", path.display()))?;
-                files.push((filename, pngs.content.len()));
-            }
-            Response::Error(e) => anyhow::bail!("render tile {i}: {e}"),
-            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
-        }
+        let pngs = renderer.render_tile_pair(i)?;
+        let filename = format!("{}-{:03}.{}", stem, i, ext);
+        let path = output_parent.join(&filename);
+        fs::write(&path, &pngs.content)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        files.push((filename, pngs.content.len()));
     }
-    tx.send(&Request::Shutdown)?;
+    renderer.shutdown();
 
     info!(
         "cmd_render: total pipeline completed in {:.1}ms",

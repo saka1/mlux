@@ -3,6 +3,11 @@
 //! Spawns a child process that compiles the document and renders tiles on demand.
 //! The child applies Landlock (read-only) before compilation, isolating the
 //! render pipeline from the rest of the system.
+//!
+//! Internal submodules (`process`, `sandbox`) are implementation details.
+
+mod process;
+mod sandbox;
 
 use std::path::Path;
 
@@ -10,8 +15,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::{BuildParams, build_tiled_document};
-use crate::process::{ChildProcess, TypedReader, TypedWriter, fork_with_channels};
 use crate::tile::{DocumentMeta, TilePngs};
+
+pub use process::ChildProcess;
 
 /// Request from parent to child.
 #[derive(Serialize, Deserialize)]
@@ -30,6 +36,44 @@ pub enum Response {
     Error(String),
 }
 
+/// Tile renderer communicating with a forked child process via typed IPC.
+pub struct TileRenderer {
+    tx: process::TypedWriter<Request>,
+    rx: process::TypedReader<Response>,
+}
+
+impl TileRenderer {
+    /// Receive the initial metadata response from the child.
+    ///
+    /// Must be called exactly once as the first operation after [`fork_renderer`].
+    pub fn wait_for_meta(&mut self) -> Result<DocumentMeta> {
+        match self
+            .rx
+            .recv()
+            .context("failed to receive metadata from child")?
+        {
+            Response::Meta(m) => Ok(m),
+            Response::Error(e) => anyhow::bail!("child build error: {e}"),
+            Response::Tile(_) => anyhow::bail!("unexpected Tile response, expected Meta"),
+        }
+    }
+
+    /// Request a tile pair (content + sidebar) from the child.
+    pub fn render_tile_pair(&mut self, idx: usize) -> Result<TilePngs> {
+        self.tx.send(&Request::RenderTile(idx))?;
+        match self.rx.recv()? {
+            Response::Tile(pngs) => Ok(pngs),
+            Response::Error(e) => anyhow::bail!("{e}"),
+            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
+        }
+    }
+
+    /// Send shutdown request to the child.
+    pub fn shutdown(mut self) {
+        let _ = self.tx.send(&Request::Shutdown);
+    }
+}
+
 /// Fork a sandboxed renderer child process without waiting for metadata.
 ///
 /// The child:
@@ -38,13 +82,13 @@ pub enum Response {
 /// 3. Sends `Response::Meta` back to parent
 /// 4. Enters request loop: renders tiles on demand
 ///
-/// Returns `(request_writer, response_reader, child_handle)`.
-/// The caller must receive `Response::Meta` as the first message.
+/// Returns `(renderer, child_handle)`.
+/// The caller must call [`TileRenderer::wait_for_meta`] to receive the first message.
 pub fn fork_renderer(
     params: &BuildParams<'_>,
     sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
-) -> Result<(TypedWriter<Request>, TypedReader<Response>, ChildProcess)> {
+) -> Result<(TileRenderer, ChildProcess)> {
     // Clone owned data for the child closure (BuildParams borrows).
     let theme_text = params.theme_text.to_string();
     let data_files = params.data_files;
@@ -58,12 +102,12 @@ pub fn fork_renderer(
     let image_files = params.image_files.clone();
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
 
-    fork_with_channels::<Request, Response, _>(
-        move |mut req_rx: TypedReader<Request>, mut resp_tx: TypedWriter<Response>| {
+    let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
+        move |mut req_rx: process::TypedReader<Request>,
+              mut resp_tx: process::TypedWriter<Response>| {
             // Apply sandbox in child before any compilation
             if !no_sandbox
-                && let Err(e) =
-                    crate::sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
+                && let Err(e) = sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
             {
                 log::warn!("child: sandbox failed: {e:#}");
             }
@@ -122,7 +166,9 @@ pub fn fork_renderer(
                 }
             }
         },
-    )
+    )?;
+
+    Ok((TileRenderer { tx, rx }, child))
 }
 
 /// Fork and spawn a sandboxed renderer, waiting for metadata.
@@ -130,27 +176,15 @@ pub fn fork_renderer(
 /// Convenience wrapper around [`fork_renderer`] that also receives the initial
 /// `Response::Meta` message. Used by `render` mode where no loading UI is needed.
 ///
-/// Returns `(metadata, request_writer, response_reader, child_handle)`.
+/// Returns `(metadata, renderer, child_handle)`.
 pub fn spawn_renderer(
     params: &BuildParams<'_>,
     sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
-) -> Result<(
-    DocumentMeta,
-    TypedWriter<Request>,
-    TypedReader<Response>,
-    ChildProcess,
-)> {
-    let (tx, mut rx, child) = fork_renderer(params, sandbox_read_base, no_sandbox)?;
-
-    // Read metadata (first message from child)
-    let meta = match rx.recv().context("failed to receive metadata from child")? {
-        Response::Meta(m) => m,
-        Response::Error(e) => anyhow::bail!("child build error: {e}"),
-        Response::Tile(_) => anyhow::bail!("unexpected Tile response, expected Meta"),
-    };
-
-    Ok((meta, tx, rx, child))
+) -> Result<(DocumentMeta, TileRenderer, ChildProcess)> {
+    let (mut renderer, child) = fork_renderer(params, sandbox_read_base, no_sandbox)?;
+    let meta = renderer.wait_for_meta()?;
+    Ok((meta, renderer, child))
 }
 
 #[cfg(test)]
