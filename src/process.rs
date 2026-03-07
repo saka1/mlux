@@ -207,4 +207,70 @@ mod tests {
         let received = reader.recv().unwrap();
         assert_eq!(received, msg);
     }
+
+    #[test]
+    fn fork_channels_request_response() {
+        let (mut writer, mut reader, mut child) =
+            fork_with_channels::<u32, u64, _>(|mut req_reader, mut resp_writer| {
+                let req: u32 = req_reader.recv().unwrap();
+                resp_writer.send(&(req as u64 * 2)).unwrap();
+            })
+            .unwrap();
+
+        writer.send(&21u32).unwrap();
+        let resp = reader.recv().unwrap();
+        assert_eq!(resp, 42u64);
+        assert_eq!(child.wait().unwrap(), 0);
+    }
+
+    #[test]
+    fn fork_channels_multiple_messages() {
+        let (mut writer, mut reader, mut child) =
+            fork_with_channels::<String, usize, _>(|mut req_reader, mut resp_writer| {
+                loop {
+                    match req_reader.recv() {
+                        Ok(s) => resp_writer.send(&s.len()).unwrap(),
+                        Err(_) => break,
+                    }
+                }
+            })
+            .unwrap();
+
+        let inputs = ["hello", "world!", "foo"];
+        for s in &inputs {
+            writer.send(&s.to_string()).unwrap();
+        }
+        // Drop writer to close the pipe, signalling EOF to the child.
+        drop(writer);
+
+        for s in &inputs {
+            assert_eq!(reader.recv().unwrap(), s.len());
+        }
+        assert_eq!(child.wait().unwrap(), 0);
+    }
+
+    #[test]
+    fn fork_channels_child_exit_code() {
+        let (_, _, mut child) = fork_with_channels::<u32, u32, _>(|_req_reader, _resp_writer| {
+            // Return immediately without exchanging messages.
+        })
+        .unwrap();
+
+        assert_eq!(child.wait().unwrap(), 0);
+    }
+
+    #[test]
+    fn fork_channels_kill_on_drop() {
+        let (_, _, child) = fork_with_channels::<u32, u32, _>(|_req_reader, _resp_writer| {
+            // Spin forever — relies on Drop sending SIGKILL.
+            loop {
+                std::hint::spin_loop();
+            }
+        })
+        .unwrap();
+
+        // Dropping child sends SIGKILL and waits; if SIGKILL wasn't sent this
+        // test would hang forever.
+        drop(child);
+    }
 }
