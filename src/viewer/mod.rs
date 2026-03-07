@@ -44,9 +44,8 @@ use crate::tile::{TilePngs, TiledDocument, TiledDocumentCache};
 use crate::watch::FileWatcher;
 use crate::world::FontCache;
 
-use effect::{BuildOutcome, Effect, JumpEntry, ViewerMode};
+use effect::{BuildOutcome, Effect, Session, ViewContext, ViewerMode, Viewport};
 use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
-use mode_search::LastSearch;
 use state::{ExitReason, LoadedTiles, ViewState};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
@@ -113,13 +112,10 @@ fn build_async_with_threshold(
 /// `watch` enables automatic reload on file change.
 pub fn run(
     input: InputSource,
-    mut config: Config,
+    config: Config,
     cli_overrides: &CliOverrides,
     watch: bool,
 ) -> anyhow::Result<()> {
-    let mut input = input;
-    let mut filename = input.display_name().to_string();
-
     terminal::check_tty()?;
 
     // 2. ターミナルサイズを先に取得してビューポート幅を確定
@@ -153,28 +149,32 @@ pub fn run(
     // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = terminal::RawGuard::enter()?;
 
-    let mut layout = state::compute_layout(
-        term_cols,
-        term_rows,
-        pixel_w,
-        pixel_h,
-        config.viewer.sidebar_cols,
-    );
-    let mut y_offset_carry: u32 = 0;
-    // Flash message to pass from outer loop into inner loop (e.g. "Config reloaded")
-    let mut outer_flash: Option<String> = None;
-
-    // Jump stack for markdown link navigation (tag-jump)
-    let mut jump_stack: Vec<JumpEntry> = Vec::new();
-
-    // File watcher (optional, file mode only)
-    let mut watcher = if watch {
+    // Session: persistent state across document rebuilds
+    let watcher_init = if watch {
         match &input {
             InputSource::File(path) => Some(FileWatcher::new(path)?),
             InputSource::Stdin(_) => None,
         }
     } else {
         None
+    };
+    let mut session = Session {
+        layout: state::compute_layout(
+            term_cols,
+            term_rows,
+            pixel_w,
+            pixel_h,
+            config.viewer.sidebar_cols,
+        ),
+        filename: input.display_name().to_string(),
+        config,
+        cli_overrides: cli_overrides.clone(),
+        input,
+        watcher: watcher_init,
+        jump_stack: Vec::new(),
+        scroll_carry: 0,
+        pending_flash: None,
+        watch,
     };
 
     // Stdin buffer and EOF flag (stdin mode only)
@@ -184,15 +184,15 @@ pub fn run(
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
         // 1. テーマを読み込み (config reload でテーマ名が変わる場合があるのでループ内)
-        let theme_text = crate::theme::get(&config.theme)
-            .ok_or_else(|| anyhow::anyhow!("unknown theme '{}'", config.theme))?;
+        let theme_text = crate::theme::get(&session.config.theme)
+            .ok_or_else(|| anyhow::anyhow!("unknown theme '{}'", session.config.theme))?;
 
         // 5a. Read markdown (re-read on each iteration for reload support)
         // For stdin mode, drain any available data first
-        if let InputSource::Stdin(ref reader) = input {
+        if let InputSource::Stdin(ref reader) = session.input {
             stdin_eof |= reader.drain_into(&mut stdin_buf).eof;
         }
-        let markdown = match &input {
+        let markdown = match &session.input {
             InputSource::File(path) => std::fs::read_to_string(path)
                 .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?,
             InputSource::Stdin(_) => {
@@ -204,7 +204,7 @@ pub fn run(
             }
         };
         // Load images
-        let base_dir = match &input {
+        let base_dir = match &session.input {
             InputSource::File(path) => path.parent(),
             InputSource::Stdin(_) => None,
         };
@@ -225,10 +225,10 @@ pub fn run(
         // can abort immediately.
         info!("building tiled document...");
         let markdown_clone = markdown.clone(); // markdown also needed by inner loop
-        let layout_copy = layout;
-        let ppi = config.ppi;
-        let tile_height = config.viewer.tile_height;
-        let data_files = crate::theme::data_files(&config.theme);
+        let layout_copy = session.layout;
+        let ppi = session.config.ppi;
+        let tile_height = session.config.viewer.tile_height;
+        let data_files = crate::theme::data_files(&session.config.theme);
         // content_text and source_map move into the closure (not used by inner loop)
         let tiled_doc = match build_async_with_threshold(
             move || {
@@ -245,19 +245,19 @@ pub fn run(
                     image_files,
                 })
             },
-            &layout,
-            &filename,
+            &session.layout,
+            &session.filename,
         )? {
             BuildOutcome::Done(doc) => doc,
             BuildOutcome::Quit => break 'outer,
             BuildOutcome::Resize { new_cols, new_rows } => {
                 let new_winsize = crossterm_terminal::window_size()?;
-                layout = state::compute_layout(
+                session.layout = state::compute_layout(
                     new_cols,
                     new_rows,
                     new_winsize.width,
                     new_winsize.height,
-                    config.viewer.sidebar_cols,
+                    session.config.viewer.sidebar_cols,
                 );
                 terminal::delete_all_images()?;
                 continue 'outer;
@@ -266,19 +266,26 @@ pub fn run(
 
         let img_w = tiled_doc.width_px();
         let img_h = tiled_doc.total_height_px();
-        let (vp_w, vp_h) = state::vp_dims(&layout, img_w, img_h);
-        let mut state = ViewState {
-            y_offset: y_offset_carry.min(tiled_doc.max_scroll(vp_h)),
-            img_h,
-            vp_w,
-            vp_h,
-            filename: filename.clone(),
-        };
+        let (vp_w, vp_h) = state::vp_dims(&session.layout, img_w, img_h);
 
         let mut cache = TiledDocumentCache::new();
-        let mut loaded = LoadedTiles::new(config.viewer.evict_distance);
 
         // 6. thread::scope — prefetch worker + inner event loop
+        let mut vp = Viewport {
+            mode: ViewerMode::Normal,
+            view: ViewState {
+                y_offset: session.scroll_carry.min(tiled_doc.max_scroll(vp_h)),
+                img_h,
+                vp_w,
+                vp_h,
+                filename: session.filename.clone(),
+            },
+            tiles: LoadedTiles::new(session.config.viewer.evict_distance),
+            flash: session.pending_flash.take(),
+            dirty: false,
+            last_search: None,
+        };
+
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
             let (req_tx, req_rx) = mpsc::channel::<usize>();
             let (res_tx, res_rx) = mpsc::channel::<(usize, TilePngs)>();
@@ -319,27 +326,20 @@ pub fn run(
 
             // Vim-style number prefix accumulator
             let mut acc = InputAccumulator::new();
-            // Flash message (e.g., "Yanked L56"), cleared on next keypress
-            let mut flash_msg: Option<String> = outer_flash.take();
-            // Viewer mode: normal (tile display) or search (picker UI)
-            let mut mode = ViewerMode::Normal;
-            // Persisted search results for n/N navigation
-            let mut last_search: Option<LastSearch> = None;
 
             // Initial redraw + prefetch
             state::redraw(
                 doc,
                 &mut cache,
-                &mut loaded,
-                &layout,
-                &state,
+                &mut vp.tiles,
+                &session.layout,
+                &vp.view,
                 acc.peek(),
                 None,
             )?;
-            state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
+            state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, vp.view.y_offset);
 
             // Inner event loop
-            let mut dirty = false;
             let mut last_render = Instant::now();
 
             loop {
@@ -354,15 +354,16 @@ pub fn run(
                     cache.insert(idx, pngs);
                 }
 
-                let has_live_source =
-                    watcher.is_some() || (matches!(&input, InputSource::Stdin(_)) && !stdin_eof);
+                let has_live_source = session.watcher.is_some()
+                    || (matches!(&session.input, InputSource::Stdin(_)) && !stdin_eof);
                 let idle_timeout = if has_live_source {
-                    config.viewer.watch_interval
+                    session.config.viewer.watch_interval
                 } else {
                     Duration::from_secs(86400)
                 };
-                let timeout = if dirty {
-                    config
+                let timeout = if vp.dirty {
+                    session
+                        .config
                         .viewer
                         .frame_budget
                         .saturating_sub(last_render.elapsed())
@@ -376,25 +377,26 @@ pub fn run(
 
                     match ev {
                         Event::Key(key_event) => {
-                            let max_y = doc.max_scroll(state.vp_h);
+                            let max_y = doc.max_scroll(vp.view.vp_h);
 
-                            let effects = match &mut mode {
+                            let effects = match &mut vp.mode {
                                 ViewerMode::Normal => {
-                                    let had_flash = flash_msg.is_some();
-                                    flash_msg = None;
+                                    let had_flash = vp.flash.is_some();
+                                    vp.flash = None;
 
                                     match map_key_event(key_event, &mut acc) {
                                         Some(action) => {
                                             let mut ctx = mode_normal::NormalCtx {
-                                                state: &state,
+                                                state: &vp.view,
                                                 visual_lines: &doc.visual_lines,
                                                 max_scroll: max_y,
-                                                scroll_step: config.viewer.scroll_step
-                                                    * layout.cell_h as u32,
-                                                half_page: (layout.image_rows as u32 / 2).max(1)
-                                                    * layout.cell_h as u32,
+                                                scroll_step: session.config.viewer.scroll_step
+                                                    * session.layout.cell_h as u32,
+                                                half_page: (session.layout.image_rows as u32 / 2)
+                                                    .max(1)
+                                                    * session.layout.cell_h as u32,
                                                 markdown: &markdown,
-                                                last_search: &mut last_search,
+                                                last_search: &mut vp.last_search,
                                             };
                                             mode_normal::handle(action, &mut ctx)
                                         }
@@ -410,7 +412,8 @@ pub fn run(
                                 }
                                 ViewerMode::Search(ss) => match map_search_key(key_event) {
                                     Some(a) => {
-                                        let visible_count = (layout.status_row - 1) as usize;
+                                        let visible_count =
+                                            (session.layout.status_row - 1) as usize;
                                         mode_search::handle(
                                             a,
                                             ss,
@@ -428,29 +431,24 @@ pub fn run(
                                 },
                                 ViewerMode::UrlPicker(up) => match map_url_key(key_event) {
                                     Some(a) => {
-                                        let visible_count = (layout.status_row - 1) as usize;
+                                        let visible_count =
+                                            (session.layout.status_row - 1) as usize;
                                         mode_url::handle(a, up, visible_count)
                                     }
                                     None => vec![],
                                 },
                             };
 
+                            let ctx = ViewContext {
+                                layout: &session.layout,
+                                acc_value: acc.peek(),
+                                input: &session.input,
+                                jump_stack: &session.jump_stack,
+                                markdown: &markdown,
+                                visual_lines: &doc.visual_lines,
+                            };
                             for effect in effects {
-                                if let Some(reason) = effect::apply_effect(
-                                    effect,
-                                    &mut mode,
-                                    &mut state,
-                                    &mut loaded,
-                                    &layout,
-                                    &acc,
-                                    &mut flash_msg,
-                                    &mut dirty,
-                                    &input,
-                                    &jump_stack,
-                                    &mut last_search,
-                                    &markdown,
-                                    &doc.visual_lines,
-                                )? {
+                                if let Some(reason) = vp.apply(effect, &ctx)? {
                                     return Ok(reason);
                                 }
                             }
@@ -467,7 +465,7 @@ pub fn run(
                 }
 
                 // poll timeout → frame budget elapsed, execute redraw
-                if dirty {
+                if vp.dirty {
                     // redraw 直前に追加 drain: event::poll() のブロック中に worker が
                     // 完了した結果を回収し、redraw での同期レンダリングを回避する。
                     while let Ok((idx, pngs)) = res_rx.try_recv() {
@@ -482,24 +480,26 @@ pub fn run(
                     state::redraw(
                         doc,
                         &mut cache,
-                        &mut loaded,
-                        &layout,
-                        &state,
+                        &mut vp.tiles,
+                        &session.layout,
+                        &vp.view,
                         acc.peek(),
-                        flash_msg.as_deref(),
+                        vp.flash.as_deref(),
                     )?;
-                    state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, state.y_offset);
+                    state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, vp.view.y_offset);
                     cache.evict_distant(
-                        (state.y_offset / doc.tile_height_px()) as usize,
-                        config.viewer.evict_distance,
+                        (vp.view.y_offset / doc.tile_height_px()) as usize,
+                        session.config.viewer.evict_distance,
                     );
-                    dirty = false;
+                    vp.dirty = false;
                 }
                 last_render = Instant::now();
 
                 // Check for content changes (file watcher or stdin new data)
-                let content_changed = match &input {
-                    InputSource::File(_) => watcher.as_ref().is_some_and(|w| w.has_changed()),
+                let content_changed = match &session.input {
+                    InputSource::File(_) => {
+                        session.watcher.as_ref().is_some_and(|w| w.has_changed())
+                    }
                     InputSource::Stdin(reader) => {
                         let result = reader.drain_into(&mut stdin_buf);
                         stdin_eof |= result.eof;
@@ -513,20 +513,7 @@ pub fn run(
             // req_tx dropped here → worker recv() gets Err → worker exits → scope joins
         })?;
 
-        if effect::handle_exit_reason(
-            exit,
-            &state,
-            &mut y_offset_carry,
-            &mut layout,
-            &mut config,
-            cli_overrides,
-            &mut input,
-            &mut filename,
-            &mut watcher,
-            &mut jump_stack,
-            &mut outer_flash,
-            watch,
-        )? {
+        if session.handle_exit(exit, vp.view.y_offset)? {
             break 'outer;
         }
     }

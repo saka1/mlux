@@ -1,7 +1,11 @@
 //! Effect types, viewer mode, and effect application logic.
 //!
-//! Extracted from mod.rs to reduce its size and isolate the effect
-//! dispatch from the event loop.
+//! State model:
+//!   - `Viewport`: mutable state for the current document view (mode, scroll, tiles, UI)
+//!   - `ViewContext`: read-only environment for effect application (layout, document, nav)
+//!   - `Session`: persistent state across document rebuilds (config, file mgmt, nav history)
+//!
+//! See `docs/viewer-state-model.md` for the full design rationale.
 
 use crossterm::terminal as crossterm_terminal;
 use log::debug;
@@ -12,7 +16,6 @@ use crate::input::InputSource;
 use crate::tile::VisualLine;
 use crate::watch::FileWatcher;
 
-use super::input::InputAccumulator;
 use super::mode_command::CommandState;
 use super::mode_search::{self, LastSearch, SearchState};
 use super::mode_url::{self, UrlPickerState};
@@ -62,6 +65,321 @@ pub(super) struct JumpEntry {
     pub y_offset: u32,
 }
 
+// ---------------------------------------------------------------------------
+// Viewport — the user's interactive view into a document
+// ---------------------------------------------------------------------------
+
+/// The user's interactive view into a document build.
+///
+/// Contains all mutable state for the inner event loop: interaction mode,
+/// scroll position, tile cache, and transient UI state. Created fresh
+/// for each document build; destroyed when the build is replaced.
+pub(super) struct Viewport {
+    pub mode: ViewerMode,
+    pub view: ViewState,
+    pub tiles: LoadedTiles,
+    pub flash: Option<String>,
+    pub dirty: bool,
+    pub last_search: Option<LastSearch>,
+}
+
+/// Read-only environment for effect application.
+///
+/// Bundles references to layout, document content, and navigation state
+/// that `Viewport::apply` needs but must not modify.
+pub(super) struct ViewContext<'a> {
+    pub layout: &'a Layout,
+    pub acc_value: Option<u32>,
+    pub input: &'a InputSource,
+    pub jump_stack: &'a [JumpEntry],
+    pub markdown: &'a str,
+    pub visual_lines: &'a [VisualLine],
+}
+
+impl Viewport {
+    /// Apply a single effect, returning an `ExitReason` if the inner loop should exit.
+    pub(super) fn apply(
+        &mut self,
+        effect: Effect,
+        ctx: &ViewContext,
+    ) -> anyhow::Result<Option<ExitReason>> {
+        match effect {
+            Effect::ScrollTo(y) => {
+                self.view.y_offset = y;
+                self.dirty = true;
+            }
+            Effect::MarkDirty => {
+                self.dirty = true;
+            }
+            Effect::Flash(msg) => {
+                self.flash = Some(msg);
+            }
+            Effect::RedrawStatusBar => {
+                terminal::draw_status_bar(
+                    ctx.layout,
+                    &self.view,
+                    ctx.acc_value,
+                    self.flash.as_deref(),
+                )?;
+            }
+            Effect::RedrawSearch => {
+                if let ViewerMode::Search(ss) = &self.mode {
+                    mode_search::draw_search_screen(
+                        ctx.layout,
+                        &ss.query,
+                        &ss.matches,
+                        ss.selected,
+                        ss.scroll_offset,
+                        ss.pattern_valid,
+                    )?;
+                }
+            }
+            Effect::RedrawCommandBar => {
+                if let ViewerMode::Command(cs) = &self.mode {
+                    terminal::draw_command_bar(ctx.layout, &cs.input)?;
+                }
+            }
+            Effect::RedrawUrlPicker => {
+                if let ViewerMode::UrlPicker(up) = &self.mode {
+                    mode_url::draw_url_screen(ctx.layout, up)?;
+                }
+            }
+            Effect::Yank(text) => {
+                let _ = terminal::send_osc52(&text);
+            }
+            Effect::OpenUrl(url) => {
+                if let InputSource::File(cur) = ctx.input
+                    && is_local_markdown_link(&url)
+                    && let Some(path) = resolve_link_path(&url, cur)
+                {
+                    return Ok(Some(ExitReason::Navigate { path }));
+                }
+                let _ = open::that_in_background(&url);
+            }
+            Effect::SetMode(m) => {
+                match &m {
+                    ViewerMode::Search(ss) => {
+                        mode_search::draw_search_screen(
+                            ctx.layout,
+                            &ss.query,
+                            &ss.matches,
+                            ss.selected,
+                            ss.scroll_offset,
+                            ss.pattern_valid,
+                        )?;
+                    }
+                    ViewerMode::Command(cs) => {
+                        terminal::draw_command_bar(ctx.layout, &cs.input)?;
+                    }
+                    ViewerMode::UrlPicker(up) => {
+                        mode_url::draw_url_screen(ctx.layout, up)?;
+                    }
+                    ViewerMode::Normal => {
+                        // Clear text from search/command screen and
+                        // purge terminal-side image data so that
+                        // ensure_loaded() re-uploads from cache.
+                        terminal::clear_screen()?;
+                        terminal::delete_all_images()?;
+                        self.tiles.map.clear();
+                        self.dirty = true;
+                    }
+                }
+                self.mode = m;
+            }
+            Effect::SetLastSearch(ls) => {
+                self.last_search = Some(ls);
+            }
+            Effect::DeletePlacements => {
+                self.tiles.delete_placements()?;
+            }
+            Effect::EnterUrlPickerAll => {
+                let entries = mode_url::collect_all_url_entries(ctx.markdown, ctx.visual_lines);
+                if entries.is_empty() {
+                    // Return to normal with flash; need full
+                    // redraw if coming from command mode.
+                    self.flash = Some("No URLs in document".into());
+                    if !matches!(self.mode, ViewerMode::Normal) {
+                        terminal::clear_screen()?;
+                        terminal::delete_all_images()?;
+                        self.tiles.map.clear();
+                        self.mode = ViewerMode::Normal;
+                        self.dirty = true;
+                    } else {
+                        terminal::draw_status_bar(
+                            ctx.layout,
+                            &self.view,
+                            ctx.acc_value,
+                            self.flash.as_deref(),
+                        )?;
+                    }
+                } else {
+                    self.tiles.delete_placements()?;
+                    terminal::clear_screen()?;
+                    let up = UrlPickerState::new(entries);
+                    mode_url::draw_url_screen(ctx.layout, &up)?;
+                    self.mode = ViewerMode::UrlPicker(up);
+                }
+            }
+            Effect::GoBack => {
+                if ctx.jump_stack.is_empty() {
+                    self.flash = Some("No previous file".into());
+                    terminal::draw_status_bar(
+                        ctx.layout,
+                        &self.view,
+                        ctx.acc_value,
+                        self.flash.as_deref(),
+                    )?;
+                } else {
+                    return Ok(Some(ExitReason::GoBack));
+                }
+            }
+            Effect::Exit(reason) => {
+                return Ok(Some(reason));
+            }
+        }
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session — persistent state across document rebuilds
+// ---------------------------------------------------------------------------
+
+/// Persistent viewing session from viewer start to exit.
+///
+/// Survives document rebuilds (resize, reload, navigation). Contains
+/// configuration, file management, and navigation history.
+pub(super) struct Session {
+    pub layout: Layout,
+    pub config: Config,
+    pub cli_overrides: CliOverrides,
+    pub input: InputSource,
+    pub filename: String,
+    pub watcher: Option<FileWatcher>,
+    pub jump_stack: Vec<JumpEntry>,
+    pub scroll_carry: u32,
+    pub pending_flash: Option<String>,
+    pub watch: bool,
+}
+
+impl Session {
+    /// Handle an exit reason from the inner loop, returning `true` if the outer loop should break.
+    pub(super) fn handle_exit(
+        &mut self,
+        exit: ExitReason,
+        scroll_position: u32,
+    ) -> anyhow::Result<bool> {
+        match exit {
+            ExitReason::Quit => return Ok(true),
+            ExitReason::Resize { new_cols, new_rows } => {
+                self.scroll_carry = scroll_position;
+                debug!("resize: rebuilding tiled document and sidebar");
+                let new_winsize = crossterm_terminal::window_size()?;
+                self.layout = state::compute_layout(
+                    new_cols,
+                    new_rows,
+                    new_winsize.width,
+                    new_winsize.height,
+                    self.config.viewer.sidebar_cols,
+                );
+                terminal::delete_all_images()?;
+            }
+            ExitReason::Reload => {
+                self.scroll_carry = scroll_position;
+                debug!("file changed: reloading document");
+                terminal::delete_all_images()?;
+            }
+            ExitReason::ConfigReload => {
+                self.scroll_carry = scroll_position;
+                debug!("config reload requested");
+
+                match config::reload_config(&self.cli_overrides) {
+                    Ok(new_config) => {
+                        // Verify built-in theme exists before committing
+                        if crate::theme::get(&new_config.theme).is_none() {
+                            self.pending_flash = Some(format!(
+                                "Reload failed: unknown theme '{}'",
+                                new_config.theme
+                            ));
+                            debug!(
+                                "config reload: unknown theme '{}', keeping old config",
+                                new_config.theme
+                            );
+                            // Rebuild with old config
+                            terminal::delete_all_images()?;
+                            return Ok(false);
+                        }
+
+                        // Recalculate layout if sidebar_cols changed
+                        if new_config.viewer.sidebar_cols != self.config.viewer.sidebar_cols {
+                            let winsize = crossterm_terminal::window_size()?;
+                            self.layout = state::compute_layout(
+                                winsize.columns,
+                                winsize.rows,
+                                winsize.width,
+                                winsize.height,
+                                new_config.viewer.sidebar_cols,
+                            );
+                        }
+
+                        self.config = new_config;
+                        self.pending_flash = Some("Config reloaded".into());
+                    }
+                    Err(e) => {
+                        self.pending_flash = Some(format!("Reload failed: {e}"));
+                        debug!("config reload failed: {e}");
+                        // Rebuild with old config
+                    }
+                }
+                terminal::delete_all_images()?;
+                // continue 'outer -> rebuild document with new (or old) config
+            }
+            ExitReason::Navigate { path } => {
+                if !path.exists() {
+                    self.pending_flash = Some(format!("File not found: {}", path.display()));
+                    terminal::delete_all_images()?;
+                    return Ok(false);
+                }
+                // Push current location onto jump stack
+                if let InputSource::File(cur) = &self.input {
+                    self.jump_stack.push(JumpEntry {
+                        path: cur.clone(),
+                        y_offset: scroll_position,
+                    });
+                }
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                debug!("navigate: jumping to {}", canonical.display());
+                self.input = InputSource::File(canonical.clone());
+                self.filename = self.input.display_name().to_string();
+                self.scroll_carry = 0;
+                if self.watch {
+                    self.watcher = Some(FileWatcher::new(&canonical)?);
+                }
+                terminal::delete_all_images()?;
+                // continue 'outer -> load new file
+            }
+            ExitReason::GoBack => {
+                // jump_stack is guaranteed non-empty here (inner loop checks)
+                let entry = self.jump_stack.pop().expect("GoBack with empty stack");
+                debug!("go back: returning to {}", entry.path.display());
+                self.input = InputSource::File(entry.path.clone());
+                self.filename = self.input.display_name().to_string();
+                self.scroll_carry = entry.y_offset;
+                if self.watch {
+                    self.watcher = Some(FileWatcher::new(&entry.path)?);
+                }
+                terminal::delete_all_images()?;
+                // continue 'outer -> reload previous file
+            }
+        }
+        Ok(false)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /// Check if a URL points to a local markdown file (not a web URL).
 fn is_local_markdown_link(url: &str) -> bool {
     if url.contains("://") || url.starts_with("mailto:") {
@@ -79,267 +397,6 @@ fn resolve_link_path(url: &str, current_file: &Path) -> Option<PathBuf> {
     }
     let base_dir = current_file.parent()?;
     Some(base_dir.join(path_part))
-}
-
-/// Apply a single effect, returning an `ExitReason` if the inner loop should exit.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn apply_effect(
-    effect: Effect,
-    mode: &mut ViewerMode,
-    state: &mut ViewState,
-    loaded: &mut LoadedTiles,
-    layout: &Layout,
-    acc: &InputAccumulator,
-    flash_msg: &mut Option<String>,
-    dirty: &mut bool,
-    input: &InputSource,
-    jump_stack: &[JumpEntry],
-    last_search: &mut Option<LastSearch>,
-    markdown: &str,
-    visual_lines: &[VisualLine],
-) -> anyhow::Result<Option<ExitReason>> {
-    match effect {
-        Effect::ScrollTo(y) => {
-            state.y_offset = y;
-            *dirty = true;
-        }
-        Effect::MarkDirty => {
-            *dirty = true;
-        }
-        Effect::Flash(msg) => {
-            *flash_msg = Some(msg);
-        }
-        Effect::RedrawStatusBar => {
-            terminal::draw_status_bar(layout, state, acc.peek(), flash_msg.as_deref())?;
-        }
-        Effect::RedrawSearch => {
-            if let ViewerMode::Search(ss) = &*mode {
-                mode_search::draw_search_screen(
-                    layout,
-                    &ss.query,
-                    &ss.matches,
-                    ss.selected,
-                    ss.scroll_offset,
-                    ss.pattern_valid,
-                )?;
-            }
-        }
-        Effect::RedrawCommandBar => {
-            if let ViewerMode::Command(cs) = &*mode {
-                terminal::draw_command_bar(layout, &cs.input)?;
-            }
-        }
-        Effect::RedrawUrlPicker => {
-            if let ViewerMode::UrlPicker(up) = &*mode {
-                mode_url::draw_url_screen(layout, up)?;
-            }
-        }
-        Effect::Yank(text) => {
-            let _ = terminal::send_osc52(&text);
-        }
-        Effect::OpenUrl(url) => {
-            if let InputSource::File(cur) = input
-                && is_local_markdown_link(&url)
-                && let Some(path) = resolve_link_path(&url, cur)
-            {
-                return Ok(Some(ExitReason::Navigate { path }));
-            }
-            let _ = open::that_in_background(&url);
-        }
-        Effect::SetMode(m) => {
-            match &m {
-                ViewerMode::Search(ss) => {
-                    mode_search::draw_search_screen(
-                        layout,
-                        &ss.query,
-                        &ss.matches,
-                        ss.selected,
-                        ss.scroll_offset,
-                        ss.pattern_valid,
-                    )?;
-                }
-                ViewerMode::Command(cs) => {
-                    terminal::draw_command_bar(layout, &cs.input)?;
-                }
-                ViewerMode::UrlPicker(up) => {
-                    mode_url::draw_url_screen(layout, up)?;
-                }
-                ViewerMode::Normal => {
-                    // Clear text from search/command screen and
-                    // purge terminal-side image data so that
-                    // ensure_loaded() re-uploads from cache.
-                    terminal::clear_screen()?;
-                    terminal::delete_all_images()?;
-                    loaded.map.clear();
-                    *dirty = true;
-                }
-            }
-            *mode = m;
-        }
-        Effect::SetLastSearch(ls) => {
-            *last_search = Some(ls);
-        }
-        Effect::DeletePlacements => {
-            loaded.delete_placements()?;
-        }
-        Effect::EnterUrlPickerAll => {
-            let entries = mode_url::collect_all_url_entries(markdown, visual_lines);
-            if entries.is_empty() {
-                // Return to normal with flash; need full
-                // redraw if coming from command mode.
-                *flash_msg = Some("No URLs in document".into());
-                if !matches!(mode, ViewerMode::Normal) {
-                    terminal::clear_screen()?;
-                    terminal::delete_all_images()?;
-                    loaded.map.clear();
-                    *mode = ViewerMode::Normal;
-                    *dirty = true;
-                } else {
-                    terminal::draw_status_bar(layout, state, acc.peek(), flash_msg.as_deref())?;
-                }
-            } else {
-                loaded.delete_placements()?;
-                terminal::clear_screen()?;
-                let up = UrlPickerState::new(entries);
-                mode_url::draw_url_screen(layout, &up)?;
-                *mode = ViewerMode::UrlPicker(up);
-            }
-        }
-        Effect::GoBack => {
-            if jump_stack.is_empty() {
-                *flash_msg = Some("No previous file".into());
-                terminal::draw_status_bar(layout, state, acc.peek(), flash_msg.as_deref())?;
-            } else {
-                return Ok(Some(ExitReason::GoBack));
-            }
-        }
-        Effect::Exit(reason) => {
-            return Ok(Some(reason));
-        }
-    }
-    Ok(None)
-}
-
-/// Handle an exit reason from the inner loop, returning `true` if the outer loop should break.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn handle_exit_reason(
-    exit: ExitReason,
-    state: &ViewState,
-    y_offset_carry: &mut u32,
-    layout: &mut Layout,
-    config: &mut Config,
-    cli_overrides: &CliOverrides,
-    input: &mut InputSource,
-    filename: &mut String,
-    watcher: &mut Option<FileWatcher>,
-    jump_stack: &mut Vec<JumpEntry>,
-    outer_flash: &mut Option<String>,
-    watch: bool,
-) -> anyhow::Result<bool> {
-    match exit {
-        ExitReason::Quit => return Ok(true),
-        ExitReason::Resize { new_cols, new_rows } => {
-            *y_offset_carry = state.y_offset;
-            debug!("resize: rebuilding tiled document and sidebar");
-            let new_winsize = crossterm_terminal::window_size()?;
-            *layout = state::compute_layout(
-                new_cols,
-                new_rows,
-                new_winsize.width,
-                new_winsize.height,
-                config.viewer.sidebar_cols,
-            );
-            terminal::delete_all_images()?;
-        }
-        ExitReason::Reload => {
-            *y_offset_carry = state.y_offset;
-            debug!("file changed: reloading document");
-            terminal::delete_all_images()?;
-        }
-        ExitReason::ConfigReload => {
-            *y_offset_carry = state.y_offset;
-            debug!("config reload requested");
-
-            match config::reload_config(cli_overrides) {
-                Ok(new_config) => {
-                    // Verify built-in theme exists before committing
-                    if crate::theme::get(&new_config.theme).is_none() {
-                        *outer_flash = Some(format!(
-                            "Reload failed: unknown theme '{}'",
-                            new_config.theme
-                        ));
-                        debug!(
-                            "config reload: unknown theme '{}', keeping old config",
-                            new_config.theme
-                        );
-                        // Rebuild with old config
-                        terminal::delete_all_images()?;
-                        return Ok(false);
-                    }
-
-                    // Recalculate layout if sidebar_cols changed
-                    if new_config.viewer.sidebar_cols != config.viewer.sidebar_cols {
-                        let winsize = crossterm_terminal::window_size()?;
-                        *layout = state::compute_layout(
-                            winsize.columns,
-                            winsize.rows,
-                            winsize.width,
-                            winsize.height,
-                            new_config.viewer.sidebar_cols,
-                        );
-                    }
-
-                    *config = new_config;
-                    *outer_flash = Some("Config reloaded".into());
-                }
-                Err(e) => {
-                    *outer_flash = Some(format!("Reload failed: {e}"));
-                    debug!("config reload failed: {e}");
-                    // Rebuild with old config
-                }
-            }
-            terminal::delete_all_images()?;
-            // continue 'outer → rebuild document with new (or old) config
-        }
-        ExitReason::Navigate { path } => {
-            if !path.exists() {
-                *outer_flash = Some(format!("File not found: {}", path.display()));
-                terminal::delete_all_images()?;
-                return Ok(false);
-            }
-            // Push current location onto jump stack
-            if let InputSource::File(cur) = &*input {
-                jump_stack.push(JumpEntry {
-                    path: cur.clone(),
-                    y_offset: state.y_offset,
-                });
-            }
-            let canonical = std::fs::canonicalize(&path).unwrap_or(path);
-            debug!("navigate: jumping to {}", canonical.display());
-            *input = InputSource::File(canonical.clone());
-            *filename = input.display_name().to_string();
-            *y_offset_carry = 0;
-            if watch {
-                *watcher = Some(FileWatcher::new(&canonical)?);
-            }
-            terminal::delete_all_images()?;
-            // continue 'outer → load new file
-        }
-        ExitReason::GoBack => {
-            // jump_stack is guaranteed non-empty here (inner loop checks)
-            let entry = jump_stack.pop().expect("GoBack with empty stack");
-            debug!("go back: returning to {}", entry.path.display());
-            *input = InputSource::File(entry.path.clone());
-            *filename = input.display_name().to_string();
-            *y_offset_carry = entry.y_offset;
-            if watch {
-                *watcher = Some(FileWatcher::new(&entry.path)?);
-            }
-            terminal::delete_all_images()?;
-            // continue 'outer → reload previous file
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(test)]
@@ -378,9 +435,9 @@ mod tests {
             resolve_link_path("sub/page.md#heading", current),
             Some(PathBuf::from("/home/user/docs/sub/page.md"))
         );
-        // Fragment-only link → None
+        // Fragment-only link -> None
         assert_eq!(resolve_link_path("#heading", current), None);
-        // Empty → None
+        // Empty -> None
         assert_eq!(resolve_link_path("", current), None);
     }
 }
