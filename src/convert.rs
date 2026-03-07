@@ -331,7 +331,12 @@ pub fn markdown_to_typst_with_map(
             Event::Start(Tag::Link { dest_url, .. }) => {
                 let url = dest_url.to_string();
                 if !url.is_empty() {
-                    push_to_target(&mut output, &mut cell_buf, &format!("#link(\"{url}\")["));
+                    let escaped_url = escape_typst_string_literal(&url);
+                    push_to_target(
+                        &mut output,
+                        &mut cell_buf,
+                        &format!("#link(\"{escaped_url}\")["),
+                    );
                 }
                 stack.push(Container::Link { _url: url });
             }
@@ -733,6 +738,19 @@ fn escape_typst(text: &str) -> String {
     escaped
 }
 
+/// Escape characters meaningful inside a Typst string literal ("...").
+fn escape_typst_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,6 +977,54 @@ mod tests {
             "empty URL should not produce #link"
         );
         assert!(typst.contains("link"));
+    }
+
+    #[test]
+    fn test_escape_typst_string_literal_backslash() {
+        assert_eq!(escape_typst_string_literal("foo\\bar"), "foo\\\\bar");
+    }
+
+    #[test]
+    fn test_escape_typst_string_literal_quote() {
+        assert_eq!(escape_typst_string_literal("foo\"bar"), "foo\\\"bar");
+    }
+
+    #[test]
+    fn test_escape_typst_string_literal_both() {
+        assert_eq!(escape_typst_string_literal("a\\\"b"), "a\\\\\\\"b");
+    }
+
+    #[test]
+    fn test_link_url_with_quote() {
+        let md = "[t](https://x.invalid/?q=\"v\")";
+        let typst = markdown_to_typst(md);
+        // " must be escaped as \" inside the Typst string literal
+        assert!(
+            typst.contains("\\\""),
+            "double quote in URL must be escaped: {typst}"
+        );
+        // The #link call must be properly closed with )[
+        assert!(
+            typst.contains("#link(\"https://x.invalid/?q=\\\"v\\\"\")[t]"),
+            "unexpected output: {typst}"
+        );
+    }
+
+    #[test]
+    fn test_link_url_injection_attempt() {
+        // Attempt to inject Typst code via a crafted URL containing "
+        let md = "[t](https://x.invalid/\"#evil)";
+        let typst = markdown_to_typst(md);
+        // The " must be escaped as \" so the Typst string literal stays closed
+        assert!(
+            typst.contains("\\\"#evil"),
+            "quote must be escaped as \\\", got: {typst}"
+        );
+        // The link must close properly — the URL " did not terminate the string
+        assert!(
+            typst.contains(")[t]"),
+            "link must be properly closed, got: {typst}"
+        );
     }
 
     #[test]
