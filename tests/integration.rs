@@ -529,6 +529,201 @@ fn test_yank_exact_blockquote_fallback() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Structural visual line extraction tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_display_math_single_visual_line() {
+    // A single display math block should produce exactly 1 visual line.
+    // This was the main bug in the old flat-TextItem approach (Y tolerance splitting).
+    let md = "$$\\det(A) = \\sum_{\\sigma \\in S_n} \\varepsilon(\\sigma) \\prod_{i=1}^{n} a_{i,\\sigma(i)}$$\n";
+    let vlines = source_map_pipeline(md);
+    assert_eq!(
+        vlines.len(),
+        1,
+        "single display math should produce 1 visual line, got {}",
+        vlines.len()
+    );
+    assert!(
+        vlines[0].md_line_range.is_some(),
+        "display math visual line should have md_line_range"
+    );
+
+    // Formula with sub/superscripts should also be 1 visual line
+    let md2 = "$$e^{i\\theta} = \\cos\\theta + i\\sin\\theta$$\n";
+    let vlines2 = source_map_pipeline(md2);
+    assert_eq!(
+        vlines2.len(),
+        1,
+        "display math with sub/superscripts (Euler) should produce 1 visual line, got {}",
+        vlines2.len()
+    );
+}
+
+#[test]
+fn test_inline_math_no_line_split() {
+    // Inline math should not cause extra visual lines
+    let md_no_math = "The eigenvalue problem is called the characteristic equation.\n";
+    let md_with_math =
+        "The eigenvalue problem $\\det(A - \\lambda I) = 0$ is called the characteristic equation.\n";
+
+    let vlines_no = source_map_pipeline(md_no_math);
+    let vlines_with = source_map_pipeline(md_with_math);
+    assert_eq!(
+        vlines_no.len(),
+        vlines_with.len(),
+        "inline math should not change visual line count: without={}, with={}",
+        vlines_no.len(),
+        vlines_with.len()
+    );
+}
+
+#[test]
+fn test_math_showcase_visual_line_count() {
+    let md =
+        fs::read_to_string("tests/fixtures/10_math_showcase.md").expect("fixture should exist");
+    let vlines = source_map_pipeline(&md);
+
+    // The old flat approach produced ~151 visual lines due to Y tolerance splitting
+    // math into many fragments. The structural approach keeps math blocks whole
+    // (though long formulas still wrap). Should be well under the old count.
+    assert!(
+        vlines.len() < 151,
+        "math showcase should produce fewer visual lines than old approach (151), got {}",
+        vlines.len()
+    );
+    assert!(
+        vlines.len() >= 30,
+        "math showcase should produce at least 30 visual lines, got {}",
+        vlines.len()
+    );
+
+    // Every visual line should have source mapping
+    for (i, vl) in vlines.iter().enumerate() {
+        assert!(
+            vl.md_line_range.is_some(),
+            "math showcase vl {i} should have md_line_range, y_pt={:.1}",
+            vl.y_pt
+        );
+    }
+}
+
+#[test]
+fn test_code_block_lines_are_individual() {
+    let md = "# H\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n";
+    let vlines = source_map_pipeline(md);
+
+    // Filter to code block visual lines (md_line_range starting at line 3+)
+    let code_vls: Vec<usize> = vlines
+        .iter()
+        .enumerate()
+        .filter(|(_, vl)| vl.md_line_range.is_some_and(|(s, _)| s >= 3))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        code_vls.len(),
+        3,
+        "3-line code block should produce 3 visual lines, got {}",
+        code_vls.len()
+    );
+
+    // Each should have md_line_exact for per-line yank
+    for &idx in &code_vls {
+        assert!(
+            vlines[idx].md_line_exact.is_some(),
+            "code block visual line {idx} should have md_line_exact"
+        );
+    }
+}
+
+#[test]
+fn test_list_items_are_individual_visual_lines() {
+    let md = "- Apple\n- Banana\n- Cherry\n- Date\n";
+    let vlines = source_map_pipeline(md);
+
+    let list_vls: Vec<&mlux::tile::VisualLine> = vlines
+        .iter()
+        .filter(|vl| vl.md_line_range.is_some())
+        .collect();
+    assert_eq!(
+        list_vls.len(),
+        4,
+        "4 list items should produce 4 visual lines, got {}",
+        list_vls.len()
+    );
+}
+
+#[test]
+fn test_table_rows_are_individual_visual_lines() {
+    let md = "| H1 | H2 |\n|---|---|\n| A | B |\n| C | D |\n| E | F |\n";
+    let vlines = source_map_pipeline(md);
+
+    let table_vls: Vec<&mlux::tile::VisualLine> = vlines
+        .iter()
+        .filter(|vl| vl.md_line_range.is_some())
+        .collect();
+    // Header + 3 data rows = at least 4 visual lines
+    assert!(
+        table_vls.len() >= 4,
+        "table with header + 3 rows should produce >=4 visual lines, got {}",
+        table_vls.len()
+    );
+}
+
+#[test]
+fn test_nested_blockquote_known_limitation() {
+    // Nested blockquotes currently collapse into a single visual line.
+    // This documents the known limitation.
+    let md = "> Outer\n> > Inner\n> > More inner\n";
+    let vlines = source_map_pipeline(md);
+
+    let quote_vls: Vec<&mlux::tile::VisualLine> = vlines
+        .iter()
+        .filter(|vl| vl.md_line_range.is_some())
+        .collect();
+    assert_eq!(
+        quote_vls.len(),
+        1,
+        "nested blockquote currently produces 1 visual line (known limitation), got {}",
+        quote_vls.len()
+    );
+}
+
+#[test]
+fn test_heading_single_visual_line() {
+    let md = "## Section Title\n";
+    let vlines = source_map_pipeline(md);
+    assert_eq!(
+        vlines.len(),
+        1,
+        "single heading should produce 1 visual line, got {}",
+        vlines.len()
+    );
+    assert!(vlines[0].md_line_range.is_some());
+}
+
+#[test]
+fn test_horizontal_rule_no_visual_line() {
+    // Horizontal rules are Shapes (not text), so they don't produce visual lines.
+    // Only the surrounding text should appear.
+    let md = "Above\n\n---\n\nBelow\n";
+    let vlines = source_map_pipeline(md);
+
+    // Should have exactly 2 visual lines: "Above" and "Below"
+    assert_eq!(
+        vlines.len(),
+        2,
+        "hr doc should produce 2 visual lines (above + below), got {}",
+        vlines.len()
+    );
+
+    let yanked_first = yank_lines(md, &vlines, 0, 0);
+    assert_eq!(yanked_first, "Above");
+    let yanked_last = yank_lines(md, &vlines, 1, 1);
+    assert_eq!(yanked_last, "Below");
+}
+
 #[test]
 fn test_all_features_renders() {
     let markdown =

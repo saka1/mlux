@@ -72,39 +72,28 @@ pub fn extract_visual_lines_with_map(
         return Vec::new();
     }
 
-    // Collect (Y coordinate, representative Span) from all TextItem nodes.
-    let mut entries: Vec<(f64, Option<Span>)> = Vec::new();
-    collect_text_y_span(&document.pages[0].frame, Point::zero(), &mut entries);
-
-    // Sort and deduplicate by Y coordinate.
+    // Collect visual lines using frame tree structure.
     //
-    // Tolerance is 5pt: within a single visual line, different font sizes
-    // (e.g., 12pt body vs 10pt inline code) produce baseline offsets of
-    // up to ~2.6pt (0.59pt font metric diff + 2pt inset). The minimum
-    // inter-line gap is ~15pt (heading → body), so 5pt safely merges
-    // intra-line variants without collapsing separate lines.
-    const TOLERANCE_PT: f64 = 5.0;
+    // Instead of flattening all TextItems and grouping by Y tolerance (which
+    // breaks on math with superscripts/subscripts), we use the Frame tree's
+    // Group boundaries to determine visual lines. Groups that contain line
+    // structure (lists, tables, code blocks) are recursed into; leaf Groups
+    // (paragraphs, headings, display math) become single visual lines.
+    let mut raw_lines: Vec<(f64, Vec<Span>)> = Vec::new();
+    collect_visual_lines_structural(&document.pages[0].frame, Point::zero(), &mut raw_lines);
+    raw_lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Collect all span candidates per Y coordinate (not just one winner).
-    //
-    // A single visual line can have multiple TextItems with different spans.
-    // For example, a list item produces both a marker "•" (span points to the
-    // theme's `#set list(marker: ...)`) and the text body "Item 1" (span points
-    // to the content area). We keep all spans so that resolve can try each one
-    // and pick the first that maps to a content-area Markdown line.
+    // Merge lines at the same Y position (tolerance 5pt) to combine
+    // bare Text items (e.g., bullet markers) with adjacent Group lines.
     let mut deduped: Vec<(f64, Vec<Span>)> = Vec::new();
-    for (y, span) in entries {
+    for (y, spans) in raw_lines {
         if deduped
             .last()
-            .is_none_or(|(prev_y, _)| (y - prev_y).abs() > TOLERANCE_PT)
+            .is_none_or(|(prev_y, _)| (y - prev_y).abs() > 5.0)
         {
-            deduped.push((y, span.into_iter().collect()));
-        } else if let Some(last) = deduped.last_mut()
-            && let Some(s) = span
-        {
-            last.1.push(s);
+            deduped.push((y, spans));
+        } else if let Some(last) = deduped.last_mut() {
+            last.1.extend(spans);
         }
     }
 
@@ -295,21 +284,178 @@ fn byte_offset_to_line(source: &str, offset: usize) -> usize {
     source[..offset].bytes().filter(|&b| b == b'\n').count() + 1
 }
 
-/// Recursively collect (absolute Y, representative Span) from all TextItem nodes.
-fn collect_text_y_span(frame: &Frame, parent_offset: Point, out: &mut Vec<(f64, Option<Span>)>) {
+/// Collect visual lines from a frame using its tree structure.
+///
+/// Instead of flattening all TextItems, this uses Group boundaries to determine
+/// visual lines. A Group is either:
+/// - Recursed into (if it has line structure or a dominant child Group)
+/// - Emitted as a single visual line (leaf Group: paragraphs, headings, math)
+///
+/// Bare Text items (not inside a Group at this level) are collected into a
+/// pending buffer and flushed with Y-tolerance grouping.
+fn collect_visual_lines_structural(
+    frame: &Frame,
+    parent_offset: Point,
+    out: &mut Vec<(f64, Vec<Span>)>,
+) {
+    let mut pending_texts: Vec<(f64, Span)> = Vec::new();
+
     for (pos, item) in frame.items() {
         let abs = parent_offset + *pos;
         match item {
+            FrameItem::Tag(_) | FrameItem::Link(_, _) | FrameItem::Shape(_, _) => {}
+            FrameItem::Image(_, _, _) => {}
             FrameItem::Text(text) => {
-                let span = text.glyphs.first().map(|g| g.span.0);
-                out.push((abs.y.to_pt(), span));
+                if let Some(span) = text.glyphs.first().map(|g| g.span.0) {
+                    pending_texts.push((abs.y.to_pt(), span));
+                }
             }
             FrameItem::Group(group) => {
-                collect_text_y_span(&group.frame, abs, out);
+                if should_recurse(&group.frame) {
+                    // Flush pending texts before recursing
+                    flush_pending_texts(&mut pending_texts, out);
+                    collect_visual_lines_structural(&group.frame, abs, out);
+                } else {
+                    // Flush pending texts before emitting group line
+                    flush_pending_texts(&mut pending_texts, out);
+                    // Emit the entire Group as one visual line
+                    let baseline_y = find_representative_baseline(&group.frame, abs);
+                    let spans = collect_all_spans_recursive(&group.frame);
+                    if !spans.is_empty() {
+                        out.push((baseline_y, spans));
+                    }
+                }
+            }
+        }
+    }
+
+    // Flush any remaining pending texts
+    flush_pending_texts(&mut pending_texts, out);
+}
+
+/// Check whether a Group frame should be recursed into for visual line extraction.
+fn should_recurse(frame: &Frame) -> bool {
+    has_line_structure(frame) || has_dominant_child_group(frame)
+}
+
+/// Check if child Groups are arranged vertically without overlap (line structure).
+///
+/// Returns true when there are 2+ child Groups arranged top-to-bottom,
+/// indicating the Group contains multiple visual lines (e.g., lists, tables).
+fn has_line_structure(frame: &Frame) -> bool {
+    let mut child_groups: Vec<(f64, f64)> = Vec::new(); // (y, h)
+    for (pos, item) in frame.items() {
+        if let FrameItem::Group(g) = item {
+            child_groups.push((pos.y.to_pt(), g.frame.size().y.to_pt()));
+        }
+    }
+    if child_groups.len() < 2 {
+        return false;
+    }
+    child_groups.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // Check that each child Group starts at or after the previous one ends (1pt tolerance)
+    child_groups
+        .windows(2)
+        .all(|w| w[1].0 >= w[0].0 + w[0].1 - 1.0)
+}
+
+/// Check if any child Group occupies more than 50% of the parent's height.
+///
+/// This catches containers like code blocks where a single large child Group
+/// holds the actual line content.
+fn has_dominant_child_group(frame: &Frame) -> bool {
+    let parent_h = frame.size().y.to_pt();
+    if parent_h <= 0.0 {
+        return false;
+    }
+    frame.items().any(|(_, item)| {
+        if let FrameItem::Group(g) = item {
+            g.frame.size().y.to_pt() > parent_h * 0.5
+        } else {
+            false
+        }
+    })
+}
+
+/// Find the Y coordinate of the first TextItem in a Group (used as baseline).
+fn find_representative_baseline(frame: &Frame, offset: Point) -> f64 {
+    for (pos, item) in frame.items() {
+        let abs_y = offset.y.to_pt() + pos.y.to_pt();
+        match item {
+            FrameItem::Text(_) => return abs_y,
+            FrameItem::Group(g) => {
+                let child_offset = Point::new(offset.x + pos.x, offset.y + pos.y);
+                // Recurse to find first text
+                let result = find_representative_baseline_inner(&g.frame, child_offset);
+                if let Some(y) = result {
+                    return y;
+                }
             }
             _ => {}
         }
     }
+    // Fallback: use the offset Y itself
+    offset.y.to_pt()
+}
+
+/// Inner recursive helper for find_representative_baseline.
+fn find_representative_baseline_inner(frame: &Frame, offset: Point) -> Option<f64> {
+    for (pos, item) in frame.items() {
+        let abs_y = offset.y.to_pt() + pos.y.to_pt();
+        match item {
+            FrameItem::Text(_) => return Some(abs_y),
+            FrameItem::Group(g) => {
+                let child_offset = Point::new(offset.x + pos.x, offset.y + pos.y);
+                if let Some(y) = find_representative_baseline_inner(&g.frame, child_offset) {
+                    return Some(y);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Recursively collect all Spans from TextItems within a Group.
+fn collect_all_spans_recursive(frame: &Frame) -> Vec<Span> {
+    let mut spans = Vec::new();
+    collect_spans_inner(frame, &mut spans);
+    spans
+}
+
+fn collect_spans_inner(frame: &Frame, out: &mut Vec<Span>) {
+    for (_, item) in frame.items() {
+        match item {
+            FrameItem::Text(text) => {
+                if let Some(span) = text.glyphs.first().map(|g| g.span.0) {
+                    out.push(span);
+                }
+            }
+            FrameItem::Group(g) => {
+                collect_spans_inner(&g.frame, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Flush pending bare Text items into visual lines, grouping by Y with 5pt tolerance.
+fn flush_pending_texts(pending: &mut Vec<(f64, Span)>, out: &mut Vec<(f64, Vec<Span>)>) {
+    if pending.is_empty() {
+        return;
+    }
+    pending.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    for &(y, span) in pending.iter() {
+        if out
+            .last()
+            .is_none_or(|(prev_y, _)| (y - prev_y).abs() > 5.0)
+        {
+            out.push((y, vec![span]));
+        } else if let Some(last) = out.last_mut() {
+            last.1.push(span);
+        }
+    }
+    pending.clear();
 }
 
 /// Extract Markdown source lines corresponding to a range of visual lines.

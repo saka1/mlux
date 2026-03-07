@@ -18,11 +18,18 @@ The built-in terminal viewer then displays the rendered document directly in you
 
 - **Beautiful output** -- Typst's typesetting engine handles line breaking, paragraph
   spacing, headings, code blocks, tables, blockquotes, and more.
+- **Images and math** -- Local images and LaTeX math formulas (`$...$`, `$$...$$`) are
+  rendered inline.
 - **Terminal viewer** -- View rendered Markdown directly in your terminal with
   pixel-precise line numbers, vim-style scrolling, and tile-based lazy rendering.
   Requires a terminal that supports the Kitty Graphics Protocol (e.g. Ghostty, Kitty).
-- **Heading picker** -- Press `/` to open an interactive picker that lists headings and jumps to your selection.
+- **Link navigation** -- Press `No` on a local `.md` link to jump to that file (tag-jump).
+  `Ctrl-O` returns to the previous file with scroll position restored.
+- **Search** -- Press `/` to grep Markdown source lines with regex and jump to matches.
+- **URL picker** -- Press `O` to list all URLs in the document and open one in your browser.
+- **Yank** -- Copy source lines or blocks to clipboard via OSC 52 (`Ny`, `NY`).
 - **File watching** -- Automatically re-renders when the source file changes.
+- **Stdin support** -- Pipe Markdown via stdin: `cat README.md | mlux -`.
 
 ## Requirements
 
@@ -57,9 +64,13 @@ mlux render input.md -o output.png --width 800 --ppi 144 --theme catppuccin
 | `d` / `u` | Half-page down / up |
 | `g` / `G` | Jump to top / bottom |
 | `[N]g` / `[N]G` | Jump to line N |
-| `/` | Search headings |
+| `/` | Search (regex grep) |
 | `n` / `N` | Next / previous search match |
-| `y` / `Y` | Yank line / block |
+| `[N]o` | Open URL on line N (jumps to local `.md` files) |
+| `O` | URL picker (all URLs) |
+| `Ctrl-O` | Go back (after link navigation) |
+| `[N]y` / `[N]Y` | Yank line / block N |
+| `:` | Command mode (`:q`, `:reload`, `:open`, `:back`) |
 | `q` | Quit |
 
 ## Configuration

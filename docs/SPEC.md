@@ -49,13 +49,26 @@
 
 OSC 52 でクリップボードに送信。`md_line_range` のない行は失敗 (flash 通知)。
 
-### URL
+### URL / Link Navigation
 
 | Key | Action |
 |-----|--------|
 | `No` | N 行目の URL を開く (単一なら直接、複数なら picker) |
 | `o` | prefix なし → ヒント flash 表示 |
 | `O` | 全 URL の picker を開く |
+
+ローカル `.md` / `.markdown` リンクは外部ブラウザではなくビューア内でジャンプする (tag-jump)。
+Web URL (`http://`, `https://`, `mailto:`) は従来通りブラウザで開く。
+
+### Go Back (Link Navigation Stack)
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-O` | ジャンプスタックを pop して前のファイルに戻る |
+
+- スクロール位置 (`y_offset`) も復元される
+- スタックが空の場合は `"No previous file"` flash を表示して何もしない
+- `:back` / `:b` コマンドでも同じ動作
 
 ### Search Navigation
 
@@ -125,6 +138,7 @@ Last row:  ステータスバー    ← マッチ数 + キーヒント
 | `:quit` | `:q` | 終了 |
 | `:reload` | `:rel` | config.toml 再読み込み (CLI override 維持) |
 | `:open` | — | 全 URL の picker を開く |
+| `:back` | `:b` | ジャンプスタックを pop して前のファイルに戻る |
 
 未知のコマンドは flash メッセージ表示して Normal に戻る。
 
