@@ -87,6 +87,10 @@ enum Command {
         /// Dump frame tree to stderr
         #[arg(long)]
         dump: bool,
+
+        /// Disable Landlock filesystem sandbox
+        #[arg(long)]
+        no_sandbox: bool,
     },
 }
 
@@ -140,8 +144,9 @@ fn main() {
             input,
             output,
             dump,
+            no_sandbox,
             ..
-        }) => cmd_render(input, &config, output, dump),
+        }) => cmd_render(input, &config, output, dump, no_sandbox),
         None => {
             let input_source = if input::is_stdin_input(cli.input.as_deref()) {
                 InputSource::Stdin(input::StdinReader::new())
@@ -169,7 +174,13 @@ fn main() {
     }
 }
 
-fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bool) -> Result<()> {
+fn cmd_render(
+    input: PathBuf,
+    config: &config::Config,
+    output: PathBuf,
+    dump: bool,
+    no_sandbox: bool,
+) -> Result<()> {
     let pipeline_start = Instant::now();
 
     let width = config.width;
@@ -235,6 +246,26 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
         return Ok(());
     }
 
+    // Apply filesystem sandbox before Typst compilation.
+    // All file reads (markdown, images, fonts) are complete at this point.
+    let read_base = if is_stdin {
+        None
+    } else {
+        Some(
+            input
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .canonicalize()
+                .context("failed to canonicalize input directory")?,
+        )
+    };
+    let output_parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(output_parent).ok();
+    let output_dir_canonical = output_parent
+        .canonicalize()
+        .context("failed to canonicalize output directory")?;
+    mlux::sandbox::enforce_fs_sandbox(read_base.as_deref(), &output_dir_canonical, no_sandbox)?;
+
     let tiled_doc = build_tiled_document(&BuildParams {
         theme_text,
         data_files: mlux::theme::data_files(theme),
@@ -259,14 +290,11 @@ fn cmd_render(input: PathBuf, config: &config::Config, output: PathBuf, dump: bo
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
-    fs::create_dir_all(parent).ok();
-
     let mut files = Vec::new();
     for i in 0..tiled_doc.tile_count() {
         let png_data = tiled_doc.render_tile(i)?;
         let filename = format!("{}-{:03}.{}", stem, i, ext);
-        let path = parent.join(&filename);
+        let path = output_parent.join(&filename);
         fs::write(&path, &png_data)
             .with_context(|| format!("failed to write {}", path.display()))?;
         files.push((filename, png_data.len()));

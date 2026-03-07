@@ -3,6 +3,7 @@ pub mod convert;
 pub mod image;
 pub mod input;
 pub mod render;
+pub mod sandbox;
 pub mod theme;
 pub mod tile;
 pub mod url;
