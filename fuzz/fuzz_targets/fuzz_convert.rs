@@ -1,27 +1,22 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use mlux::convert::{markdown_to_typst, markdown_to_typst_with_map};
+use mlux::pipeline::markdown_to_typst;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(markdown) = std::str::from_utf8(data) else {
         return;
     };
 
-    // Run both APIs — they must not panic.
-    let simple = markdown_to_typst(markdown);
-    let (with_map, source_map) = markdown_to_typst_with_map(markdown, None);
-
-    // Both must produce identical Typst output.
-    assert_eq!(simple, with_map);
+    let (typst, source_map) = markdown_to_typst(markdown, None);
 
     // SourceMap ranges must be within bounds.
     for block in &source_map.blocks {
         assert!(
-            block.typst_byte_range.end <= with_map.len(),
+            block.typst_byte_range.end <= typst.len(),
             "typst_byte_range {:?} out of bounds (len={})",
             block.typst_byte_range,
-            with_map.len(),
+            typst.len(),
         );
         assert!(
             block.md_byte_range.end <= markdown.len(),

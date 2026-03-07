@@ -153,7 +153,7 @@ use std::num::ParseIntError;   Y=1373.5pt
 
 ### 採用した対策: 変換時にスペース文字を挿入
 
-`convert.rs` の `fill_blank_lines()` で、コードブロック内の空行に
+`markup.rs` の `fill_blank_lines()` で、コードブロック内の空行に
 スペース1文字を挿入する。
 
 ```

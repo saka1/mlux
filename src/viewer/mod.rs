@@ -240,7 +240,7 @@ pub fn run(
         let loaded_set = image_files.key_set();
 
         let (content_text, source_map) =
-            crate::pipeline::markdown_to_typst_with_map(&markdown, Some(&loaded_set));
+            crate::pipeline::markdown_to_typst(&markdown, Some(&loaded_set));
 
         // 5b. Build document (content + sidebar compiled & split)
         //

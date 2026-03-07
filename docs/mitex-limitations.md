@@ -90,5 +90,5 @@ mitex (`mitex::convert_math`) は LaTeX 数式を Typst 数式構文に変換す
 ## 今後の方針
 
 - [x] ~~mitex 出力の後処理層~~ → `themes/mitex-compat.typ` で Typst 側の互換シムとして実装済み
-- [ ] `\partial` → `partial`（非推奨 `diff` 回避）の後処理を `convert.rs` に追加
+- [ ] `\partial` → `partial`（非推奨 `diff` 回避）の後処理を `markup.rs` に追加
 - [ ] mitex upstream の issue/PR を確認して対応状況をウォッチ

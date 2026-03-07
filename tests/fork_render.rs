@@ -6,11 +6,10 @@
 
 use mlux::fork_render::{Request, Response, spawn_renderer};
 use mlux::image::LoadedImages;
-use mlux::pipeline::{
-    BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, FontCache, build_tiled_document,
-    markdown_to_typst_with_map,
-};
+use mlux::pipeline::{BuildParams, FontCache, build_tiled_document, markdown_to_typst};
 use mlux::tile::VisibleTiles;
+
+const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 
 fn load_theme() -> &'static str {
     mlux::theme::get("catppuccin").expect("built-in theme should exist")
@@ -19,7 +18,7 @@ fn load_theme() -> &'static str {
 fn test_fork_render_matches_local() {
     let md = "# Hello\n\nSome **bold** text.\n\n- Item 1\n- Item 2\n";
     let theme_text = load_theme();
-    let (content_text, source_map) = markdown_to_typst_with_map(md, None);
+    let (content_text, source_map) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
 
     let params = BuildParams {
@@ -74,7 +73,7 @@ fn test_fork_render_matches_local() {
 fn test_fork_render_metadata_methods() {
     let md = "# Title\n\nParagraph.\n";
     let theme_text = load_theme();
-    let (content_text, source_map) = markdown_to_typst_with_map(md, None);
+    let (content_text, source_map) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
 
     let params = BuildParams {

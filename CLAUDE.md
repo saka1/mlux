@@ -13,7 +13,7 @@ Includes a terminal viewer using Kitty Graphics Protocol with tile-based lazy re
 ### Render pipeline (`mlux render`)
 
 ```
-Markdown → pulldown-cmark → Event stream → pipeline/convert.rs → Typst markup
+Markdown → pulldown-cmark → Event stream → pipeline/markup.rs → Typst markup
   → pipeline/world.rs (single main.typ: theme + width + content)
   → pipeline/render.rs: typst::compile → PagedDocument → typst_render → PNG
 ```
@@ -21,7 +21,7 @@ Markdown → pulldown-cmark → Event stream → pipeline/convert.rs → Typst m
 ### Terminal viewer pipeline (`mlux <file>`)
 
 ```
-Markdown → pipeline/convert.rs → Typst markup (with SourceMap)
+Markdown → pipeline/markup.rs → Typst markup (with SourceMap)
   → pipeline/render.rs: compile_document() → PagedDocument
   → tile.rs: split_frame() → Vec<Frame> (vertical tiles)
   → TiledDocument: lazy per-tile PNG rendering with LRU cache
@@ -67,19 +67,19 @@ Two-layer config: `ConfigFile` (TOML deserialization, all `Option`) → `Config`
 with defaults). Config loaded from `~/.config/mlux/config.toml` (respects `$XDG_CONFIG_HOME`).
 CLI args override config via `CliOverrides`, which are preserved across live config reloads.
 
-### Source mapping (`convert.rs` → `tile.rs`)
+### Source mapping (`markup.rs` → `tile.rs`)
 
-`markdown_to_typst_with_map()` produces both Typst markup and a `SourceMap` that maps
+`markdown_to_typst()` produces both Typst markup and a `SourceMap` that maps
 Typst byte offsets back to Markdown line numbers. `tile.rs` uses this to annotate each
 `VisualLine` with `md_line_range` for sidebar line numbers and yank operations.
 
 ## Key Files
 
-- `src/pipeline/` — Render pipeline submodules (convert, world, render, build)
+- `src/pipeline/` — Render pipeline submodules (markup, world, render, build)
   - `convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, Container enum + stack for nested markup)
   - `world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
   - `render.rs` — Typst compile (`compile_document`) + tile PNG render (`render_frame_to_png`) + debug dump
-  - `build.rs` — BuildParams, build_tiled_document (orchestrates convert→world→render→tile)
+  - `build.rs` — BuildParams, build_tiled_document (orchestrates markup→world→render→tile)
 - `src/tile.rs` — Tile-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
 - `src/viewer/` — Terminal viewer (see Viewer architecture above)
 - `src/config.rs` — Config file loading, CLI override merging, default resolution
@@ -174,6 +174,6 @@ All configurable via `~/.config/mlux/config.toml` (defaults shown):
 - FontBook uses lowercased family names for lookups
 - The `typst/` directory contains typst source for API reference only (not used as dependency)
 - typst-kit feature name is `embed-fonts` (not `embedded-fonts`)
-- pipeline/convert.rs uses a Container enum + stack for nested markup state tracking
+- `pipeline/markup.rs` uses a Container enum + stack for nested markup state tracking
 - File watcher monitors the parent directory (not the file itself) because Linux inotify
   loses the watch handle on atomic-save (rename)

@@ -2,8 +2,7 @@ use std::fs;
 
 use mlux::image::LoadedImages;
 use mlux::pipeline::{
-    FontCache, MluxWorld, compile_document, markdown_to_typst, markdown_to_typst_with_map,
-    render_frame_to_png,
+    FontCache, MluxWorld, compile_document, markdown_to_typst, render_frame_to_png,
 };
 use mlux::tile::{
     SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
@@ -18,7 +17,7 @@ fn test_paragraph_ja_renders() {
     let markdown =
         fs::read_to_string("tests/fixtures/01_paragraph_ja.md").expect("fixture should exist");
     let theme = load_theme();
-    let content = markdown_to_typst(&markdown);
+    let content = markdown_to_typst(&markdown, None).0;
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -51,7 +50,7 @@ fn test_paragraph_ja_renders() {
 #[test]
 fn test_empty_input() {
     let theme = load_theme();
-    let content = markdown_to_typst("");
+    let content = markdown_to_typst("", None).0;
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -74,7 +73,7 @@ fn test_full_document_renders() {
     let markdown =
         fs::read_to_string("tests/fixtures/07_full_document.md").expect("fixture should exist");
     let theme = load_theme();
-    let content = markdown_to_typst(&markdown);
+    let content = markdown_to_typst(&markdown, None).0;
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -110,7 +109,7 @@ fn test_full_document_renders() {
 #[test]
 fn test_convert_escapes_typst_chars() {
     let md = "Price is $100 and use #hashtag";
-    let typst = markdown_to_typst(md);
+    let typst = markdown_to_typst(md, None).0;
     assert!(typst.contains("\\$100"), "$ should be escaped");
     assert!(typst.contains("\\#hashtag"), "# should be escaped");
 }
@@ -128,7 +127,7 @@ const WIDTH_PT: f64 = 400.0;
 fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
-    let (content, source_map) = markdown_to_typst_with_map(md, None);
+    let (content, source_map) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -729,7 +728,7 @@ fn test_all_features_renders() {
     let markdown =
         fs::read_to_string("tests/fixtures/09_all_features.md").expect("fixture should exist");
     let theme = load_theme();
-    let content = markdown_to_typst(&markdown);
+    let content = markdown_to_typst(&markdown, None).0;
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -799,7 +798,7 @@ fn test_image_renders() {
     );
 
     let loaded_set = image_files.key_set();
-    let (content, _source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
+    let (content, _source_map) = markdown_to_typst(&markdown, Some(&loaded_set));
 
     // Verify #image() is in the generated Typst
     assert!(

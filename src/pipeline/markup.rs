@@ -100,12 +100,7 @@ pub fn extract_image_paths(markdown: &str) -> Vec<String> {
     paths
 }
 
-/// Convert Markdown text to Typst markup (compatibility wrapper).
-pub fn markdown_to_typst(markdown: &str) -> String {
-    markdown_to_typst_with_map(markdown, None).0
-}
-
-/// Convert Markdown text to Typst markup with source mapping.
+/// Convert Markdown text to Typst markup.
 ///
 /// `available_images` is the set of image paths that were successfully loaded.
 /// When `Some`, images in the set produce `#image()` calls; others produce a
@@ -113,7 +108,7 @@ pub fn markdown_to_typst(markdown: &str) -> String {
 ///
 /// Returns the Typst markup string and a `SourceMap` that maps Typst byte
 /// ranges back to the original Markdown byte ranges (block-level granularity).
-pub fn markdown_to_typst_with_map(
+pub fn markdown_to_typst(
     markdown: &str,
     available_images: Option<&HashSet<String>>,
 ) -> (String, SourceMap) {
@@ -755,10 +750,14 @@ fn escape_typst_string_literal(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn md_to_typst(s: &str) -> String {
+        markdown_to_typst(s, None).0
+    }
+
     #[test]
     fn test_plain_text() {
         let md = "Hello, world!";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert_eq!(typst, "Hello, world!\n");
     }
 
@@ -775,7 +774,7 @@ mod tests {
     fn test_emph_followed_by_paren() {
         // crash-e263b8df: **Note*(: → \*#emph[Note](: → Typst が関数呼び出しと誤解釈
         let md = "**Note*(: text";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             !typst.contains("]("),
             "'](' は Typst が関数引数と解釈するため不可: {typst}"
@@ -790,7 +789,7 @@ mod tests {
     fn test_bracket_in_heading() {
         // crash-b305e5d4: ## text](url) → ] が Typst の unexpected closing bracket
         let md = "## エanguage](https://docs.invalid/book/) を参照。";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             !typst.contains("]("),
             "'](' は Typst がコンテントブロック閉じと解釈するため不可: {typst}"
@@ -804,7 +803,7 @@ mod tests {
     #[test]
     fn test_brackets_in_text() {
         let md = "配列 arr[0] と [注釈] を含む文";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("arr\\[0\\]"),
             "テキスト中の角括弧はエスケープされるべき: {typst}"
@@ -818,7 +817,7 @@ mod tests {
     #[test]
     fn test_link_text_with_bracket() {
         let md = "[foo]bar](https://example.invalid/)";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // 構造的な ] は convert.rs が直接 push、テキスト中の ] は escape される
         assert!(
             !typst.contains("bar]("),
@@ -829,7 +828,7 @@ mod tests {
     #[test]
     fn test_parens_in_text() {
         let md = "関数 foo(x, y) を呼ぶ";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("foo\\(x, y\\)"),
             "テキスト中の括弧はエスケープされるべき: {typst}"
@@ -839,7 +838,7 @@ mod tests {
     #[test]
     fn test_strong_followed_by_paren() {
         let md = "**bold** (note)";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             !typst.contains("]("),
             "'](' は Typst が関数引数と解釈するため不可: {typst}"
@@ -849,35 +848,35 @@ mod tests {
     #[test]
     fn test_soft_break() {
         let md = "line1\nline2";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert_eq!(typst, "line1\nline2\n");
     }
 
     #[test]
     fn test_hard_break() {
         let md = "line1  \nline2";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert_eq!(typst, "line1\\ \nline2\n");
     }
 
     #[test]
     fn test_japanese_text() {
         let md = "日本語のテスト。句読点「、」も正しく処理される。";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("日本語のテスト。"));
     }
 
     #[test]
     fn test_multiple_paragraphs() {
         let md = "段落1。\n\n段落2。";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert_eq!(typst, "段落1。\n\n段落2。\n");
     }
 
     #[test]
     fn test_heading() {
         let md = "# Title\n\n## Subtitle";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("= Title\n"));
         assert!(typst.contains("== Subtitle\n"));
     }
@@ -885,7 +884,7 @@ mod tests {
     #[test]
     fn test_bold_italic() {
         let md = "**bold** and *italic*";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("#strong[bold]"));
         assert!(typst.contains("#emph[italic]"));
     }
@@ -896,7 +895,7 @@ mod tests {
         // \*\*Note_ks_: causing "unclosed delimiter" in Typst.
         // Function syntax (#emph[...]) avoids this class of bugs.
         let md = "**Note*ks*: hello";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("#emph[ks]"),
             "should use #emph[] function syntax, got: {typst}"
@@ -910,14 +909,14 @@ mod tests {
     #[test]
     fn test_strikethrough() {
         let md = "~~deleted~~";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("#strike[deleted]"));
     }
 
     #[test]
     fn test_inline_code() {
         let md = "Use `Result<T, E>` type";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("`Result<T, E>`"));
     }
 
@@ -925,7 +924,7 @@ mod tests {
     fn test_inline_code_with_backticks() {
         // pulldown-cmark parses `` ` `` as Code("`")
         let md = "Use `` ` `` in code";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("#raw(\"`\")"),
             "expected #raw() call for backtick-containing code, got: {typst}"
@@ -936,7 +935,7 @@ mod tests {
     fn test_inline_code_with_triple_backticks() {
         // pulldown-cmark parses `` ` ``` ` `` as Code("```")
         let md = "` ``` `";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("#raw(\"```\")"),
             "expected #raw() for triple backticks, got: {typst}"
@@ -950,7 +949,7 @@ mod tests {
     #[test]
     fn test_inline_code_with_backticks_in_table() {
         let md = "| Header |\n|--------|\n| `` ` `` |";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("#table("),
             "expected table markup, got: {typst}"
@@ -964,14 +963,14 @@ mod tests {
     #[test]
     fn test_link() {
         let md = "[Rust](https://rust.invalid/)";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("#link(\"https://rust.invalid/\")[Rust]"));
     }
 
     #[test]
     fn test_link_empty_url() {
         let md = "[link]()";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             !typst.contains("#link"),
             "empty URL should not produce #link"
@@ -997,7 +996,7 @@ mod tests {
     #[test]
     fn test_link_url_with_quote() {
         let md = "[t](https://x.invalid/?q=\"v\")";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // " must be escaped as \" inside the Typst string literal
         assert!(
             typst.contains("\\\""),
@@ -1014,7 +1013,7 @@ mod tests {
     fn test_link_url_injection_attempt() {
         // Attempt to inject Typst code via a crafted URL containing "
         let md = "[t](https://x.invalid/\"#evil)";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // The " must be escaped as \" so the Typst string literal stays closed
         assert!(
             typst.contains("\\\"#evil"),
@@ -1030,14 +1029,14 @@ mod tests {
     #[test]
     fn test_code_block() {
         let md = "```rust\nfn main() {}\n```";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("```rust\nfn main() {}\n```"));
     }
 
     #[test]
     fn test_unordered_list() {
         let md = "- item1\n- item2";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("- item1\n"));
         assert!(typst.contains("- item2\n"));
     }
@@ -1045,7 +1044,7 @@ mod tests {
     #[test]
     fn test_ordered_list() {
         let md = "1. first\n2. second";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("+ first\n"));
         assert!(typst.contains("+ second\n"));
     }
@@ -1053,7 +1052,7 @@ mod tests {
     #[test]
     fn test_blockquote() {
         let md = "> quoted text";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("#quote(block: true)["));
         assert!(typst.contains("quoted text"));
     }
@@ -1061,7 +1060,7 @@ mod tests {
     #[test]
     fn test_horizontal_rule() {
         let md = "before\n\n---\n\nafter";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("#line(length: 100%)"));
     }
 
@@ -1070,7 +1069,7 @@ mod tests {
         // pulldown-cmark parses "+\t---" as an unordered list item containing
         // a thematic break (Rule event), not plain text.
         let md = "+\t---\t\t";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("- "), "should produce unordered list marker");
         assert!(
             typst.contains("#line(length: 100%)"),
@@ -1083,7 +1082,7 @@ mod tests {
         // crash-823d13a0: list item containing --- emitted a Rule source mapping
         // that overlapped with the enclosing List block mapping.
         let md = "+\t---\t\t";
-        let (typst, map) = markdown_to_typst_with_map(md, None);
+        let (typst, map) = markdown_to_typst(md, None);
         for pair in map.blocks.windows(2) {
             assert!(
                 pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
@@ -1104,7 +1103,7 @@ mod tests {
     #[test]
     fn test_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("#table(columns: 2,"));
         assert!(typst.contains("[A]"));
         assert!(typst.contains("[B]"));
@@ -1116,7 +1115,7 @@ mod tests {
     fn test_code_block_no_escape() {
         // Characters inside code blocks should NOT be escaped
         let md = "```\n#hello *world* $100\n```";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("#hello *world* $100"),
             "Code block content should not be escaped, got: {typst}"
@@ -1126,7 +1125,7 @@ mod tests {
     #[test]
     fn test_code_block_blank_lines_filled() {
         let md = "```\nline1\n\nline3\n```";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // Blank line should be replaced with a space
         assert!(
             typst.contains("line1\n \nline3"),
@@ -1137,7 +1136,7 @@ mod tests {
     #[test]
     fn test_code_block_multiple_blank_lines() {
         let md = "```\nline1\n\n\nline4\n```";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // Two consecutive blank lines should each get a space
         assert!(
             typst.contains("line1\n \n \nline4"),
@@ -1148,7 +1147,7 @@ mod tests {
     #[test]
     fn test_code_block_containing_backtick_fence() {
         let md = "````\n```rust\nfn main() {}\n```\n````";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // The generated fence must be longer than the 3-backtick run inside
         assert!(
             typst.contains("````"),
@@ -1174,7 +1173,7 @@ mod tests {
     fn test_blockquote_depth_capped() {
         // 15段ネスト → 最初の10段のみ #quote 出力
         let input = "> ".repeat(15) + "deep";
-        let result = markdown_to_typst(&input);
+        let result = md_to_typst(&input);
         let quote_count = result.matches("#quote(block: true)[").count();
         assert_eq!(quote_count, MAX_BLOCKQUOTE_DEPTH);
         assert!(result.contains("deep"));
@@ -1191,7 +1190,7 @@ mod tests {
     #[test]
     fn test_nested_unordered_list() {
         let md = "- a\n  - b\n- c";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("- a\n  - b\n- c"),
             "nested unordered list should be indented, got: {typst}"
@@ -1201,7 +1200,7 @@ mod tests {
     #[test]
     fn test_nested_ordered_list() {
         let md = "1. a\n   1. b\n2. c";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("+ a\n  + b\n+ c"),
             "nested ordered list should be indented, got: {typst}"
@@ -1211,7 +1210,7 @@ mod tests {
     #[test]
     fn test_nested_mixed_list() {
         let md = "- a\n  1. b\n- c";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("- a\n  + b\n- c"),
             "nested mixed list should be indented, got: {typst}"
@@ -1222,7 +1221,7 @@ mod tests {
     fn test_deeply_nested_list() {
         // 10 levels deep — depth should cap at 7
         let md = "- L0\n  - L1\n    - L2\n      - L3\n        - L4\n          - L5\n            - L6\n              - L7\n                - L8\n                  - L9";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // Level 8 and 9 should both be capped at 7 (14 spaces indent)
         let max_indent = typst
             .lines()
@@ -1239,7 +1238,7 @@ mod tests {
     fn test_loose_unordered_list() {
         // Loose list (blank line between items): text must follow marker directly
         let md = "- a\n\n- b";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("- a\n"),
             "first item text should follow marker: {typst}"
@@ -1258,7 +1257,7 @@ mod tests {
     fn test_loose_ordered_list() {
         // Loose ordered list: text must follow + marker directly
         let md = "1. a\n\n2. b";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("+ a\n"),
             "first item text should follow marker: {typst}"
@@ -1277,7 +1276,7 @@ mod tests {
     fn test_list_item_softbreak() {
         // SoftBreak inside a list item must produce indented continuation
         let md = "- first\nsecond";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("- first\n  second"),
             "continuation line should be indented by 2 spaces: {typst}"
@@ -1288,7 +1287,7 @@ mod tests {
     fn test_loose_nested_list() {
         // Nested loose list: inner items should be properly indented
         let md = "- outer\n\n  - inner1\n\n  - inner2";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(typst.contains("- outer\n"), "outer item: {typst}");
         assert!(
             typst.contains("  - inner1\n"),
@@ -1305,7 +1304,7 @@ mod tests {
         // SoftBreak outside a list should NOT add indentation
         // (regression: ensure non-list SoftBreak is unchanged)
         let md = "para line1\nline2";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert_eq!(
             typst, "para line1\nline2\n",
             "non-list softbreak should not add indent"
@@ -1315,7 +1314,7 @@ mod tests {
     #[test]
     fn test_inline_math() {
         let md = "The formula $\\frac{a}{b}$ is inline.";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("$") && typst.contains("frac"),
             "inline math should produce Typst $...$ with converted content, got: {typst}"
@@ -1330,7 +1329,7 @@ mod tests {
     #[test]
     fn test_display_math() {
         let md = "$$\n\\sum_{i=1}^{n} x_i\n$$";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("$") && typst.contains("sum"),
             "display math should produce Typst $ ... $ with converted content, got: {typst}"
@@ -1340,7 +1339,7 @@ mod tests {
     #[test]
     fn test_inline_math_simple() {
         let md = "Value $x + y$ here.";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         // mitex adds spacing around operators; just verify it's wrapped in $...$
         assert!(
             typst.contains("$") && typst.contains("x") && typst.contains("y"),
@@ -1355,7 +1354,7 @@ mod tests {
     #[test]
     fn test_math_in_table() {
         let md = "| Formula |\n|---------|\n| $x^2$ |";
-        let typst = markdown_to_typst(md);
+        let typst = md_to_typst(md);
         assert!(
             typst.contains("#table("),
             "should produce table, got: {typst}"
@@ -1369,7 +1368,7 @@ mod tests {
     #[test]
     fn test_display_math_source_map() {
         let md = "before\n\n$$\nx^2\n$$\n\nafter";
-        let (_typst, map) = markdown_to_typst_with_map(md, None);
+        let (_typst, map) = markdown_to_typst(md, None);
         // Display math should produce a source map block
         assert!(
             map.blocks.len() >= 2,
@@ -1391,7 +1390,7 @@ mod tests {
     fn test_image_basic() {
         let md = "![alt](photo.png)";
         let available: HashSet<String> = ["photo.png".to_string()].into_iter().collect();
-        let typst = markdown_to_typst_with_map(md, Some(&available)).0;
+        let typst = markdown_to_typst(md, Some(&available)).0;
         assert!(
             typst.contains("#image(\"photo.png\", width: 100%)"),
             "should contain #image() call, got: {typst}"
@@ -1402,7 +1401,7 @@ mod tests {
     fn test_image_alt_suppressed() {
         let md = "![alt text](photo.png)";
         let available: HashSet<String> = ["photo.png".to_string()].into_iter().collect();
-        let typst = markdown_to_typst_with_map(md, Some(&available)).0;
+        let typst = markdown_to_typst(md, Some(&available)).0;
         assert!(
             !typst.contains("alt text"),
             "alt text should be suppressed, got: {typst}"
@@ -1413,7 +1412,7 @@ mod tests {
     fn test_image_missing() {
         let md = "![alt](missing.png)";
         let available: HashSet<String> = HashSet::new();
-        let typst = markdown_to_typst_with_map(md, Some(&available)).0;
+        let typst = markdown_to_typst(md, Some(&available)).0;
         assert!(
             typst.contains("#block(fill: luma(230)"),
             "missing image should produce placeholder, got: {typst}"
@@ -1427,7 +1426,7 @@ mod tests {
     #[test]
     fn test_image_no_available_images() {
         let md = "![alt](photo.png)";
-        let typst = markdown_to_typst_with_map(md, None).0;
+        let typst = markdown_to_typst(md, None).0;
         assert!(
             typst.contains("#block(fill: luma(230)"),
             "no available images should produce placeholder, got: {typst}"

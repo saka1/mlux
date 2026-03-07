@@ -1,10 +1,8 @@
 use std::time::Instant;
 
 use log::info;
-use mlux::convert::markdown_to_typst;
-use mlux::render::{compile_document, render_frame_to_png};
+use mlux::pipeline::{FontCache, MluxWorld, compile_document, markdown_to_typst, render_frame_to_png};
 use mlux::tile::split_frame;
-use mlux::world::{FontCache, MluxWorld};
 
 static THEME: &str = include_str!("../../themes/catppuccin.typ");
 
@@ -41,7 +39,7 @@ fn main() {
     for i in 0..iterations {
         let iter_start = Instant::now();
 
-        let typst_content = markdown_to_typst(markdown);
+        let typst_content = markdown_to_typst(markdown, None).0;
         let world = MluxWorld::new(
             THEME,
             mlux::theme::data_files("catppuccin"),

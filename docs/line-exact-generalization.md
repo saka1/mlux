@@ -31,7 +31,7 @@
 
 ### 根本原因
 
-`convert.rs` の `BlockMapping` はリスト全体を 1 つのブロックとして記録する
+`markup.rs` の `BlockMapping` はリスト全体を 1 つのブロックとして記録する
 （`block_depth == 0` のときのみ `block_starts` に push）。
 `resolve_md_line_range` は `BlockMapping.md_byte_range` 全体を行範囲に変換するため、
 リスト内の個別アイテムを区別できない。
@@ -79,7 +79,7 @@ TextItem "item3": content_off=18, typst_local=18, newlines_before=2, estimated_m
 
 ### 各ブロック型の改行対応
 
-`convert.rs` の出力を分析し、Markdown と Typst の改行数が 1:1 で対応するかを調査した。
+`markup.rs` の出力を分析し、Markdown と Typst の改行数が 1:1 で対応するかを調査した。
 
 | ブロック型 | MD→Typst 改行保存 | 理由 |
 |---|---|---|
@@ -102,7 +102,7 @@ Markdown のテーブル:
 | 1 | 2 |
 ```
 
-`convert.rs` が生成する Typst:
+`markup.rs` が生成する Typst:
 ```typst
 #table(columns: 2,
   [A],
@@ -155,12 +155,12 @@ else:
 
 **この方式の利点:**
 
-1. **新しいブロック型への自動対応**: 将来 `convert.rs` に新しいブロック型が追加されても、
+1. **新しいブロック型への自動対応**: 将来 `markup.rs` に新しいブロック型が追加されても、
    改行数が保存されていれば自動的に精密ヤンクが有効になる
 2. **偽陰性のみ**: 改行数が一致しない場合のフォールバックは現行動作（ブロック全体）であり、
    ユーザー体験が悪化しない
 3. **偽陽性のリスク**: 改行数がたまたま一致するが行対応が崩れているケース。
-   理論的にはありうるが、`convert.rs` の変換は決定的であり、
+   理論的にはありうるが、`markup.rs` の変換は決定的であり、
    改行数が一致していて行対応が崩れるケースは実際には発見されていない
 
 ### コードブロックの特殊処理を維持する理由
@@ -211,7 +211,7 @@ md_line_exact: Option<usize>
 
 ### 変更されないファイル
 
-- `src/convert.rs` — BlockMapping の粒度は変更しない（リスト全体 = 1 ブロックのまま）
+- `src/markup.rs` — BlockMapping の粒度は変更しない（リスト全体 = 1 ブロックのまま）
 - `src/viewer/mode_normal.rs` — `y` / `Y` のディスパッチロジックは不変
 - `src/viewer/input.rs` — Action enum は不変
 - `src/viewer/mod.rs` — Effect の適用は不変
@@ -227,7 +227,7 @@ md_line_exact: Option<usize>
 | 段落で `Ny` | ブロック全体 | ブロック全体（不変、Typst セパレータにより改行数不一致） |
 | 先頭ブロック（見出し等）で `Ny` | ブロック全体 | 1 行（先行ブロックがないためセパレータなし） |
 
-**注意**: `convert.rs` は先行ブロックがある場合、Typst 出力の BlockMapping 範囲内に
+**注意**: `markup.rs` は先行ブロックがある場合、Typst 出力の BlockMapping 範囲内に
 `\n` セパレータを含める。このため、2 番目以降のブロック（段落・見出し等）では改行数が
 不一致になり、汎用パスは自動的にフォールバックする。リストは 1 つの BlockMapping 内に
 複数アイテムを含むため、セパレータの影響を受けず精密ヤンクが有効になる。

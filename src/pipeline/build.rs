@@ -4,12 +4,9 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use log::info;
 
-use super::convert::SourceMap;
+use super::markup::SourceMap;
 use super::world::{FontCache, MluxWorld};
 use crate::tile::{SourceMappingParams, TiledDocument, VisualLine, extract_visual_lines_with_map};
-
-/// Default sidebar width in typst points (used by cmd_render).
-pub const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 
 /// Parameters for [`build_tiled_document`].
 pub struct BuildParams<'a> {

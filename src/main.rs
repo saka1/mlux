@@ -9,7 +9,10 @@ use log::info;
 use mlux::config;
 use mlux::input::{self, InputSource};
 use mlux::pipeline::dump_document;
-use mlux::pipeline::{self, BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, FontCache, MluxWorld};
+use mlux::pipeline::{self, BuildParams, FontCache, MluxWorld};
+
+/// Default sidebar width in typst points for headless (non-terminal) rendering.
+const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 
 fn long_version() -> &'static str {
     let base = env!("CARGO_PKG_VERSION");
@@ -217,8 +220,7 @@ fn cmd_render(
     let loaded_set = image_files.key_set();
 
     // Convert markdown to typst
-    let (content_text, source_map) =
-        pipeline::markdown_to_typst_with_map(&markdown, Some(&loaded_set));
+    let (content_text, source_map) = pipeline::markdown_to_typst(&markdown, Some(&loaded_set));
 
     if dump {
         let font_cache = FontCache::new();
