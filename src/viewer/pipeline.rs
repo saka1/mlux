@@ -17,7 +17,7 @@ pub(super) struct PipelineInput<'a> {
     pub image_files: crate::image::LoadedImages,
 }
 
-pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<TiledDocument> {
+pub(super) fn to_build_params<'a>(input: &'a PipelineInput<'a>) -> BuildParams<'a> {
     let layout = input.layout;
     let ppi = input.ppi;
 
@@ -30,7 +30,7 @@ pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<
 
     let sidebar_width_pt = layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
 
-    crate::tile::build_tiled_document(&BuildParams {
+    BuildParams {
         theme_text: input.theme_text,
         data_files: input.data_files,
         content_text: input.content_text,
@@ -42,5 +42,9 @@ pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<
         ppi,
         fonts: input.fonts,
         image_files: input.image_files.clone(),
-    })
+    }
+}
+
+pub(super) fn build_tiled_document(input: &PipelineInput<'_>) -> anyhow::Result<TiledDocument> {
+    crate::tile::build_tiled_document(&to_build_params(input))
 }

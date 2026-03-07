@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -56,6 +56,10 @@ struct Cli {
     #[arg(long, global = true)]
     no_watch: bool,
 
+    /// Disable filesystem sandbox (Landlock on Linux)
+    #[arg(long, global = true)]
+    no_sandbox: bool,
+
     /// Log output file path (enables logging when specified)
     #[arg(long, global = true)]
     log: Option<PathBuf>,
@@ -87,10 +91,6 @@ enum Command {
         /// Dump frame tree to stderr
         #[arg(long)]
         dump: bool,
-
-        /// Disable Landlock filesystem sandbox
-        #[arg(long)]
-        no_sandbox: bool,
     },
 }
 
@@ -144,9 +144,8 @@ fn main() {
             input,
             output,
             dump,
-            no_sandbox,
             ..
-        }) => cmd_render(input, &config, output, dump, no_sandbox),
+        }) => cmd_render(input, &config, output, dump, cli.no_sandbox),
         None => {
             let input_source = if input::is_stdin_input(cli.input.as_deref()) {
                 InputSource::Stdin(input::StdinReader::new())
@@ -159,7 +158,13 @@ fn main() {
                     }
                 }
             };
-            mlux::viewer::run(input_source, config, &cli_overrides, !cli.no_watch)
+            mlux::viewer::run(
+                input_source,
+                config,
+                &cli_overrides,
+                !cli.no_watch,
+                cli.no_sandbox,
+            )
         }
     };
 
@@ -246,8 +251,6 @@ fn cmd_render(
         return Ok(());
     }
 
-    // Apply filesystem sandbox before Typst compilation.
-    // All file reads (markdown, images, fonts) are complete at this point.
     let read_base = if is_stdin {
         None
     } else {
@@ -261,14 +264,12 @@ fn cmd_render(
     };
     let output_parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(output_parent).ok();
-    let output_dir_canonical = output_parent
-        .canonicalize()
-        .context("failed to canonicalize output directory")?;
-    mlux::sandbox::enforce_fs_sandbox(read_base.as_deref(), &output_dir_canonical, no_sandbox)?;
 
-    let tiled_doc = build_tiled_document(&BuildParams {
+    let data_files = mlux::theme::data_files(theme);
+
+    let params = BuildParams {
         theme_text,
-        data_files: mlux::theme::data_files(theme),
+        data_files,
         content_text: &content_text,
         md_source: &markdown,
         source_map: &source_map,
@@ -278,7 +279,7 @@ fn cmd_render(
         ppi,
         fonts: &font_cache,
         image_files,
-    })?;
+    };
 
     let stem = output
         .file_stem()
@@ -290,6 +291,30 @@ fn cmd_render(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
+
+    // Fork path: Linux + sandbox enabled → compile/render in sandboxed child
+    #[cfg(unix)]
+    if !no_sandbox {
+        return cmd_render_fork(
+            &params,
+            read_base.as_deref(),
+            output_parent,
+            &stem,
+            &ext,
+            is_stdin,
+            &input,
+            pipeline_start,
+        );
+    }
+
+    // Local path: non-Linux or --no-sandbox
+    let output_dir_canonical = output_parent
+        .canonicalize()
+        .context("failed to canonicalize output directory")?;
+    mlux::sandbox::enforce_fs_sandbox(read_base.as_deref(), &output_dir_canonical, no_sandbox)?;
+
+    let tiled_doc = build_tiled_document(&params)?;
+
     let mut files = Vec::new();
     for i in 0..tiled_doc.tile_count() {
         let png_data = tiled_doc.render_tile(i)?;
@@ -315,6 +340,58 @@ fn cmd_render(
         input_name,
         tiled_doc.tile_count()
     );
+    for (filename, size) in &files {
+        eprintln!("  {} ({} bytes)", filename, size);
+    }
+
+    Ok(())
+}
+
+/// Render via fork+IPC: child compiles/renders in a sandboxed process.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn cmd_render_fork(
+    params: &BuildParams<'_>,
+    read_base: Option<&Path>,
+    output_parent: &Path,
+    stem: &str,
+    ext: &str,
+    is_stdin: bool,
+    input: &Path,
+    pipeline_start: Instant,
+) -> Result<()> {
+    use mlux::fork_render::{Request, Response, spawn_renderer};
+
+    let (meta, mut tx, mut rx, mut _child) = spawn_renderer(params, read_base)?;
+
+    let mut files = Vec::new();
+    for i in 0..meta.tile_count {
+        tx.send(&Request::RenderTile(i))?;
+        match rx.recv()? {
+            Response::Tile(pngs) => {
+                let filename = format!("{}-{:03}.{}", stem, i, ext);
+                let path = output_parent.join(&filename);
+                fs::write(&path, &pngs.content)
+                    .with_context(|| format!("failed to write {}", path.display()))?;
+                files.push((filename, pngs.content.len()));
+            }
+            Response::Error(e) => anyhow::bail!("render tile {i}: {e}"),
+            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
+        }
+    }
+    tx.send(&Request::Shutdown)?;
+
+    info!(
+        "cmd_render: total pipeline completed in {:.1}ms",
+        pipeline_start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let input_name = if is_stdin {
+        "<stdin>".to_string()
+    } else {
+        input.display().to_string()
+    };
+    eprintln!("rendered {} -> {} tile(s):", input_name, meta.tile_count);
     for (filename, size) in &files {
         eprintln!("  {} ({} bytes)", filename, size);
     }

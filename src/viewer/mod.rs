@@ -46,22 +46,61 @@ use crate::world::FontCache;
 
 use effect::{BuildOutcome, Effect, Session, ViewContext, ViewerMode, Viewport};
 use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
-use state::{ExitReason, LoadedTiles, ViewState};
+use state::{ExitReason, LoadedTiles, PrefetchChannels, ViewState};
+
+/// Abstraction over direct (in-process) and forked (IPC) tile rendering.
+///
+/// On unix with sandbox enabled, the renderer runs in a forked child process
+/// communicating via typed IPC channels. Otherwise, rendering is done directly.
+enum TileRenderer {
+    Direct(TiledDocument),
+    #[cfg(unix)]
+    Forked {
+        tx: crate::process::TypedWriter<crate::fork_render::Request>,
+        rx: crate::process::TypedReader<crate::fork_render::Response>,
+    },
+}
+
+impl TileRenderer {
+    fn render_tile_pair(&mut self, idx: usize) -> anyhow::Result<TilePngs> {
+        match self {
+            Self::Direct(doc) => doc.render_tile_pair(idx),
+            #[cfg(unix)]
+            Self::Forked { tx, rx } => {
+                tx.send(&crate::fork_render::Request::RenderTile(idx))?;
+                match rx.recv()? {
+                    crate::fork_render::Response::Tile(pngs) => Ok(pngs),
+                    crate::fork_render::Response::Error(e) => anyhow::bail!("{e}"),
+                    crate::fork_render::Response::Meta(_) => {
+                        anyhow::bail!("unexpected Meta response")
+                    }
+                }
+            }
+        }
+    }
+
+    fn shutdown(self) {
+        #[cfg(unix)]
+        if let Self::Forked { mut tx, .. } = self {
+            let _ = tx.send(&crate::fork_render::Request::Shutdown);
+        }
+    }
+}
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
 const FAST_THRESHOLD: Duration = Duration::from_millis(100);
 
-/// Build a `TiledDocument` on a background thread.
+/// Wait for a build result on a background thread with loading UI.
 ///
 /// * Phase 1 (`recv_timeout(100ms)`): fast path — no loading screen, imperceptible wait.
 /// * Phase 2 (timeout exceeded): show loading screen and poll events so `q`/Esc/Ctrl-C
 ///   can abort immediately without waiting for the build to finish.
-fn build_async_with_threshold(
-    build_fn: impl FnOnce() -> anyhow::Result<TiledDocument> + Send + 'static,
+fn build_async_with_threshold<T: Send + 'static>(
+    build_fn: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
     layout: &state::Layout,
     filename: &str,
-) -> anyhow::Result<BuildOutcome> {
-    let (tx, rx) = mpsc::channel::<anyhow::Result<TiledDocument>>();
+) -> anyhow::Result<BuildOutcome<T>> {
+    let (tx, rx) = mpsc::channel::<anyhow::Result<T>>();
     thread::spawn(move || {
         let _ = tx.send(build_fn());
     });
@@ -110,11 +149,13 @@ fn build_async_with_threshold(
 /// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
 /// `cli_overrides` are preserved across config reloads.
 /// `watch` enables automatic reload on file change.
+/// `no_sandbox` disables fork+Landlock sandbox (falls back to direct rendering).
 pub fn run(
     input: InputSource,
     config: Config,
     cli_overrides: &CliOverrides,
     watch: bool,
+    no_sandbox: bool,
 ) -> anyhow::Result<()> {
     terminal::check_tty()?;
 
@@ -217,22 +258,32 @@ pub fn run(
 
         let (content_text, source_map) = markdown_to_typst_with_map(&markdown, Some(&loaded_set));
 
-        // 5b. Build TiledDocument (content + sidebar compiled & split)
+        // 5b. Build document (content + sidebar compiled & split)
         //
-        // Uses a background thread with a 100ms fast-path threshold.
-        // If the build finishes in time, no loading screen is shown.
-        // Beyond the threshold, a loading screen appears and q/Esc/Ctrl-C
-        // can abort immediately.
+        // On unix with sandbox enabled: fork a child process, compile/render
+        // in the sandboxed child, communicate via IPC.
+        // Otherwise: build directly in-process on a background thread.
+        //
+        // Both paths use build_async_with_threshold for loading UI.
         info!("building tiled document...");
         let markdown_clone = markdown.clone(); // markdown also needed by inner loop
         let layout_copy = session.layout;
         let ppi = session.config.ppi;
         let tile_height = session.config.viewer.tile_height;
         let data_files = crate::theme::data_files(&session.config.theme);
-        // content_text and source_map move into the closure (not used by inner loop)
-        let tiled_doc = match build_async_with_threshold(
-            move || {
-                pipeline::build_tiled_document(&pipeline::PipelineInput {
+
+        // ChildProcess handle kept alive for the duration of the inner loop.
+        // Dropped on reload/resize/quit → sends SIGKILL to child.
+        #[cfg(unix)]
+        let mut _fork_child: Option<crate::process::ChildProcess> = None;
+
+        // Build: fork path (unix + sandbox) or direct path (fallback).
+        // The labeled block yields (DocumentMeta, TileRenderer).
+        let (meta, renderer) = 'build: {
+            // Fork path: compile in sandboxed child process
+            #[cfg(unix)]
+            if !no_sandbox {
+                let pi = pipeline::PipelineInput {
                     theme_text,
                     data_files,
                     content_text: &content_text,
@@ -243,29 +294,80 @@ pub fn run(
                     tile_height_min: tile_height,
                     fonts: font_cache,
                     image_files,
-                })
-            },
-            &session.layout,
-            &session.filename,
-        )? {
-            BuildOutcome::Done(doc) => doc,
-            BuildOutcome::Quit => break 'outer,
-            BuildOutcome::Resize { new_cols, new_rows } => {
-                let new_winsize = crossterm_terminal::window_size()?;
-                session.layout = state::compute_layout(
-                    new_cols,
-                    new_rows,
-                    new_winsize.width,
-                    new_winsize.height,
-                    session.config.viewer.sidebar_cols,
-                );
-                terminal::delete_all_images()?;
-                continue 'outer;
+                };
+                let params = pipeline::to_build_params(&pi);
+                let read_base = match &session.input {
+                    InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),
+                    InputSource::Stdin(_) => None,
+                };
+                // Fork before any threads (fork safety).
+                // The child starts building immediately; we wait for meta below.
+                let (tx, rx, child) =
+                    crate::fork_render::fork_renderer(&params, read_base.as_deref())?;
+                _fork_child = Some(child);
+
+                // Wait for metadata from child with loading UI
+                match build_async_with_threshold(
+                    move || {
+                        let mut rx = rx;
+                        match rx.recv()? {
+                            crate::fork_render::Response::Meta(m) => Ok((m, tx, rx)),
+                            crate::fork_render::Response::Error(e) => {
+                                anyhow::bail!("child build error: {e}")
+                            }
+                            crate::fork_render::Response::Tile(_) => {
+                                anyhow::bail!("unexpected Tile response, expected Meta")
+                            }
+                        }
+                    },
+                    &session.layout,
+                    &session.filename,
+                )? {
+                    BuildOutcome::Done((m, tx, rx)) => {
+                        info!("fork build complete: {} tiles", m.tile_count);
+                        break 'build (m, TileRenderer::Forked { tx, rx });
+                    }
+                    BuildOutcome::Quit => break 'outer,
+                    BuildOutcome::Resize { new_cols, new_rows } => {
+                        session.update_layout_for_resize(new_cols, new_rows)?;
+                        continue 'outer;
+                    }
+                }
+            }
+
+            // Direct path: build in-process (non-unix or --no-sandbox)
+            // content_text and source_map move into the closure (not used by inner loop)
+            match build_async_with_threshold(
+                move || {
+                    pipeline::build_tiled_document(&pipeline::PipelineInput {
+                        theme_text,
+                        data_files,
+                        content_text: &content_text,
+                        md_source: &markdown_clone,
+                        source_map: &source_map,
+                        layout: &layout_copy,
+                        ppi,
+                        tile_height_min: tile_height,
+                        fonts: font_cache,
+                        image_files,
+                    })
+                },
+                &session.layout,
+                &session.filename,
+            )? {
+                BuildOutcome::Done(doc) => {
+                    let m = doc.metadata();
+                    (m, TileRenderer::Direct(doc))
+                }
+                BuildOutcome::Quit => break 'outer,
+                BuildOutcome::Resize { new_cols, new_rows } => {
+                    session.update_layout_for_resize(new_cols, new_rows)?;
+                    continue 'outer;
+                }
             }
         };
-
-        let img_w = tiled_doc.width_px();
-        let img_h = tiled_doc.total_height_px();
+        let img_w = meta.width_px;
+        let img_h = meta.total_height_px;
         let (vp_w, vp_h) = state::vp_dims(&session.layout, img_w, img_h);
 
         let mut cache = TiledDocumentCache::new();
@@ -274,7 +376,7 @@ pub fn run(
         let mut vp = Viewport {
             mode: ViewerMode::Normal,
             view: ViewState {
-                y_offset: session.scroll_carry.min(tiled_doc.max_scroll(vp_h)),
+                y_offset: session.scroll_carry.min(meta.max_scroll(vp_h)),
                 img_h,
                 vp_w,
                 vp_h,
@@ -299,23 +401,24 @@ pub fn run(
             //
             // worker → main の結果は res_tx/res_rx チャネル経由。
             // main thread が res_rx.try_recv() で受信し cache に格納する。
-            let doc = &tiled_doc;
+            let mut renderer = renderer;
             s.spawn(move || {
                 debug!("prefetch worker: started");
                 while let Ok(idx) = req_rx.recv() {
                     debug!("prefetch worker: rendering tile {idx}");
                     let render_start = Instant::now();
-                    match (doc.render_tile(idx), doc.render_sidebar_tile(idx)) {
-                        (Ok(content), Ok(sidebar)) => {
-                            debug!("prefetch worker: tile {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, content.len(), sidebar.len());
-                            let _ = res_tx.send((idx, TilePngs { content, sidebar }));
+                    match renderer.render_tile_pair(idx) {
+                        Ok(pngs) => {
+                            debug!("prefetch worker: tile {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, pngs.content.len(), pngs.sidebar.len());
+                            let _ = res_tx.send((idx, pngs));
                         }
-                        (Err(e), _) | (_, Err(e)) => {
+                        Err(e) => {
                             log::error!("prefetch worker: tile {idx} failed: {e}");
                         }
                     }
                 }
-                debug!("prefetch worker: channel closed, exiting");
+                renderer.shutdown();
+                debug!("prefetch worker: exiting");
             });
 
             // in_flight: 「worker に送信済みだが結果未受信」のタイル index 集合。
@@ -329,15 +432,20 @@ pub fn run(
 
             // Initial redraw + prefetch
             state::redraw(
-                doc,
+                &meta,
                 &mut cache,
                 &mut vp.tiles,
                 &session.layout,
                 &vp.view,
                 acc.peek(),
                 None,
+                &mut PrefetchChannels {
+                    req_tx: &req_tx,
+                    res_rx: &res_rx,
+                    in_flight: &mut in_flight,
+                },
             )?;
-            state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, vp.view.y_offset);
+            state::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.view.y_offset);
 
             // Inner event loop
             let mut last_render = Instant::now();
@@ -377,7 +485,7 @@ pub fn run(
 
                     match ev {
                         Event::Key(key_event) => {
-                            let max_y = doc.max_scroll(vp.view.vp_h);
+                            let max_y = meta.max_scroll(vp.view.vp_h);
 
                             let effects = match &mut vp.mode {
                                 ViewerMode::Normal => {
@@ -388,7 +496,7 @@ pub fn run(
                                         Some(action) => {
                                             let mut ctx = mode_normal::NormalCtx {
                                                 state: &vp.view,
-                                                visual_lines: &doc.visual_lines,
+                                                visual_lines: &meta.visual_lines,
                                                 max_scroll: max_y,
                                                 scroll_step: session.config.viewer.scroll_step
                                                     * session.layout.cell_h as u32,
@@ -418,7 +526,7 @@ pub fn run(
                                             a,
                                             ss,
                                             &markdown,
-                                            &doc.visual_lines,
+                                            &meta.visual_lines,
                                             visible_count,
                                             max_y,
                                         )
@@ -445,7 +553,7 @@ pub fn run(
                                 input: &session.input,
                                 jump_stack: &session.jump_stack,
                                 markdown: &markdown,
-                                visual_lines: &doc.visual_lines,
+                                visual_lines: &meta.visual_lines,
                             };
                             for effect in effects {
                                 if let Some(reason) = vp.apply(effect, &ctx)? {
@@ -478,17 +586,22 @@ pub fn run(
                         cache.insert(idx, pngs);
                     }
                     state::redraw(
-                        doc,
+                        &meta,
                         &mut cache,
                         &mut vp.tiles,
                         &session.layout,
                         &vp.view,
                         acc.peek(),
                         vp.flash.as_deref(),
+                        &mut PrefetchChannels {
+                            req_tx: &req_tx,
+                            res_rx: &res_rx,
+                            in_flight: &mut in_flight,
+                        },
                     )?;
-                    state::send_prefetch(&req_tx, doc, &cache, &mut in_flight, vp.view.y_offset);
+                    state::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.view.y_offset);
                     cache.evict_distant(
-                        (vp.view.y_offset / doc.tile_height_px()) as usize,
+                        (vp.view.y_offset / meta.tile_height_px) as usize,
                         session.config.viewer.evict_distance,
                     );
                     vp.dirty = false;

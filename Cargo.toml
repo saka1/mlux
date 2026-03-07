@@ -33,12 +33,23 @@ log = "0.4"
 env_logger = "0.11"
 zstd = "0.13"
 mitex = "0.2"
+bincode = { version = "2", features = ["serde"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["process", "signal"] }
+
 [build-dependencies]
 zstd = "0.13"
+
+# harness=false: these tests call fork(), which deadlocks under the default
+# test harness because its thread pool leaves locked mutexes (heap allocator,
+# etc.) in the forked child.  A custom main() runs them single-threaded.
+[[test]]
+name = "fork_render"
+harness = false
 
 [profile.release]
 strip = "debuginfo"

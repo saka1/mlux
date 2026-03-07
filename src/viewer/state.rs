@@ -6,7 +6,7 @@ use std::io;
 use std::sync::mpsc;
 
 use super::terminal;
-use crate::tile::{TiledDocument, TiledDocumentCache, VisibleTiles, VisualLine};
+use crate::tile::{DocumentMeta, TilePngs, TiledDocumentCache, VisibleTiles, VisualLine};
 
 // ---------------------------------------------------------------------------
 // Layout / ViewState
@@ -164,15 +164,29 @@ impl LoadedTiles {
     }
 
     /// Ensure a tile (content + sidebar) is loaded in the terminal.
+    ///
+    /// If the tile is not in cache, sends a request to the prefetch worker
+    /// and blocks until the result arrives.
     pub(super) fn ensure_loaded(
         &mut self,
-        tiled_doc: &TiledDocument,
         cache: &mut TiledDocumentCache,
         idx: usize,
+        req_tx: &mpsc::Sender<usize>,
+        res_rx: &mpsc::Receiver<(usize, TilePngs)>,
+        in_flight: &mut HashSet<usize>,
     ) -> anyhow::Result<()> {
         if let Some(action) = self.plan_load(idx) {
-            let pngs = cache.get_or_render(tiled_doc, idx)?;
-            execute_load(&action, pngs)?;
+            if !cache.contains(idx) {
+                if in_flight.insert(idx) {
+                    let _ = req_tx.send(idx);
+                }
+                while !cache.contains(idx) {
+                    let (i, pngs) = res_rx.recv()?;
+                    in_flight.remove(&i);
+                    cache.insert(i, pngs);
+                }
+            }
+            execute_load(&action, cache.get(idx).unwrap())?;
         }
         Ok(())
     }
@@ -210,30 +224,39 @@ pub(super) enum ExitReason {
     GoBack,
 }
 
+/// Prefetch channel handles for requesting and receiving rendered tiles.
+pub(super) struct PrefetchChannels<'a> {
+    pub req_tx: &'a mpsc::Sender<usize>,
+    pub res_rx: &'a mpsc::Receiver<(usize, TilePngs)>,
+    pub in_flight: &'a mut HashSet<usize>,
+}
+
 /// Full redraw: content tiles + sidebar + status bar.
 ///
 /// Ordering: ensure loaded (slow) → delete placements → place new (fast).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn redraw(
-    tiled_doc: &TiledDocument,
+    meta: &DocumentMeta,
     cache: &mut TiledDocumentCache,
     loaded: &mut LoadedTiles,
     layout: &Layout,
     state: &ViewState,
     acc_peek: Option<u32>,
     flash: Option<&str>,
+    pf: &mut PrefetchChannels<'_>,
 ) -> anyhow::Result<()> {
-    let visible = tiled_doc.visible_tiles(state.y_offset, state.vp_h);
+    let visible = meta.visible_tiles(state.y_offset, state.vp_h);
 
     // Phase 1: Ensure all needed tiles are rendered and sent to the terminal.
     match &visible {
         VisibleTiles::Single { idx, .. } => {
-            loaded.ensure_loaded(tiled_doc, cache, *idx)?;
+            loaded.ensure_loaded(cache, *idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
         }
         VisibleTiles::Split {
             top_idx, bot_idx, ..
         } => {
-            loaded.ensure_loaded(tiled_doc, cache, *top_idx)?;
-            loaded.ensure_loaded(tiled_doc, cache, *bot_idx)?;
+            loaded.ensure_loaded(cache, *top_idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
+            loaded.ensure_loaded(cache, *bot_idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
         }
     }
 
@@ -242,7 +265,7 @@ pub(super) fn redraw(
 
     // Phase 3: Place content + sidebar + status bar
     terminal::place_content_tiles(&visible, loaded, layout, state)?;
-    terminal::place_sidebar_tiles(&visible, loaded, tiled_doc, layout)?;
+    terminal::place_sidebar_tiles(&visible, loaded, meta.sidebar_width_px, layout)?;
     terminal::draw_status_bar(layout, state, acc_peek, flash)?;
     Ok(())
 }
@@ -266,15 +289,15 @@ pub(super) fn redraw(
 /// `in_flight` は main thread 専用。worker thread はアクセスしない。
 pub(super) fn send_prefetch(
     tx: &mpsc::Sender<usize>,
-    doc: &TiledDocument,
+    meta: &DocumentMeta,
     cache: &TiledDocumentCache,
     in_flight: &mut HashSet<usize>,
     y_offset: u32,
 ) {
-    let current = (y_offset / doc.tile_height_px()) as usize;
+    let current = (y_offset / meta.tile_height_px) as usize;
     // Forward 2 + backward 1
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
-        if idx < doc.tile_count() && !cache.contains(idx) && !in_flight.contains(&idx) {
+        if idx < meta.tile_count && !cache.contains(idx) && !in_flight.contains(&idx) {
             debug!("prefetch: requesting tile {idx} (current={current})");
             let _ = tx.send(idx);
             in_flight.insert(idx);

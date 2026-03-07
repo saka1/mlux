@@ -9,7 +9,7 @@ use crossterm::{
 use std::io::{self, Write, stdout};
 
 use super::state::{Layout, LoadedTiles, ViewState};
-use crate::tile::{TiledDocument, VisibleTiles};
+use crate::tile::VisibleTiles;
 
 const CHUNK_SIZE: usize = 4096;
 
@@ -187,7 +187,7 @@ pub(super) fn place_content_tiles(
 pub(super) fn place_sidebar_tiles(
     visible: &VisibleTiles,
     loaded: &LoadedTiles,
-    tiled_doc: &TiledDocument,
+    sidebar_width_px: u32,
     layout: &Layout,
 ) -> io::Result<()> {
     place_tiles(
@@ -197,7 +197,7 @@ pub(super) fn place_sidebar_tiles(
         &PlaceParams {
             start_col: 0,
             num_cols: layout.sidebar_cols,
-            img_width: tiled_doc.sidebar_width_px(),
+            img_width: sidebar_width_px,
         },
         |ids| ids.sidebar_id,
     )

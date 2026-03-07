@@ -53,8 +53,8 @@ pub(super) enum Effect {
 }
 
 /// Result of an async build attempt.
-pub(super) enum BuildOutcome {
-    Done(crate::tile::TiledDocument),
+pub(super) enum BuildOutcome<T> {
+    Done(T),
     Quit,
     Resize { new_cols: u16, new_rows: u16 },
 }
@@ -263,6 +263,24 @@ pub(super) struct Session {
 }
 
 impl Session {
+    /// Recompute layout for new terminal dimensions and clear stale images.
+    pub(super) fn update_layout_for_resize(
+        &mut self,
+        new_cols: u16,
+        new_rows: u16,
+    ) -> anyhow::Result<()> {
+        let new_winsize = crossterm_terminal::window_size()?;
+        self.layout = state::compute_layout(
+            new_cols,
+            new_rows,
+            new_winsize.width,
+            new_winsize.height,
+            self.config.viewer.sidebar_cols,
+        );
+        terminal::delete_all_images()?;
+        Ok(())
+    }
+
     /// Handle an exit reason from the inner loop, returning `true` if the outer loop should break.
     pub(super) fn handle_exit(
         &mut self,
@@ -274,15 +292,7 @@ impl Session {
             ExitReason::Resize { new_cols, new_rows } => {
                 self.scroll_carry = scroll_position;
                 debug!("resize: rebuilding tiled document and sidebar");
-                let new_winsize = crossterm_terminal::window_size()?;
-                self.layout = state::compute_layout(
-                    new_cols,
-                    new_rows,
-                    new_winsize.width,
-                    new_winsize.height,
-                    self.config.viewer.sidebar_cols,
-                );
-                terminal::delete_all_images()?;
+                self.update_layout_for_resize(new_cols, new_rows)?;
             }
             ExitReason::Reload => {
                 self.scroll_carry = scroll_position;

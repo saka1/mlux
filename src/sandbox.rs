@@ -29,7 +29,7 @@ mod imp {
         RulesetStatus,
     };
 
-    pub fn enforce(read_scope: Option<&Path>, output_dir: &Path) -> Result<()> {
+    pub fn enforce(read_scope: Option<&Path>, write_scope: Option<&Path>) -> Result<()> {
         let abi = ABI::V1;
 
         let read_access = AccessFs::from_read(abi);
@@ -42,7 +42,9 @@ mod imp {
             ruleset = ruleset.add_rule(PathBeneath::new(PathFd::new(scope)?, read_access))?;
         }
 
-        ruleset = ruleset.add_rule(PathBeneath::new(PathFd::new(output_dir)?, write_access))?;
+        if let Some(scope) = write_scope {
+            ruleset = ruleset.add_rule(PathBeneath::new(PathFd::new(scope)?, write_access))?;
+        }
 
         let status = ruleset.restrict_self()?;
 
@@ -68,7 +70,7 @@ mod imp {
 
     use anyhow::Result;
 
-    pub fn enforce(_read_scope: Option<&Path>, _output_dir: &Path) -> Result<()> {
+    pub fn enforce(_read_scope: Option<&Path>, _write_scope: Option<&Path>) -> Result<()> {
         log::info!("sandbox: not available on this platform (Linux Landlock only)");
         Ok(())
     }
@@ -91,7 +93,22 @@ pub fn enforce_fs_sandbox(
 
     let scope = read_base.map(read_scope);
 
-    match imp::enforce(scope.as_deref(), output_dir) {
+    match imp::enforce(scope.as_deref(), Some(output_dir)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log::warn!("sandbox: failed to apply Landlock, continuing without sandbox: {e:#}");
+            Ok(())
+        }
+    }
+}
+
+/// Apply read-only filesystem sandbox (no write access).
+///
+/// Used by fork child processes that only need to compile/render.
+pub fn enforce_read_only_sandbox(read_base: Option<&Path>) -> Result<()> {
+    let scope = read_base.map(read_scope);
+
+    match imp::enforce(scope.as_deref(), None) {
         Ok(()) => Ok(()),
         Err(e) => {
             log::warn!("sandbox: failed to apply Landlock, continuing without sandbox: {e:#}");

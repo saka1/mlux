@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use log::{debug, info, trace};
+use serde::{Deserialize, Serialize};
 use typst::foundations::Smart;
 use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::{Source, Span};
@@ -22,7 +23,7 @@ fn pt_to_px(pt: f64, ppi: f32) -> u32 {
 }
 
 /// A visual line extracted from the PagedDocument frame tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualLine {
     pub y_pt: f64, // Absolute Y coordinate of the text baseline (pt)
     pub y_px: u32, // Pixel Y coordinate (after ppi conversion)
@@ -856,6 +857,95 @@ pub enum VisibleTiles {
     },
 }
 
+/// Pure metadata extracted from a [`TiledDocument`].
+///
+/// Contains all information needed for layout, scrolling, and visual line queries
+/// without requiring access to the renderable tile data. Serializable for IPC.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DocumentMeta {
+    pub tile_count: usize,
+    pub width_px: u32,
+    pub sidebar_width_px: u32,
+    pub tile_height_px: u32,
+    pub total_height_px: u32,
+    pub page_height_pt: f64,
+    pub visual_lines: Vec<VisualLine>,
+}
+
+impl DocumentMeta {
+    /// Determine which tile(s) are visible at a given scroll offset.
+    pub fn visible_tiles(&self, global_y: u32, vp_h: u32) -> VisibleTiles {
+        let top_tile = (global_y / self.tile_height_px) as usize;
+        let top_tile = top_tile.min(self.tile_count.saturating_sub(1));
+        let src_y_in_tile = global_y - (top_tile as u32 * self.tile_height_px);
+        // For the last tile, actual height may be less than tile_height_px.
+        // Use total_height_px to derive actual height of each tile.
+        let tile_actual_h = self.tile_actual_height_px(top_tile);
+        let remaining_in_top = tile_actual_h.saturating_sub(src_y_in_tile);
+
+        if remaining_in_top >= vp_h || top_tile + 1 >= self.tile_count {
+            let src_h = vp_h.min(remaining_in_top);
+            debug!(
+                "display: single tile {}, src_y={}, src_h={}, vp_h={}",
+                top_tile, src_y_in_tile, src_h, vp_h
+            );
+            VisibleTiles::Single {
+                idx: top_tile,
+                src_y: src_y_in_tile,
+                src_h,
+            }
+        } else {
+            let top_src_h = remaining_in_top;
+            let bot_idx = top_tile + 1;
+            let bot_src_h = (vp_h - top_src_h).min(self.tile_actual_height_px(bot_idx));
+            debug!(
+                "display: split tiles [{}, {}], top_src_y={}, top_h={}, bot_h={}, vp_h={}",
+                top_tile, bot_idx, src_y_in_tile, top_src_h, bot_src_h, vp_h
+            );
+            VisibleTiles::Split {
+                top_idx: top_tile,
+                top_src_y: src_y_in_tile,
+                top_src_h,
+                bot_idx,
+                bot_src_h,
+            }
+        }
+    }
+
+    /// Maximum scroll offset.
+    pub fn max_scroll(&self, vp_h: u32) -> u32 {
+        self.total_height_px.saturating_sub(vp_h)
+    }
+
+    /// Snap a global_y to the nearest visual line boundary.
+    pub fn snap_to_line(&self, global_y: u32) -> u32 {
+        if self.visual_lines.is_empty() {
+            return global_y;
+        }
+        let mut best = self.visual_lines[0].y_px;
+        let mut best_dist = (global_y as i64 - best as i64).unsigned_abs();
+        for vl in &self.visual_lines {
+            let dist = (global_y as i64 - vl.y_px as i64).unsigned_abs();
+            if dist < best_dist {
+                best = vl.y_px;
+                best_dist = dist;
+            }
+        }
+        best
+    }
+
+    /// Actual pixel height of a specific tile (last tile may be shorter).
+    fn tile_actual_height_px(&self, idx: usize) -> u32 {
+        if idx + 1 < self.tile_count {
+            self.tile_height_px
+        } else {
+            // Last tile: remaining height
+            self.total_height_px
+                .saturating_sub(idx as u32 * self.tile_height_px)
+        }
+    }
+}
+
 /// A document split into renderable tiles for lazy, bounded-memory rendering.
 ///
 /// All methods take `&self` — rendering is pure (no internal caching).
@@ -871,7 +961,7 @@ pub struct TiledDocument {
     tile_height_px: u32,
     total_height_px: u32,
     page_height_pt: f64,
-    pub visual_lines: Vec<VisualLine>,
+    visual_lines: Vec<VisualLine>,
 }
 
 impl TiledDocument {
@@ -1057,6 +1147,31 @@ impl TiledDocument {
         }
         best
     }
+
+    /// Access visual lines.
+    pub fn visual_lines(&self) -> &[VisualLine] {
+        &self.visual_lines
+    }
+
+    /// Extract pure metadata (no renderable data).
+    pub fn metadata(&self) -> DocumentMeta {
+        DocumentMeta {
+            tile_count: self.tiles.len(),
+            width_px: self.width_px,
+            sidebar_width_px: self.sidebar_width_px,
+            tile_height_px: self.tile_height_px,
+            total_height_px: self.total_height_px,
+            page_height_pt: self.page_height_pt,
+            visual_lines: self.visual_lines.clone(),
+        }
+    }
+
+    /// Render both content and sidebar tiles for a given index.
+    pub fn render_tile_pair(&self, idx: usize) -> Result<TilePngs> {
+        let content = self.render_tile(idx)?;
+        let sidebar = self.render_sidebar_tile(idx)?;
+        Ok(TilePngs { content, sidebar })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1179,7 @@ impl TiledDocument {
 // ---------------------------------------------------------------------------
 
 /// A pair of rendered PNGs: content + sidebar for the same tile index.
+#[derive(Serialize, Deserialize)]
 pub struct TilePngs {
     pub content: Vec<u8>,
     pub sidebar: Vec<u8>,
@@ -1099,17 +1215,6 @@ impl TiledDocumentCache {
 
     pub fn insert(&mut self, idx: usize, pngs: TilePngs) {
         self.data.insert(idx, pngs);
-    }
-
-    /// Get cached PNGs or render synchronously and cache the result.
-    pub fn get_or_render(&mut self, doc: &TiledDocument, idx: usize) -> Result<&TilePngs> {
-        use std::collections::hash_map::Entry;
-        if let Entry::Vacant(e) = self.data.entry(idx) {
-            let content = doc.render_tile(idx)?;
-            let sidebar = doc.render_sidebar_tile(idx)?;
-            e.insert(TilePngs { content, sidebar });
-        }
-        Ok(self.data.get(&idx).unwrap())
     }
 
     /// Evict entries far from `center`, keeping only those within `keep_radius`.
