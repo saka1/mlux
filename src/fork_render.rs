@@ -69,7 +69,7 @@ pub fn fork_renderer(
             }
 
             // Font cache created in child (filesystem scan, not serializable)
-            let fonts = crate::pipeline::world::FontCache::new();
+            let fonts = crate::pipeline::FontCache::new();
 
             let doc = match build_tiled_document(&BuildParams {
                 theme_text: &theme_text,

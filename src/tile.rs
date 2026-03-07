@@ -9,7 +9,7 @@ use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::{Source, Span};
 use typst::visualize::{Geometry, Paint};
 
-use crate::pipeline::convert::SourceMap;
+use crate::pipeline::SourceMap;
 
 /// Compute pixel size matching typst_render's formula exactly.
 ///
@@ -964,7 +964,7 @@ impl TiledDocument {
     ) -> Result<Vec<u8>> {
         assert!(idx < tiles.len(), "{label} tile index out of bounds");
         trace!("rendering {label} tile {idx}");
-        crate::pipeline::render::render_frame_to_png(&tiles[idx], fill, self.ppi)
+        crate::pipeline::render_frame_to_png(&tiles[idx], fill, self.ppi)
     }
 
     /// Determine which tile(s) are visible at a given scroll offset.

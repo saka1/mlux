@@ -8,7 +8,7 @@ use log::info;
 
 use mlux::config;
 use mlux::input::{self, InputSource};
-use mlux::pipeline::render::dump_document;
+use mlux::pipeline::dump_document;
 use mlux::pipeline::{self, BuildParams, DEFAULT_SIDEBAR_WIDTH_PT, FontCache, MluxWorld};
 
 fn long_version() -> &'static str {
