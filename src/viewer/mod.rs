@@ -569,7 +569,17 @@ pub fn run(
                                         }
                                     }
                                     Effect::GoBack => {
-                                        return Ok(ExitReason::GoBack);
+                                        if jump_stack.is_empty() {
+                                            flash_msg = Some("No previous file".into());
+                                            terminal::draw_status_bar(
+                                                &layout,
+                                                &state,
+                                                acc.peek(),
+                                                flash_msg.as_deref(),
+                                            )?;
+                                        } else {
+                                            return Ok(ExitReason::GoBack);
+                                        }
                                     }
                                     Effect::Exit(reason) => {
                                         return Ok(reason);
@@ -728,20 +738,17 @@ pub fn run(
                 // continue 'outer → load new file
             }
             ExitReason::GoBack => {
-                if let Some(entry) = jump_stack.pop() {
-                    debug!("go back: returning to {}", entry.path.display());
-                    input = InputSource::File(entry.path.clone());
-                    filename = input.display_name().to_string();
-                    y_offset_carry = entry.y_offset;
-                    if watch {
-                        watcher = Some(FileWatcher::new(&entry.path)?);
-                    }
-                    terminal::delete_all_images()?;
-                } else {
-                    outer_flash = Some("No previous file".into());
-                    terminal::delete_all_images()?;
+                // jump_stack is guaranteed non-empty here (inner loop checks)
+                let entry = jump_stack.pop().expect("GoBack with empty stack");
+                debug!("go back: returning to {}", entry.path.display());
+                input = InputSource::File(entry.path.clone());
+                filename = input.display_name().to_string();
+                y_offset_carry = entry.y_offset;
+                if watch {
+                    watcher = Some(FileWatcher::new(&entry.path)?);
                 }
-                // continue 'outer
+                terminal::delete_all_images()?;
+                // continue 'outer → reload previous file
             }
         }
     }
