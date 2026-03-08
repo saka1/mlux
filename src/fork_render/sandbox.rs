@@ -30,7 +30,7 @@ mod imp {
     };
 
     pub fn enforce(read_scope: Option<&Path>, write_scope: Option<&Path>) -> Result<()> {
-        let abi = ABI::V1;
+        let abi = ABI::V3;
 
         let read_access = AccessFs::from_read(abi);
         let write_access = AccessFs::from_write(abi);
