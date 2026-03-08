@@ -233,11 +233,8 @@ mod tests {
     fn fork_channels_multiple_messages() {
         let (mut writer, mut reader, mut child) =
             fork_with_channels::<String, usize, _>(|mut req_reader, mut resp_writer| {
-                loop {
-                    match req_reader.recv() {
-                        Ok(s) => resp_writer.send(&s.len()).unwrap(),
-                        Err(_) => break,
-                    }
+                while let Ok(s) = req_reader.recv() {
+                    resp_writer.send(&s.len()).unwrap();
                 }
             })
             .unwrap();
