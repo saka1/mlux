@@ -6,6 +6,7 @@ use crossterm::{
     style::{self, Stylize},
     terminal,
 };
+use log::debug;
 use std::io::{self, Write, stdout};
 
 use super::state::{Layout, LoadedTiles, ViewState};
@@ -145,6 +146,15 @@ pub(super) fn place_tiles(
             let top_rows = (*top_src_h as f64 / layout.cell_h as f64).round() as u16;
             let top_rows = top_rows.clamp(1, layout.image_rows.saturating_sub(1));
             let bot_rows = layout.image_rows.saturating_sub(top_rows);
+
+            let top_display = top_rows as u32 * layout.cell_h as u32;
+            let bot_display = bot_rows as u32 * layout.cell_h as u32;
+            debug!(
+                "place_tiles split: top tile={top_idx} src_y={top_src_y} src_h={top_src_h} -> {top_rows}r ({top_display}px, {:.3}x), \
+                 bot tile={bot_idx} src_h={bot_src_h} -> {bot_rows}r ({bot_display}px, {:.3}x)",
+                top_display as f64 / *top_src_h as f64,
+                bot_display as f64 / *bot_src_h as f64,
+            );
 
             out.queue(cursor::MoveTo(params.start_col, 0))?;
             write!(

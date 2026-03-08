@@ -98,7 +98,15 @@ impl Viewport {
     ) -> anyhow::Result<Option<ExitReason>> {
         match effect {
             Effect::ScrollTo(y) => {
-                self.view.y_offset = y;
+                // Snap to cell_h boundary so that in the Split case of
+                // place_tiles, top_src_h is always a multiple of cell_h
+                // (prevents compression artifacts from round() mismatch).
+                let cell_h = ctx.layout.cell_h as u32;
+                let snapped = (y / cell_h) * cell_h;
+                if snapped != y {
+                    debug!("scroll snap: {y} -> {snapped} (cell_h={cell_h})");
+                }
+                self.view.y_offset = snapped;
                 self.dirty = true;
             }
             Effect::MarkDirty => {

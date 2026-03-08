@@ -180,6 +180,16 @@ pub fn run(
             let width_pt = viewport_px_w * 72.0 / ppi as f64;
             let vp_height_pt = layout.image_rows as f64 * layout.cell_h as f64 * 72.0 / ppi as f64;
             let tile_height_pt = tile_height.max(vp_height_pt);
+            // Align tile height to cell_h boundary so that in the Split case
+            // of place_tiles, top_src_h is always a multiple of cell_h,
+            // guaranteeing exact 1:1 scaling (no compression artifacts).
+            let tile_height_px_raw = (tile_height_pt * ppi as f64 / 72.0).round() as u32;
+            let cell_h = layout.cell_h as u32;
+            let tile_height_px_aligned = tile_height_px_raw.div_ceil(cell_h) * cell_h;
+            debug!(
+                "tile height alignment: {tile_height_px_raw}px -> {tile_height_px_aligned}px (cell_h={cell_h})"
+            );
+            let tile_height_pt = tile_height_px_aligned as f64 * 72.0 / ppi as f64;
             let sidebar_width_pt =
                 layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
 
