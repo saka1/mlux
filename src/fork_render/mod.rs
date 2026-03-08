@@ -119,7 +119,8 @@ pub fn fork_renderer(
               mut resp_tx: process::TypedWriter<Response>| {
             // Apply sandbox in child before any compilation
             if !no_sandbox
-                && let Err(e) = sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
+                && let Err(e) =
+                    sandbox::enforce_sandbox(sandbox_read_base.as_deref(), allow_remote_images)
             {
                 log::warn!("child: sandbox failed: {e:#}");
             }
