@@ -8,8 +8,7 @@ use log::info;
 
 use mlux::config;
 use mlux::input::{self, InputSource};
-use mlux::pipeline::dump_document;
-use mlux::pipeline::{self, BuildParams, FontCache, MluxWorld};
+use mlux::pipeline::{BuildParams, FontCache};
 
 /// Default sidebar width in typst points for headless (non-terminal) rendering.
 const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
@@ -211,51 +210,6 @@ fn cmd_render(
     }
 
     let base_dir = if is_stdin { None } else { input.parent() };
-
-    if dump {
-        // Dump mode: build world directly for source inspection (outside sandbox)
-        let image_paths = pipeline::extract_image_paths(&markdown);
-        let (image_files, image_errors) = mlux::image::load_images(&image_paths, base_dir);
-        for err in &image_errors {
-            eprintln!("warning: {err}");
-        }
-
-        // Render diagrams
-        let diagrams = mlux::diagram::extract_diagrams(&markdown);
-        let mut image_files = image_files;
-        for (key, svg) in mlux::diagram::render_diagrams(&diagrams) {
-            image_files.insert(key, svg);
-        }
-
-        let loaded_set = image_files.key_set();
-        let (content_text, _source_map) = pipeline::markdown_to_typst(&markdown, Some(&loaded_set));
-
-        let font_cache = FontCache::new();
-        let world = MluxWorld::new(
-            theme_text,
-            mlux::theme::data_files(theme),
-            &content_text,
-            width,
-            &font_cache,
-            image_files,
-        );
-        let source_text = world.main_source().text();
-        eprintln!(
-            "=== Generated main.typ ({} lines) ===",
-            source_text.lines().count()
-        );
-        for (i, line) in source_text.lines().enumerate() {
-            eprintln!("{:>4} | {}", i + 1, line);
-        }
-        eprintln!();
-
-        match pipeline::compile_document(&world) {
-            Ok(doc) => dump_document(&doc),
-            Err(e) => eprintln!("{e:#}"),
-        }
-        return Ok(());
-    }
-
     let read_base = if is_stdin {
         None
     } else {
@@ -267,11 +221,8 @@ fn cmd_render(
                 .context("failed to canonicalize input directory")?,
         )
     };
-    let output_parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
-    fs::create_dir_all(output_parent).ok();
 
     let data_files = mlux::theme::data_files(theme);
-
     let font_cache = FontCache::new();
     let params = BuildParams {
         theme_text,
@@ -284,6 +235,15 @@ fn cmd_render(
         ppi,
         fonts: &font_cache,
     };
+
+    if dump {
+        let mut child = mlux::fork_render::fork_dump(&params, read_base.as_deref(), no_sandbox)?;
+        child.wait()?;
+        return Ok(());
+    }
+
+    let output_parent = output.parent().unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(output_parent).ok();
 
     let stem = output
         .file_stem()
