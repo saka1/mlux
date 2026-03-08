@@ -144,17 +144,6 @@ cargo test      # all tests pass
 - anyhow 1 (error handling), log 0.4 + env_logger 0.11
 - Rust edition 2024
 
-## Implementation Status
-
-- Phase 1 (complete): Paragraph text only. Japanese typography verified.
-- Phase 2 (complete): Block elements (headings, code blocks, tables, lists, quotes)
-- Phase 3 (planned): Edge cases and conversion quality
-- Phase 4 (in progress): Kitty Graphics Protocol terminal display
-  - Tile-based lazy rendering, visual line extraction, sidebar line numbers, scroll — implemented
-  - Vim-style modes (normal/search/command), file watching, config reload — implemented
-  - Design doc: `docs/terminal-viewer-design.md`
-  - Protocol spec: `docs/kitty-graphics-protocol.md`
-
 ## Viewer Constants
 
 All configurable via `~/.config/mlux/config.toml` (defaults shown):
