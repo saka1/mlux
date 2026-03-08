@@ -20,6 +20,8 @@ The built-in terminal viewer then displays the rendered document directly in you
   spacing, headings, code blocks, tables, blockquotes, and more.
 - **Images and math** -- Local images and LaTeX math formulas (`$...$`, `$$...$$`) are
   rendered inline.
+- **Mermaid diagrams** -- Fenced `mermaid` code blocks are rendered as SVG diagrams
+  inline.
 - **Terminal viewer** -- View rendered Markdown directly in your terminal with
   pixel-precise line numbers, vim-style scrolling, and tile-based lazy rendering.
   Requires a terminal that supports the Kitty Graphics Protocol (e.g. Ghostty, Kitty).
