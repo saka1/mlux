@@ -5,6 +5,7 @@ use log::debug;
 use super::input::Action;
 use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};
+use super::mode_toc::{TocState, collect_headings};
 use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
 use super::state::{ExitReason, ViewState, visual_line_offset};
 use super::{Effect, ViewerMode};
@@ -128,6 +129,21 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         Action::OpenUrl(n) => open_url(ctx, n),
 
         Action::GoBack => vec![Effect::GoBack],
+
+        Action::EnterToc => {
+            let entries = collect_headings(ctx.markdown, ctx.visual_lines);
+            if entries.is_empty() {
+                vec![
+                    Effect::Flash("No headings in document".into()),
+                    Effect::RedrawStatusBar,
+                ]
+            } else {
+                vec![
+                    Effect::DeletePlacements,
+                    Effect::SetMode(ViewerMode::Toc(TocState::new(entries))),
+                ]
+            }
+        }
 
         Action::EnterUrlPicker => {
             let entries = collect_all_url_entries(ctx.markdown, ctx.visual_lines);

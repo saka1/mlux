@@ -66,6 +66,7 @@ pub(super) enum Action {
     OpenUrl(u32),
     OpenUrlPrompt,
     EnterUrlPicker,
+    EnterToc,
     EnterSearch,
     EnterCommand,
     SearchNextMatch,
@@ -162,6 +163,12 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             Some(Action::EnterUrlPicker)
         }
 
+        // TOC overlay (t)
+        (KeyCode::Char('t'), KeyModifiers::NONE) => {
+            acc.reset();
+            Some(Action::EnterToc)
+        }
+
         // 検索
         (KeyCode::Char('/'), _) => {
             acc.reset();
@@ -218,6 +225,33 @@ pub(super) fn map_command_key(key: KeyEvent) -> Option<CommandAction> {
         (KeyCode::Enter, _) => Some(CommandAction::Execute),
         (KeyCode::Backspace, _) => Some(CommandAction::Backspace),
         (KeyCode::Char(c), _) => Some(CommandAction::Type(c)),
+        _ => None,
+    }
+}
+
+/// Actions specific to TOC overlay mode.
+pub(super) enum TocAction {
+    SelectNext,
+    SelectPrev,
+    Confirm,
+    Cancel,
+    Quit,
+}
+
+/// Map a key event to a TOC action.
+pub(super) fn map_toc_key(key: KeyEvent) -> Option<TocAction> {
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
+
+    match (code, modifiers) {
+        (KeyCode::Char('q'), _) => Some(TocAction::Quit),
+        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(TocAction::Cancel),
+        (KeyCode::Enter, _) => Some(TocAction::Confirm),
+        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
+            Some(TocAction::SelectNext)
+        }
+        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => Some(TocAction::SelectPrev),
         _ => None,
     }
 }
@@ -501,6 +535,66 @@ mod tests {
     #[test]
     fn test_search_unknown_returns_none() {
         let a = map_search_key(simple_key(KeyCode::Tab));
+        assert!(a.is_none());
+    }
+
+    // --- TOC mode ---
+
+    #[test]
+    fn test_t_enters_toc() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('t')), &mut acc);
+        assert!(matches!(a, Some(Action::EnterToc)));
+    }
+
+    #[test]
+    fn test_t_resets_accumulator() {
+        let mut acc = InputAccumulator::new();
+        map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
+        assert!(acc.is_active());
+        map_key_event(simple_key(KeyCode::Char('t')), &mut acc);
+        assert!(!acc.is_active());
+    }
+
+    #[test]
+    fn test_toc_select_next_j() {
+        let a = map_toc_key(simple_key(KeyCode::Char('j')));
+        assert!(matches!(a, Some(TocAction::SelectNext)));
+    }
+
+    #[test]
+    fn test_toc_select_prev_k() {
+        let a = map_toc_key(simple_key(KeyCode::Char('k')));
+        assert!(matches!(a, Some(TocAction::SelectPrev)));
+    }
+
+    #[test]
+    fn test_toc_confirm() {
+        let a = map_toc_key(simple_key(KeyCode::Enter));
+        assert!(matches!(a, Some(TocAction::Confirm)));
+    }
+
+    #[test]
+    fn test_toc_cancel_esc() {
+        let a = map_toc_key(simple_key(KeyCode::Esc));
+        assert!(matches!(a, Some(TocAction::Cancel)));
+    }
+
+    #[test]
+    fn test_toc_cancel_ctrl_c() {
+        let a = map_toc_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(TocAction::Cancel)));
+    }
+
+    #[test]
+    fn test_toc_quit() {
+        let a = map_toc_key(simple_key(KeyCode::Char('q')));
+        assert!(matches!(a, Some(TocAction::Quit)));
+    }
+
+    #[test]
+    fn test_toc_unknown_returns_none() {
+        let a = map_toc_key(simple_key(KeyCode::Tab));
         assert!(a.is_none());
     }
 

@@ -22,6 +22,7 @@ mod input;
 mod mode_command;
 mod mode_normal;
 mod mode_search;
+mod mode_toc;
 mod mode_url;
 mod state;
 mod terminal;
@@ -43,7 +44,9 @@ use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
 
 use effect::{Effect, Session, ViewContext, ViewerMode, Viewport};
-use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
+use input::{
+    InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
+};
 use state::{ExitReason, LoadedTiles, PrefetchChannels, ViewState};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
@@ -417,6 +420,20 @@ pub fn run(
                                 },
                                 ViewerMode::Command(cs) => match map_command_key(key_event) {
                                     Some(a) => mode_command::handle(a, cs),
+                                    None => vec![],
+                                },
+                                ViewerMode::Toc(ts) => match map_toc_key(key_event) {
+                                    Some(a) => {
+                                        let visible_count =
+                                            (session.layout.status_row - 1) as usize;
+                                        mode_toc::handle(
+                                            a,
+                                            ts,
+                                            &meta.visual_lines,
+                                            visible_count,
+                                            max_y,
+                                        )
+                                    }
                                     None => vec![],
                                 },
                                 ViewerMode::UrlPicker(up) => match map_url_key(key_event) {

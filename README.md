@@ -72,6 +72,7 @@ mlux render input.md -o output.png --width 800 --ppi 144 --theme catppuccin
 | `O` | URL picker (all URLs) |
 | `Ctrl-O` | Go back (after link navigation) |
 | `[N]y` / `[N]Y` | Yank line / block N |
+| `t` | Table of contents (heading list + jump) |
 | `:` | Command mode (`:q`, `:reload`, `:open`, `:back`) |
 | `q` | Quit |
 

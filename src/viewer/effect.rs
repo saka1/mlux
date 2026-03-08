@@ -18,6 +18,7 @@ use crate::watch::FileWatcher;
 
 use super::mode_command::CommandState;
 use super::mode_search::{self, LastSearch, SearchState};
+use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
 use super::state::{self, ExitReason, Layout, LoadedTiles, ViewState};
 use super::terminal;
@@ -28,6 +29,7 @@ pub(super) enum ViewerMode {
     Search(SearchState),
     Command(CommandState),
     UrlPicker(UrlPickerState),
+    Toc(TocState),
 }
 
 /// Side-effect descriptors produced by mode handlers.
@@ -42,6 +44,7 @@ pub(super) enum Effect {
     RedrawSearch,
     RedrawCommandBar,
     RedrawUrlPicker,
+    RedrawToc,
     Yank(String),
     OpenUrl(String),
     SetMode(ViewerMode),
@@ -145,6 +148,11 @@ impl Viewport {
                     mode_url::draw_url_screen(ctx.layout, up)?;
                 }
             }
+            Effect::RedrawToc => {
+                if let ViewerMode::Toc(ts) = &self.mode {
+                    mode_toc::draw_toc_screen(ctx.layout, ts)?;
+                }
+            }
             Effect::Yank(text) => {
                 let _ = terminal::send_osc52(&text);
             }
@@ -174,6 +182,9 @@ impl Viewport {
                     }
                     ViewerMode::UrlPicker(up) => {
                         mode_url::draw_url_screen(ctx.layout, up)?;
+                    }
+                    ViewerMode::Toc(ts) => {
+                        mode_toc::draw_toc_screen(ctx.layout, ts)?;
                     }
                     ViewerMode::Normal => {
                         // Clear text from search/command screen and
