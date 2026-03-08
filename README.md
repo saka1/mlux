@@ -19,7 +19,7 @@ The built-in terminal viewer then displays the rendered document directly in you
 - **Beautiful output** -- Typst's typesetting engine handles line breaking, paragraph
   spacing, headings, code blocks, tables, blockquotes, and more.
 - **Images and math** -- Local images and LaTeX math formulas (`$...$`, `$$...$$`) are
-  rendered inline.
+  rendered inline. Remote images (`http://`, `https://`) can be fetched with `--allow-remote-images`.
 - **Mermaid diagrams** -- Fenced `mermaid` code blocks are rendered as SVG diagrams
   inline.
 - **Terminal viewer** -- View rendered Markdown directly in your terminal with
@@ -56,6 +56,10 @@ mlux render input.md -o output.png
 
 # Custom width, resolution, and theme
 mlux render input.md -o output.png --width 800 --ppi 144 --theme catppuccin
+
+# Fetch and display remote images
+mlux --allow-remote-images input.md
+mlux render --allow-remote-images input.md -o output.png
 ```
 
 ### Viewer keybindings
@@ -121,5 +125,7 @@ mlux does its best to render safely, but there are a few things worth knowing:
 - **Supply chain** — Like any Rust project, mlux pulls in third-party crates, so transitive dependencies carry the usual supply chain risk.
 - **Filesystem sandbox** — The rendering pipeline runs in a subprocess with filesystem access restricted to the area around the input file. This relies on [Landlock](https://landlock.io/), so it only takes effect on recent Linux kernels.
 - **Other platforms** — On non-Linux systems or older kernels, the sandbox is simply not applied.
+
+- **Remote images** — Fetching remote images (`http://`, `https://`) is disabled by default. Use `--allow-remote-images` to opt in.
 
 Rendering untrusted Markdown is safer than executing arbitrary code, but it's not a guarantee. Keep that in mind when processing documents from untrusted sources.

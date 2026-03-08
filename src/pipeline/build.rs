@@ -21,6 +21,7 @@ pub struct BuildParams<'a> {
     pub tile_height_pt: f64,
     pub ppi: f32,
     pub fonts: &'a FontCache,
+    pub allow_remote_images: bool,
 }
 
 /// Result of the shared compilation pipeline (steps 1-4).
@@ -35,7 +36,8 @@ struct CompiledContent<'f> {
 fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> {
     // 1. Image pipeline
     let image_paths = super::markup::extract_image_paths(params.markdown);
-    let (mut image_files, image_errors) = crate::image::load_images(&image_paths, params.base_dir);
+    let (mut image_files, image_errors) =
+        crate::image::load_images(&image_paths, params.base_dir, params.allow_remote_images);
     for err in &image_errors {
         log::warn!("{err}");
     }

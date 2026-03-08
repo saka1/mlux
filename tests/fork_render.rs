@@ -4,7 +4,7 @@
 //! processes. We use `harness = false` to avoid the test runner's thread pool
 //! and run each test sequentially in a single thread.
 
-use mlux::fork_render::spawn_renderer;
+use mlux::fork_render::{fork_dump, fork_renderer, spawn_renderer};
 use mlux::pipeline::{BuildParams, FontCache, build_tiled_document};
 use mlux::tile::VisibleTiles;
 
@@ -29,6 +29,7 @@ fn test_fork_render_matches_local() {
         tile_height_pt: 500.0,
         ppi: 144.0,
         fonts: &font_cache,
+        allow_remote_images: false,
     };
 
     // Local render
@@ -77,6 +78,7 @@ fn test_fork_render_metadata_methods() {
         tile_height_pt: 500.0,
         ppi: 144.0,
         fonts: &font_cache,
+        allow_remote_images: false,
     };
 
     let (meta, _renderer, mut _child) = spawn_renderer(&params, None, true).unwrap();
@@ -99,6 +101,48 @@ fn test_fork_render_metadata_methods() {
     }
 }
 
+fn make_failing_params(font_cache: &FontCache) -> BuildParams<'_> {
+    // Invalid typst in theme_text causes compilation failure in the child
+    BuildParams {
+        theme_text: "#invalid-typst-syntax{{{{",
+        data_files: &[],
+        markdown: "# Hello\n",
+        base_dir: None,
+        width_pt: 400.0,
+        sidebar_width_pt: 40.0,
+        tile_height_pt: 500.0,
+        ppi: 144.0,
+        fonts: font_cache,
+        allow_remote_images: false,
+    }
+}
+
+fn test_fork_renderer_build_error_propagated() {
+    let font_cache = FontCache::new();
+    let params = make_failing_params(&font_cache);
+
+    let (mut renderer, mut _child) = fork_renderer(&params, None, true).unwrap();
+    match renderer.wait_for_meta() {
+        Ok(_) => panic!("expected build error, got Ok"),
+        Err(err) => {
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("child build error"),
+                "expected 'child build error' in: {msg}"
+            );
+        }
+    }
+}
+
+fn test_fork_dump_build_error_exit_code() {
+    let font_cache = FontCache::new();
+    let params = make_failing_params(&font_cache);
+
+    let mut child = fork_dump(&params, None, true).unwrap();
+    let code = child.wait().unwrap();
+    assert_ne!(code, 0, "fork_dump should exit non-zero on build failure");
+}
+
 fn main() {
     eprint!("test fork_render::test_fork_render_matches_local ... ");
     test_fork_render_matches_local();
@@ -106,5 +150,13 @@ fn main() {
 
     eprint!("test fork_render::test_fork_render_metadata_methods ... ");
     test_fork_render_metadata_methods();
+    eprintln!("ok");
+
+    eprint!("test fork_render::test_fork_renderer_build_error_propagated ... ");
+    test_fork_renderer_build_error_propagated();
+    eprintln!("ok");
+
+    eprint!("test fork_render::test_fork_dump_build_error_exit_code ... ");
+    test_fork_dump_build_error_exit_code();
     eprintln!("ok");
 }

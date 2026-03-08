@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::io::Read as _;
 use std::path::Path;
 
-use log::info;
+use log::{debug, info};
 use typst::foundations::Bytes;
 
 const MAX_IMAGE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+const FETCH_TIMEOUT_SECS: u64 = 10;
 
 /// A validated set of loaded image assets (path → bytes).
 #[derive(Clone, Default, Debug)]
@@ -39,6 +41,7 @@ impl LoadedImages {
 pub enum ImageError {
     AbsolutePath(String),
     RemoteUrl(String),
+    FetchError(String, String),
     OutsideBase(String),
     TooLarge(String, u64),
     IoError(String, std::io::Error),
@@ -49,6 +52,7 @@ impl fmt::Display for ImageError {
         match self {
             ImageError::AbsolutePath(p) => write!(f, "image: absolute path rejected: {p}"),
             ImageError::RemoteUrl(p) => write!(f, "image: remote URL rejected: {p}"),
+            ImageError::FetchError(p, e) => write!(f, "image: failed to fetch {p}: {e}"),
             ImageError::OutsideBase(p) => write!(f, "image: path outside base directory: {p}"),
             ImageError::TooLarge(p, size) => {
                 write!(f, "image: file too large ({size} bytes): {p}")
@@ -58,21 +62,27 @@ impl fmt::Display for ImageError {
     }
 }
 
-/// Load image files from disk, validating paths for security.
+/// Load image assets from disk and optionally from HTTP/HTTPS URLs.
 ///
 /// Returns a map of path → bytes for successfully loaded images,
 /// and a list of errors for images that could not be loaded.
 ///
-/// If `base_dir` is `None` (stdin mode), returns an empty map.
+/// If `allow_remote` is true, `http://` and `https://` URLs are fetched
+/// via HTTP (may block up to 10 seconds per URL). Otherwise they are rejected.
+/// Local paths require `base_dir`; if `None` (stdin mode), local paths are skipped.
 pub fn load_images(
     image_paths: &[String],
     base_dir: Option<&Path>,
+    allow_remote: bool,
 ) -> (LoadedImages, Vec<ImageError>) {
     let mut loaded = HashMap::new();
     let mut errors = Vec::new();
 
-    let Some(base_dir) = base_dir else {
-        return (LoadedImages::default(), errors);
+    // Shared HTTP agent for connection pooling across multiple fetches
+    let agent = if allow_remote {
+        Some(build_http_agent())
+    } else {
+        None
     };
 
     // Deduplicate paths
@@ -83,14 +93,30 @@ pub fn load_images(
             continue;
         }
 
-        // Reject remote URLs
-        if path_str.starts_with("http://")
-            || path_str.starts_with("https://")
-            || path_str.starts_with("data:")
-        {
+        // Handle remote URLs
+        if path_str.starts_with("http://") || path_str.starts_with("https://") {
+            if let Some(agent) = &agent {
+                match fetch_remote_image(agent, path_str) {
+                    Ok(data) => {
+                        loaded.insert(path_str.clone(), Bytes::new(data));
+                    }
+                    Err(e) => errors.push(e),
+                }
+            } else {
+                errors.push(ImageError::RemoteUrl(path_str.clone()));
+            }
+            continue;
+        }
+
+        // Reject data: URLs unconditionally
+        if path_str.starts_with("data:") {
             errors.push(ImageError::RemoteUrl(path_str.clone()));
             continue;
         }
+
+        let Some(base_dir) = base_dir else {
+            continue;
+        };
 
         let path = Path::new(path_str);
 
@@ -153,6 +179,53 @@ pub fn load_images(
     (LoadedImages { inner: loaded }, errors)
 }
 
+fn build_http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS)))
+        .build()
+        .new_agent()
+}
+
+/// Fetch a remote image over HTTP/HTTPS.
+fn fetch_remote_image(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, ImageError> {
+    debug!("image: fetching {url}");
+    let fetch_start = std::time::Instant::now();
+    let url_owned = url.to_string();
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|e: ureq::Error| ImageError::FetchError(url_owned.clone(), e.to_string()))?;
+
+    // Content-Length pre-check
+    if let Some(len) = response.headers().get("content-length")
+        && let Ok(len) = len.to_str().unwrap_or("0").parse::<u64>()
+        && len > MAX_IMAGE_SIZE
+    {
+        return Err(ImageError::TooLarge(url_owned, len));
+    }
+
+    let mut body = Vec::new();
+    response
+        .into_body()
+        .as_reader()
+        .take(MAX_IMAGE_SIZE)
+        .read_to_end(&mut body)
+        .map_err(|e: std::io::Error| ImageError::FetchError(url_owned.clone(), e.to_string()))?;
+
+    // Post-read check: if we hit the limit, the response was too large
+    if body.len() as u64 >= MAX_IMAGE_SIZE {
+        return Err(ImageError::TooLarge(url_owned, body.len() as u64));
+    }
+
+    info!(
+        "image: fetched {} ({} bytes, {:.0}ms)",
+        url,
+        body.len(),
+        fetch_start.elapsed().as_secs_f64() * 1000.0,
+    );
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,7 +234,7 @@ mod tests {
     #[test]
     fn test_absolute_path_rejected() {
         let paths = vec!["/etc/passwd".to_string()];
-        let (loaded, errors) = load_images(&paths, Some(Path::new(".")));
+        let (loaded, errors) = load_images(&paths, Some(Path::new(".")), false);
         assert!(loaded.is_empty());
         assert_eq!(errors.len(), 1);
         assert!(matches!(&errors[0], ImageError::AbsolutePath(_)));
@@ -170,11 +243,11 @@ mod tests {
     #[test]
     fn test_url_rejected() {
         let paths = vec![
-            "https://example.com/img.png".to_string(),
-            "http://example.com/img.png".to_string(),
+            "https://test.invalid/img.png".to_string(),
+            "http://test.invalid/img.png".to_string(),
             "data:image/png;base64,abc".to_string(),
         ];
-        let (loaded, errors) = load_images(&paths, Some(Path::new(".")));
+        let (loaded, errors) = load_images(&paths, Some(Path::new(".")), false);
         assert!(loaded.is_empty());
         assert_eq!(errors.len(), 3);
         for err in &errors {
@@ -183,9 +256,19 @@ mod tests {
     }
 
     #[test]
+    fn test_remote_fetch_with_invalid_domain() {
+        // allow_remote=true with .invalid domain (RFC 2606) should produce FetchError
+        let paths = vec!["https://test.invalid/img.png".to_string()];
+        let (loaded, errors) = load_images(&paths, Some(Path::new(".")), true);
+        assert!(loaded.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(&errors[0], ImageError::FetchError(..)));
+    }
+
+    #[test]
     fn test_path_traversal_rejected() {
         let paths = vec!["../../../etc/passwd".to_string()];
-        let (loaded, errors) = load_images(&paths, Some(Path::new("/tmp")));
+        let (loaded, errors) = load_images(&paths, Some(Path::new("/tmp")), false);
         assert!(loaded.is_empty());
         assert!(!errors.is_empty());
     }
@@ -193,7 +276,7 @@ mod tests {
     #[test]
     fn test_none_base_dir() {
         let paths = vec!["image.png".to_string()];
-        let (loaded, errors) = load_images(&paths, None);
+        let (loaded, errors) = load_images(&paths, None, false);
         assert!(loaded.is_empty());
         assert!(errors.is_empty());
     }
@@ -218,7 +301,7 @@ mod tests {
         fs::write(&img_path, png_data).unwrap();
 
         let paths = vec!["test.png".to_string()];
-        let (loaded, errors) = load_images(&paths, Some(&dir));
+        let (loaded, errors) = load_images(&paths, Some(&dir), false);
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(loaded.len(), 1);
         assert!(loaded.get("test.png").is_some());
@@ -230,8 +313,19 @@ mod tests {
     #[test]
     fn test_deduplication() {
         let paths = vec!["nonexistent.png".to_string(), "nonexistent.png".to_string()];
-        let (_, errors) = load_images(&paths, Some(Path::new(".")));
+        let (_, errors) = load_images(&paths, Some(Path::new(".")), false);
         // Should only produce one error (deduplicated)
         assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn test_fetch_error_display() {
+        let err = ImageError::FetchError(
+            "https://test.invalid/img.png".to_string(),
+            "connection refused".to_string(),
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("https://test.invalid/img.png"));
+        assert!(msg.contains("connection refused"));
     }
 }

@@ -129,6 +129,7 @@ pub struct CliOverrides {
     pub width: Option<f64>,
     pub ppi: Option<f32>,
     pub tile_height: Option<f64>,
+    pub allow_remote_images: bool,
 }
 
 /// Reload config.toml and re-apply CLI overrides.

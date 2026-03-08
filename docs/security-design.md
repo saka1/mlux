@@ -292,3 +292,22 @@ fork + Landlock は Linux 固有。他 OS ではフォールバック:
 
 - `File::from(OwnedFd)` による unsafe 削減（`process.rs` の `from_raw_fd()` 4 箇所 + テスト 4 箇所）
 - viewer モードへの fork 分離適用（ファイル変更時の再 fork 実装が必要）
+
+## 脅威 3 拡張: `--allow-remote-images` 有効時のリスク
+
+`--allow-remote-images` フラグにより、Markdown 内の `http://` / `https://` URL の
+画像を ureq でフェッチして表示できる。デフォルトは無効。
+
+| 脅威 | 深刻度 | 緩和策 |
+|------|--------|--------|
+| トラッキングピクセル（`![](https://evil.invalid/track?id=xyz)`） | 中 | デフォルト無効。フラグ明示指定が必要 |
+| SSRF — 内部ネットワークへのリクエスト（`![](http://192.168.1.1/admin)`） | 中 | v1では制限せず。ユーザーがフラグを明示的に指定する＝責任を受容 |
+| 大容量レスポンスによるメモリ枯渇 | 低 | 既存の MAX_IMAGE_SIZE (50MB) 制限 + Content-Length事前チェック |
+| 悪意あるレスポンス（非画像データ） | 低 | Typst の画像デコーダがパースを拒否。フォーマット検証は Typst 側に委譲 |
+| DNS リバインディング | 低 | v1では対策不要。ureq は標準的な DNS 解決を使用 |
+
+**設計判断:**
+- デフォルト無効 + CLI フラグ（config.toml には入れない）= intentional friction
+- フラグ名 `--allow-remote-images` は意図的に長い（誤使用防止）
+- 内部IP制限（localhost, RFC 1918）は v1 では見送り。「自分の Markdown を自分で開くツール」という前提で、フラグ指定＝ユーザーの明示的判断
+- タイムアウト: 10秒（ureq グローバルタイムアウト）

@@ -36,6 +36,7 @@ mitex = "0.2"
 mermaid-rs-renderer = { version = "0.2", default-features = false }
 bincode = { version = "2", features = ["serde"] }
 nix = { version = "0.29", features = ["process", "signal"] }
+ureq = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

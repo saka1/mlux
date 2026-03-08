@@ -206,6 +206,7 @@ pub fn run(
                 tile_height_pt,
                 ppi,
                 fonts: font_cache,
+                allow_remote_images: session.cli_overrides.allow_remote_images,
             };
             let read_base = match &session.input {
                 InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),

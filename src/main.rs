@@ -60,6 +60,10 @@ struct Cli {
     #[arg(long, global = true)]
     no_sandbox: bool,
 
+    /// Allow fetching remote images (http/https URLs) in Markdown
+    #[arg(long, global = true)]
+    allow_remote_images: bool,
+
     /// Log output file path (enables logging when specified)
     #[arg(long, global = true)]
     log: Option<PathBuf>,
@@ -133,6 +137,7 @@ fn main() {
         width: render_width,
         ppi: render_ppi,
         tile_height: render_tile_height,
+        allow_remote_images: cli.allow_remote_images,
     };
 
     cfg.merge_cli(cli.theme, render_width, render_ppi, render_tile_height);
@@ -145,7 +150,14 @@ fn main() {
             output,
             dump,
             ..
-        }) => cmd_render(input, &config, output, dump, cli.no_sandbox),
+        }) => cmd_render(
+            input,
+            &config,
+            output,
+            dump,
+            cli.no_sandbox,
+            cli.allow_remote_images,
+        ),
         None => {
             let input_source = if input::is_stdin_input(cli.input.as_deref()) {
                 InputSource::Stdin(input::StdinReader::new())
@@ -185,6 +197,7 @@ fn cmd_render(
     output: PathBuf,
     dump: bool,
     no_sandbox: bool,
+    allow_remote_images: bool,
 ) -> Result<()> {
     let pipeline_start = Instant::now();
 
@@ -234,11 +247,15 @@ fn cmd_render(
         tile_height_pt: tile_height,
         ppi,
         fonts: &font_cache,
+        allow_remote_images,
     };
 
     if dump {
         let mut child = mlux::fork_render::fork_dump(&params, read_base.as_deref(), no_sandbox)?;
-        child.wait()?;
+        let code = child.wait()?;
+        if code != 0 {
+            anyhow::bail!("dump failed (child exited with code {code})");
+        }
         return Ok(());
     }
 

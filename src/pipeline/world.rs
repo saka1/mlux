@@ -218,6 +218,14 @@ impl World for MluxWorld<'_> {
         if let Some(bytes) = self.image_files.get(path_str) {
             return Ok(bytes.clone());
         }
+        // VirtualPath normalizes "://" to ":/" (treats paths as filesystem).
+        // Restore the double slash for URL scheme lookup.
+        if let Some(bytes) = restore_url_scheme(path_str)
+            .as_deref()
+            .and_then(|restored| self.image_files.get(restored))
+        {
+            return Ok(bytes.clone());
+        }
         if id == self.main_id {
             Ok(Bytes::from_string(self.main_source.clone()))
         } else {
@@ -231,5 +239,53 @@ impl World for MluxWorld<'_> {
 
     fn today(&self, _offset: Option<i64>) -> Option<Datetime> {
         None
+    }
+}
+
+/// Restore URL double-slash that VirtualPath normalizes away.
+///
+/// `VirtualPath::new("https://example.com/...")` normalizes to `"https:/example.com/..."`.
+/// This function detects that pattern and restores `"://"`.
+fn restore_url_scheme(path: &str) -> Option<String> {
+    for scheme in &["https:/", "http:/"] {
+        if let Some(rest) = path.strip_prefix(scheme)
+            && !rest.starts_with('/')
+        {
+            return Some(format!("{scheme}/{rest}"));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_url_scheme_https() {
+        assert_eq!(
+            restore_url_scheme("https:/example.com/img.png"),
+            Some("https://example.com/img.png".to_string()),
+        );
+    }
+
+    #[test]
+    fn restore_url_scheme_http() {
+        assert_eq!(
+            restore_url_scheme("http:/example.com/img.png"),
+            Some("http://example.com/img.png".to_string()),
+        );
+    }
+
+    #[test]
+    fn restore_url_scheme_already_double_slash() {
+        // Already has "://" → after VirtualPath it would be ":/", but if somehow
+        // it's already correct, return None (no restoration needed).
+        assert_eq!(restore_url_scheme("https://example.com/img.png"), None);
+    }
+
+    #[test]
+    fn restore_url_scheme_local_path() {
+        assert_eq!(restore_url_scheme("images/photo.png"), None);
     }
 }

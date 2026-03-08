@@ -111,6 +111,7 @@ pub fn fork_renderer(
     let sidebar_width_pt = params.sidebar_width_pt;
     let tile_height_pt = params.tile_height_pt;
     let ppi = params.ppi;
+    let allow_remote_images = params.allow_remote_images;
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
 
     let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
@@ -136,11 +137,12 @@ pub fn fork_renderer(
                 tile_height_pt,
                 ppi,
                 fonts: &fonts,
+                allow_remote_images,
             }) {
                 Ok(doc) => doc,
                 Err(e) => {
                     log::error!("child: build failed: {e:#}");
-                    // Parent will get broken pipe on recv
+                    let _ = resp_tx.send(&Response::Error(format!("{e:#}")));
                     return;
                 }
             };
@@ -200,6 +202,7 @@ pub fn fork_dump(
     let sidebar_width_pt = params.sidebar_width_pt;
     let tile_height_pt = params.tile_height_pt;
     let ppi = params.ppi;
+    let allow_remote_images = params.allow_remote_images;
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
 
     let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
@@ -221,8 +224,10 @@ pub fn fork_dump(
             tile_height_pt,
             ppi,
             fonts: &fonts,
+            allow_remote_images,
         }) {
             eprintln!("{e:#}");
+            unsafe { nix::libc::_exit(1) }
         }
     })?;
 

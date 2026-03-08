@@ -790,7 +790,7 @@ fn test_image_renders() {
     // Load images (same flow as cmd_render)
     let base_dir = std::path::Path::new("tests/fixtures");
     let image_paths = mlux::pipeline::extract_image_paths(&markdown);
-    let (image_files, errors) = mlux::image::load_images(&image_paths, Some(base_dir));
+    let (image_files, errors) = mlux::image::load_images(&image_paths, Some(base_dir), false);
     assert!(errors.is_empty(), "image load errors: {errors:?}");
     assert!(
         image_files.get("test_image.png").is_some(),
