@@ -180,6 +180,55 @@ pub fn fork_renderer(
     Ok((TileRenderer { tx, rx }, child))
 }
 
+/// Fork a sandboxed child that dumps the compiled document to stderr and exits.
+///
+/// The child applies the sandbox, compiles the document, and writes the
+/// generated Typst source and frame tree to stderr. No IPC is needed because
+/// the forked child shares the parent's stderr.
+pub fn fork_dump(
+    params: &BuildParams<'_>,
+    sandbox_read_base: Option<&Path>,
+    no_sandbox: bool,
+) -> Result<ChildProcess> {
+    use crate::pipeline::build_and_dump;
+
+    let theme_text = params.theme_text.to_string();
+    let data_files = params.data_files;
+    let markdown = params.markdown.to_string();
+    let base_dir = params.base_dir.map(|p| p.to_path_buf());
+    let width_pt = params.width_pt;
+    let sidebar_width_pt = params.sidebar_width_pt;
+    let tile_height_pt = params.tile_height_pt;
+    let ppi = params.ppi;
+    let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
+
+    let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
+        if !no_sandbox
+            && let Err(e) = sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
+        {
+            log::warn!("child: sandbox failed: {e:#}");
+        }
+
+        let fonts = crate::pipeline::FontCache::new();
+
+        if let Err(e) = build_and_dump(&BuildParams {
+            theme_text: &theme_text,
+            data_files,
+            markdown: &markdown,
+            base_dir: base_dir.as_deref(),
+            width_pt,
+            sidebar_width_pt,
+            tile_height_pt,
+            ppi,
+            fonts: &fonts,
+        }) {
+            eprintln!("{e:#}");
+        }
+    })?;
+
+    Ok(child)
+}
+
 /// Fork and spawn a sandboxed renderer, waiting for metadata.
 ///
 /// Convenience wrapper around [`fork_renderer`] that also receives the initial

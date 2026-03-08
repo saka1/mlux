@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use log::info;
+use typst::layout::PagedDocument;
 
+use super::markup::SourceMap;
 use super::world::{FontCache, MluxWorld};
 use crate::tile::{SourceMappingParams, TiledDocument, VisualLine, extract_visual_lines_with_map};
 
@@ -21,6 +23,71 @@ pub struct BuildParams<'a> {
     pub fonts: &'a FontCache,
 }
 
+/// Result of the shared compilation pipeline (steps 1-4).
+struct CompiledContent<'f> {
+    world: MluxWorld<'f>,
+    document: PagedDocument,
+    source_map: SourceMap,
+}
+
+/// Shared build steps: image loading, diagram rendering, markdown→typst,
+/// world construction, and compilation.
+fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> {
+    // 1. Image pipeline
+    let image_paths = super::markup::extract_image_paths(params.markdown);
+    let (mut image_files, image_errors) = crate::image::load_images(&image_paths, params.base_dir);
+    for err in &image_errors {
+        log::warn!("{err}");
+    }
+
+    // 2. Diagram pipeline
+    let diagrams = crate::diagram::extract_diagrams(params.markdown);
+    for (key, svg) in crate::diagram::render_diagrams(&diagrams) {
+        image_files.insert(key, svg);
+    }
+
+    // 3. Markdown -> Typst
+    let loaded_set = image_files.key_set();
+    let (content_text, source_map) =
+        super::markup::markdown_to_typst(params.markdown, Some(&loaded_set));
+
+    // 4. Compile content document
+    let world = MluxWorld::new(
+        params.theme_text,
+        params.data_files,
+        &content_text,
+        params.width_pt,
+        params.fonts,
+        image_files,
+    );
+    let document = super::render::compile_document(&world)?;
+
+    Ok(CompiledContent {
+        world,
+        document,
+        source_map,
+    })
+}
+
+/// Compile the document and dump the generated Typst source and frame tree to stderr.
+pub fn build_and_dump(params: &BuildParams<'_>) -> Result<()> {
+    let compiled = compile_content(params)?;
+
+    // Print generated main.typ to stderr
+    let source_text = compiled.world.main_source().text();
+    eprintln!(
+        "=== Generated main.typ ({} lines) ===",
+        source_text.lines().count()
+    );
+    for (i, line) in source_text.lines().enumerate() {
+        eprintln!("{:>4} | {}", i + 1, line);
+    }
+    eprintln!();
+
+    super::render::dump_document(&compiled.document);
+    Ok(())
+}
+
 /// Build a TiledDocument from Markdown source.
 ///
 /// Shared pipeline used by both `cmd_render` and the terminal viewer.
@@ -28,55 +95,22 @@ pub struct BuildParams<'a> {
 /// Typst compilation, visual line extraction, sidebar generation,
 /// and tile assembly.
 pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
-    let BuildParams {
-        theme_text,
-        data_files,
-        markdown,
-        base_dir,
-        width_pt,
-        sidebar_width_pt,
-        tile_height_pt,
-        ppi,
-        fonts,
-    } = params;
     let start = Instant::now();
 
-    // 1. Image pipeline
-    let image_paths = super::markup::extract_image_paths(markdown);
-    let (mut image_files, image_errors) = crate::image::load_images(&image_paths, *base_dir);
-    for err in &image_errors {
-        log::warn!("{err}");
-    }
-
-    // 2. Diagram pipeline
-    let diagrams = crate::diagram::extract_diagrams(markdown);
-    for (key, svg) in crate::diagram::render_diagrams(&diagrams) {
-        image_files.insert(key, svg);
-    }
-
-    // 3. Markdown -> Typst
-    let loaded_set = image_files.key_set();
-    let (content_text, source_map) = super::markup::markdown_to_typst(markdown, Some(&loaded_set));
-
-    // 4. Compile content document
-    let content_world = MluxWorld::new(
-        theme_text,
-        data_files,
-        &content_text,
-        *width_pt,
-        fonts,
-        image_files,
-    );
-    let document = super::render::compile_document(&content_world)?;
+    let CompiledContent {
+        world: content_world,
+        document,
+        source_map,
+    } = compile_content(params)?;
 
     // 5. Extract visual lines with source mapping
     let mapping_params = SourceMappingParams {
         source: content_world.main_source(),
         content_offset: content_world.content_offset(),
         source_map: &source_map,
-        md_source: markdown,
+        md_source: params.markdown,
     };
-    let visual_lines = extract_visual_lines_with_map(&document, *ppi, Some(&mapping_params));
+    let visual_lines = extract_visual_lines_with_map(&document, params.ppi, Some(&mapping_params));
 
     if document.pages.is_empty() {
         bail!("[BUG] document has no pages");
@@ -84,13 +118,19 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let page_height_pt = document.pages[0].frame.size().y.to_pt();
 
     // 6. Compile sidebar document using visual lines
-    let sidebar_source = generate_sidebar_typst(&visual_lines, *sidebar_width_pt, page_height_pt);
-    let sidebar_world = MluxWorld::new_raw(&sidebar_source, fonts);
+    let sidebar_source =
+        generate_sidebar_typst(&visual_lines, params.sidebar_width_pt, page_height_pt);
+    let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
     let sidebar_doc = super::render::compile_document(&sidebar_world)?;
 
     // 7. Build TiledDocument with both content + sidebar
-    let tiled_doc =
-        TiledDocument::new(&document, &sidebar_doc, visual_lines, *tile_height_pt, *ppi)?;
+    let tiled_doc = TiledDocument::new(
+        &document,
+        &sidebar_doc,
+        visual_lines,
+        params.tile_height_pt,
+        params.ppi,
+    )?;
     info!(
         "build_tiled_document completed in {:.1}ms",
         start.elapsed().as_secs_f64() * 1000.0
