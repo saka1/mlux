@@ -263,6 +263,135 @@ fork + Landlock は Linux 固有。他 OS ではフォールバック:
 逆に言えば、World の制約を無視できるレベルの脆弱性（メモリ破壊による任意コード実行）
 に対してのみ、OS レベルのサンドボックスが本質的な防御となる。
 
+### seccomp syscall フィルタリングの検討
+
+seccomp-BPF は syscall 単位のホワイトリストで、Landlock が制御しない
+攻撃面を塞げる可能性がある。以下に Landlock との差分、実装コスト、
+mlux の脅威モデルにおける費用対効果を分析する。
+
+#### Landlock が制御しない攻撃面
+
+| 攻撃ベクトル | Landlock | seccomp | mlux での現実性 |
+|---|---|---|---|
+| ネットワークアクセス (`socket`/`connect`/`sendto`) | 制御不可 | 遮断可能 | **中** — 後述のサプライチェーン攻撃で関連 |
+| プロセス生成 (`execve`/`fork`) | 制御不可 | 遮断可能 | **低** — サンドボックス内で fork/exec しても得るものが少ない |
+| 特権昇格 (`setuid`/`setgid`) | 制御不可 | 遮断可能 | **低** — ローカル CLI、非 root 実行が前提 |
+| カーネル攻撃面 (`ptrace`/`mount`/`kexec`) | 制御不可 | 遮断可能 | **低** — 通常ユーザー権限では大半が既に拒否される |
+
+`fork_with_channels()` (`process.rs`) は pipe FD のみを子プロセスに渡す。
+ネットワークソケットは継承されない。したがって seccomp なしでも子プロセスが
+既存の FD 経由でネットワーク通信することは不可能だが、`socket()` syscall で
+**新規にソケットを作成する**ことは Landlock では防げない。
+
+#### サプライチェーン攻撃への効果
+
+Landlock の正当化理由は「Typst コンパイラのメモリ安全性バグ」だが、
+seccomp の文脈ではより現実的な脅威がある: **依存クレートのサプライチェーン侵害**。
+
+mlux の子プロセスは多数の依存クレートを実行する:
+- `pulldown-cmark` — Markdown パーサー（汚染入力を直接処理）
+- `typst` — コンパイラ + レイアウトエンジン（巨大な依存ツリー）
+- `typst-render` — PNG レンダリング
+- `mermaid-rs-renderer` — Mermaid 図の SVG 変換
+
+これらの依存ツリーのいずれかが侵害された場合の攻撃シナリオ:
+
+1. 悪意あるコードが子プロセス内で実行される
+2. Landlock の読み取りスコープ内（git root）のファイルを読む — **Landlock は許可する**
+3. `socket()` で TCP ソケットを作成し、外部サーバーに接続 — **Landlock は制御しない**
+4. ソースコード・秘密情報（`.env`、API キー等）を送信
+
+seccomp で `socket()` を遮断すれば、ステップ 3 を防げる。
+**これは Landlock では防げない経路であり、seccomp の独自の価値がある。**
+
+ただし、いくつかの緩和要因がある:
+
+- `.env` 等の秘密ファイルは通常 `.gitignore` に含まれるが、git root スコープの
+  Landlock は `.gitignore` を解釈しない（全ファイルが読み取り可能）
+- Landlock のスコープを git root ではなく入力ファイルの親ディレクトリに限定すれば、
+  読み取り可能なファイル自体を減らせる（seccomp なしでも部分的に緩和可能）
+- サプライチェーン攻撃はビルド時（`build.rs`）にも発生しうるが、
+  そちらは seccomp の範囲外
+
+#### 実装方式の比較
+
+| 方式 | 依存 | 保守性 | 備考 |
+|------|------|--------|------|
+| `seccompiler` (Amazon, pure Rust) | Rust のみ | **中** | Firecracker で実績あり。Rust 構造体から BPF 生成 |
+| `libseccomp-rs` | C ライブラリ (`libseccomp`) | **中** | 高水準 API だがビルド時に C ライブラリが必要 |
+| 生 BPF + `prctl` | なし | **低** | syscall 番号がアーキテクチャ依存。保守困難 |
+
+`seccompiler` が mlux に最も適合する（pure Rust、C ビルド依存なし）。
+Firecracker という高信頼プロジェクトでの実績もある。
+しかし実装方式の選択は本質的な問題ではなく、**許可リストの保守**が核心のコスト。
+
+#### 許可リスト保守の課題
+
+seccomp の最大のコストは許可リスト（allowlist）の継続的保守にある。
+
+**子プロセスが必要とする syscall（概算 20-30 種）:**
+
+```
+read, write, close, openat, stat, fstat, lstat,     # ファイル I/O
+mmap, mprotect, munmap, brk, mremap,                # メモリ管理
+readlink, readlinkat,                                # canonicalize()
+futex, clone3, set_robust_list, rseq,                # スレッド・同期
+rt_sigaction, rt_sigprocmask, sigaltstack,           # シグナル
+getrandom,                                           # 乱数（アロケータ）
+sched_getaffinity, sched_yield,                      # スケジューラ
+exit_group, _exit,                                   # 終了
+ioctl(?), fcntl(?),                                  # FD 操作
+...
+```
+
+この一覧は静的に確定できない。以下の要因で変動する:
+
+1. **glibc 更新**: glibc 2.34+ は `clone` → `clone3` に移行。
+   Ubuntu 22.04 で動いた許可リストが Ubuntu 24.04 で SIGKILL を引き起こしうる
+2. **Rust アロケータ**: jemalloc vs system allocator で syscall パターンが異なる。
+   Rust ツールチェーン更新でアロケータの内部実装が変わりうる
+3. **Typst バージョン**: 新バージョンで内部スレッディングやメモリ戦略が変われば
+   新しい syscall が必要になる
+4. **アーキテクチャ差異**: x86_64 と aarch64 で syscall 番号が異なる。
+   `seccompiler` はある程度吸収するが、テストは両方で必要
+
+**最大の問題: seccomp 違反は SIGKILL であり、エラーメッセージが出ない。**
+子プロセスが突然死し、親は「子が死んだ」としか分からない。
+デバッグには `SECCOMP_RET_LOG` + `auditd` か `strace` が必要で、
+一般ユーザーには困難。依存クレートの更新後に「mlux が動かなくなった」
+というバグ報告が発生し、原因特定に時間がかかるリスクがある。
+
+#### 費用対効果の結論
+
+**seccomp は Landlock にない独自の防御価値を持つが、mlux の現状では
+保守コストが利益を上回る。**
+
+| 観点 | 評価 |
+|------|------|
+| サプライチェーン攻撃への防御 | 有効（`socket()` 遮断でデータ持ち出し防止） |
+| 実装コスト（初期） | 中（seccompiler で 150-250 行程度） |
+| 保守コスト（継続） | **高**（glibc/Rust/Typst 更新ごとに許可リスト検証が必要） |
+| 障害診断の困難さ | **高**（SIGKILL のみ、一般ユーザーにはデバッグ困難） |
+| 脅威の現実性 | 中（サプライチェーン攻撃は起こりうるが、mlux 固有のリスクは小さい） |
+
+**判断根拠:**
+
+1. mlux はローカル CLI ツールであり、サーバーサイドの文書レンダラーとは
+   脅威モデルが異なる。サプライチェーン攻撃の標的としての優先度は低い
+2. Landlock のスコープ縮小（git root → 入力ファイル親ディレクトリ）で
+   読み取り可能な秘密情報自体を減らせる。seccomp なしでも緩和可能
+3. 許可リストの保守は「壊れたら SIGKILL」という形で表面化し、
+   ユーザー体験を著しく損なうリスクがある
+4. 個人開発プロジェクトとして、継続的な syscall 許可リスト検証の工数は
+   セキュリティ向上に見合わない
+
+**再検討の条件:**
+
+- mlux にサーバー/デーモンモードを追加する場合（脅威モデルが根本的に変わる）
+- Landlock がネットワーク制御をサポートした場合（Landlock v5 以降で検討中。
+  実現すれば seccomp なしでネットワーク遮断が可能になり、この議論自体が不要になる）
+- seccomp 許可リストの自動生成・検証ツールが成熟した場合
+
 ## Typst 0.14.2 ソース確認結果
 
 - `typst-eval`, `typst-layout`, `typst-render`, `typst-syntax`,
