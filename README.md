@@ -113,3 +113,12 @@ watch_interval_ms = 200
 CLI options override config file values. For example, `mlux render input.md --ppi 288`
 uses PPI 288 regardless of the config file.
 
+## Security
+
+mlux does its best to render safely, but there are a few things worth knowing:
+
+- **Supply chain** — Like any Rust project, mlux pulls in third-party crates, so transitive dependencies carry the usual supply chain risk.
+- **Filesystem sandbox** — The rendering pipeline runs in a subprocess with filesystem access restricted to the area around the input file. This relies on [Landlock](https://landlock.io/), so it only takes effect on recent Linux kernels.
+- **Other platforms** — On non-Linux systems or older kernels, the sandbox is simply not applied.
+
+Rendering untrusted Markdown is safer than executing arbitrary code, but it's not a guarantee. Keep that in mind when processing documents from untrusted sources.
