@@ -21,7 +21,7 @@ pub use process::ChildProcess;
 
 /// Request from parent to child.
 #[derive(Serialize, Deserialize)]
-pub enum Request {
+enum Request {
     RenderTile(usize),
     Shutdown,
 }
@@ -30,7 +30,7 @@ pub enum Request {
 ///
 /// The first message is always `Meta`. Subsequent messages are `Tile` or `Error`.
 #[derive(Serialize, Deserialize)]
-pub enum Response {
+enum Response {
     Meta(DocumentMeta),
     Tile(TilePngs),
     Error(String),
@@ -66,6 +66,19 @@ impl TileRenderer {
             Response::Error(e) => anyhow::bail!("{e}"),
             Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
         }
+    }
+
+    /// Check if the child has sent data (non-blocking).
+    pub fn has_pending_data(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let fd = self.rx.as_raw_fd();
+        let mut pfd = nix::libc::pollfd {
+            fd,
+            events: nix::libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { nix::libc::poll(&mut pfd, 1, 0) };
+        ret > 0 && (pfd.revents & nix::libc::POLLIN) != 0
     }
 
     /// Send shutdown request to the child.

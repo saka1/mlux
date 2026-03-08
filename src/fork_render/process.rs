@@ -48,6 +48,12 @@ impl<T: Serialize> TypedWriter<T> {
     }
 }
 
+impl<T> std::os::fd::AsRawFd for TypedReader<T> {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.file)
+    }
+}
+
 impl<T: DeserializeOwned> TypedReader<T> {
     fn new(file: File) -> Self {
         Self {

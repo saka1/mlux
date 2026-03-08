@@ -52,13 +52,6 @@ pub(super) enum Effect {
     Exit(ExitReason),
 }
 
-/// Result of an async build attempt.
-pub(super) enum BuildOutcome<T> {
-    Done(T),
-    Quit,
-    Resize { new_cols: u16, new_rows: u16 },
-}
-
 /// Jump stack entry for markdown link navigation.
 pub(super) struct JumpEntry {
     pub path: PathBuf,

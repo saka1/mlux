@@ -42,65 +42,12 @@ use crate::pipeline::FontCache;
 use crate::tile::{TilePngs, TiledDocumentCache};
 use crate::watch::FileWatcher;
 
-use effect::{BuildOutcome, Effect, Session, ViewContext, ViewerMode, Viewport};
+use effect::{Effect, Session, ViewContext, ViewerMode, Viewport};
 use input::{InputAccumulator, map_command_key, map_key_event, map_search_key, map_url_key};
 use state::{ExitReason, LoadedTiles, PrefetchChannels, ViewState};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
 const FAST_THRESHOLD: Duration = Duration::from_millis(100);
-
-/// Wait for a build result on a background thread with loading UI.
-///
-/// * Phase 1 (`recv_timeout(100ms)`): fast path — no loading screen, imperceptible wait.
-/// * Phase 2 (timeout exceeded): show loading screen and poll events so `q`/Esc/Ctrl-C
-///   can abort immediately without waiting for the build to finish.
-fn build_async_with_threshold<T: Send + 'static>(
-    build_fn: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
-    layout: &state::Layout,
-    filename: &str,
-) -> anyhow::Result<BuildOutcome<T>> {
-    let (tx, rx) = mpsc::channel::<anyhow::Result<T>>();
-    thread::spawn(move || {
-        let _ = tx.send(build_fn());
-    });
-
-    // Phase 1: fast path — q not responsive but 100ms is imperceptible
-    match rx.recv_timeout(FAST_THRESHOLD) {
-        Ok(result) => return Ok(BuildOutcome::Done(result?)),
-        Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("build thread panicked"),
-        Err(mpsc::RecvTimeoutError::Timeout) => {}
-    }
-
-    // Phase 2: loading screen + event polling
-    terminal::draw_loading_screen(layout, filename)?;
-    loop {
-        match rx.try_recv() {
-            Ok(result) => return Ok(BuildOutcome::Done(result?)),
-            Err(mpsc::TryRecvError::Disconnected) => anyhow::bail!("build thread panicked"),
-            Err(mpsc::TryRecvError::Empty) => {}
-        }
-        if event::poll(Duration::from_millis(16))? {
-            match event::read()? {
-                Event::Key(k)
-                    if k.code == KeyCode::Char('q')
-                        || k.code == KeyCode::Esc
-                        || (k.code == KeyCode::Char('c')
-                            && k.modifiers.contains(KeyModifiers::CONTROL)) =>
-                {
-                    // rx dropped → build thread detaches naturally
-                    return Ok(BuildOutcome::Quit);
-                }
-                Event::Resize(c, r) => {
-                    return Ok(BuildOutcome::Resize {
-                        new_cols: c,
-                        new_rows: r,
-                    });
-                }
-                _ => {}
-            }
-        }
-    }
-}
 
 /// Run the terminal viewer.
 ///
@@ -118,7 +65,7 @@ pub fn run(
 ) -> anyhow::Result<()> {
     terminal::check_tty()?;
 
-    // 2. ターミナルサイズを先に取得してビューポート幅を確定
+    // 2. Get terminal size first to determine the viewport width
     let winsize = crossterm_terminal::window_size()
         .map_err(|e| anyhow::anyhow!("failed to get terminal size: {e}"))?;
     let (term_cols, term_rows) = (winsize.columns, winsize.rows);
@@ -183,7 +130,7 @@ pub fn run(
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
-        // 1. テーマを読み込み (config reload でテーマ名が変わる場合があるのでループ内)
+        // 1. Load theme (inside the loop because config reload may change the theme name)
         let theme_text = crate::theme::get(&session.config.theme)
             .ok_or_else(|| anyhow::anyhow!("unknown theme '{}'", session.config.theme))?;
 
@@ -265,28 +212,41 @@ pub fn run(
             };
             // Fork before any threads (fork safety).
             // The child starts building immediately; we wait for meta below.
-            let (renderer, child) =
+            let (mut renderer, child) =
                 crate::fork_render::fork_renderer(&params, read_base.as_deref(), no_sandbox)?;
             _fork_child = Some(child);
 
-            // Wait for metadata from child with loading UI
-            match build_async_with_threshold(
-                move || {
-                    let mut renderer = renderer;
+            // Wait for metadata from child, polling for quit/resize events.
+            // Phase 1: poll without loading screen (fast builds complete here).
+            // Phase 2: show loading screen after FAST_THRESHOLD.
+            let fast_deadline = Instant::now() + FAST_THRESHOLD;
+            let mut loading_shown = false;
+            loop {
+                if renderer.has_pending_data() {
                     let meta = renderer.wait_for_meta()?;
-                    Ok((meta, renderer))
-                },
-                &session.layout,
-                &session.filename,
-            )? {
-                BuildOutcome::Done((m, renderer)) => {
-                    info!("fork build complete: {} tiles", m.tile_count);
-                    (m, renderer)
+                    info!("fork build complete: {} tiles", meta.tile_count);
+                    break (meta, renderer);
                 }
-                BuildOutcome::Quit => break 'outer,
-                BuildOutcome::Resize { new_cols, new_rows } => {
-                    session.update_layout_for_resize(new_cols, new_rows)?;
-                    continue 'outer;
+                if !loading_shown && Instant::now() >= fast_deadline {
+                    terminal::draw_loading_screen(&session.layout, &session.filename)?;
+                    loading_shown = true;
+                }
+                if event::poll(Duration::from_millis(16))? {
+                    match event::read()? {
+                        Event::Key(k)
+                            if k.code == KeyCode::Char('q')
+                                || k.code == KeyCode::Esc
+                                || (k.code == KeyCode::Char('c')
+                                    && k.modifiers.contains(KeyModifiers::CONTROL)) =>
+                        {
+                            break 'outer;
+                        }
+                        Event::Resize(new_cols, new_rows) => {
+                            session.update_layout_for_resize(new_cols, new_rows)?;
+                            continue 'outer;
+                        }
+                        _ => {}
+                    }
                 }
             }
         };
@@ -318,13 +278,13 @@ pub fn run(
 
             // Prefetch worker: FIFO — process each request in order.
             //
-            // 各リクエストを受信順に処理する。drain-to-latest は使わない:
-            // send_prefetch() は [current+1, current+2, current-1] の独立した
-            // 複数リクエストを送るため、最後だけ残すと手前のタイルが
-            // プリフェッチされず、メインスレッドで同期レンダリングが発生する。
+            // We do NOT drain-to-latest: send_prefetch() enqueues multiple
+            // independent requests [current+1, current+2, current-1], so
+            // keeping only the last would skip nearby tiles and force
+            // synchronous rendering on the main thread.
             //
-            // worker → main の結果は res_tx/res_rx チャネル経由。
-            // main thread が res_rx.try_recv() で受信し cache に格納する。
+            // Results flow back to main via res_tx/res_rx channel.
+            // The main thread drains res_rx.try_recv() into the cache.
             let mut renderer = renderer;
             s.spawn(move || {
                 debug!("prefetch worker: started");
@@ -345,10 +305,10 @@ pub fn run(
                 debug!("prefetch worker: exiting");
             });
 
-            // in_flight: 「worker に送信済みだが結果未受信」のタイル index 集合。
-            // main thread 専用（worker はアクセスしない）。
-            // send_prefetch() で insert、res_rx.try_recv() で remove。
-            // cache と合わせてチェックすることで二重レンダリングを防ぐ。
+            // in_flight: set of tile indices sent to the worker but not yet received.
+            // Owned exclusively by the main thread (worker never accesses it).
+            // Inserted by send_prefetch(), removed on res_rx.try_recv().
+            // Checked together with cache to prevent duplicate renders.
             let mut in_flight: HashSet<usize> = HashSet::new();
 
             // Vim-style number prefix accumulator
@@ -498,8 +458,9 @@ pub fn run(
 
                 // poll timeout → frame budget elapsed, execute redraw
                 if vp.dirty {
-                    // redraw 直前に追加 drain: event::poll() のブロック中に worker が
-                    // 完了した結果を回収し、redraw での同期レンダリングを回避する。
+                    // Extra drain just before redraw: collect results the worker
+                    // completed while event::poll() was blocking, avoiding
+                    // synchronous rendering during redraw.
                     while let Ok((idx, pngs)) = res_rx.try_recv() {
                         debug!(
                             "main: received prefetched tile {idx} (content={}, sidebar={} bytes, pre-redraw)",
