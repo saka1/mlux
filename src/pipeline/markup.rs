@@ -535,7 +535,7 @@ pub fn markdown_to_typst(
                         push_to_target(
                             &mut output,
                             &mut cell_buf,
-                            &format!("#image(\"{escaped}\", width: 100%)\n"),
+                            &format!("#align(center)[#image(\"{escaped}\")]\n"),
                         );
                     } else {
                         let escaped = escape_typst(&path);
@@ -1418,7 +1418,7 @@ mod tests {
         let available: HashSet<String> = ["photo.png".to_string()].into_iter().collect();
         let typst = markdown_to_typst(md, Some(&available)).0;
         assert!(
-            typst.contains("#image(\"photo.png\", width: 100%)"),
+            typst.contains("#align(center)[#image(\"photo.png\")]"),
             "should contain #image() call, got: {typst}"
         );
     }
