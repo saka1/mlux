@@ -29,6 +29,10 @@ impl LoadedImages {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+
+    pub fn insert(&mut self, key: String, data: Bytes) {
+        self.inner.insert(key, data);
+    }
 }
 
 #[derive(Debug)]

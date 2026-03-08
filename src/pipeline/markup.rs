@@ -397,18 +397,44 @@ pub fn markdown_to_typst(
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
-                // Use a fence longer than any backtick run in the content
-                let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
-                let fence: String = "`".repeat(fence_len);
-                push_to_target(&mut output, &mut cell_buf, &fence);
-                push_to_target(&mut output, &mut cell_buf, &code_block_lang);
-                push_to_target(&mut output, &mut cell_buf, "\n");
-                push_to_target(&mut output, &mut cell_buf, &code_block_buf);
-                if !code_block_buf.ends_with('\n') {
+                if code_block_lang == "mermaid" {
+                    // Emit as image reference; diagram rendering happens later
+                    let key = crate::diagram::diagram_key(&code_block_buf);
+                    let is_available = available_images.is_some_and(|set| set.contains(&key));
+                    if is_available {
+                        push_to_target(
+                            &mut output,
+                            &mut cell_buf,
+                            &format!("#align(center)[#image(\"{key}\")]\n"),
+                        );
+                    } else {
+                        // Fallback: render as regular code block
+                        let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
+                        let fence: String = "`".repeat(fence_len);
+                        push_to_target(&mut output, &mut cell_buf, &fence);
+                        push_to_target(&mut output, &mut cell_buf, "mermaid");
+                        push_to_target(&mut output, &mut cell_buf, "\n");
+                        push_to_target(&mut output, &mut cell_buf, &code_block_buf);
+                        if !code_block_buf.ends_with('\n') {
+                            push_to_target(&mut output, &mut cell_buf, "\n");
+                        }
+                        push_to_target(&mut output, &mut cell_buf, &fence);
+                        push_to_target(&mut output, &mut cell_buf, "\n");
+                    }
+                } else {
+                    // Use a fence longer than any backtick run in the content
+                    let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
+                    let fence: String = "`".repeat(fence_len);
+                    push_to_target(&mut output, &mut cell_buf, &fence);
+                    push_to_target(&mut output, &mut cell_buf, &code_block_lang);
+                    push_to_target(&mut output, &mut cell_buf, "\n");
+                    push_to_target(&mut output, &mut cell_buf, &code_block_buf);
+                    if !code_block_buf.ends_with('\n') {
+                        push_to_target(&mut output, &mut cell_buf, "\n");
+                    }
+                    push_to_target(&mut output, &mut cell_buf, &fence);
                     push_to_target(&mut output, &mut cell_buf, "\n");
                 }
-                push_to_target(&mut output, &mut cell_buf, &fence);
-                push_to_target(&mut output, &mut cell_buf, "\n");
                 code_block_buf.clear();
                 code_block_lang.clear();
                 pop_expect(&mut stack, "CodeBlock");

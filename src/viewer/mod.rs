@@ -150,20 +150,10 @@ pub fn run(
                 }
             }
         };
-        // Load images
         let base_dir = match &session.input {
             InputSource::File(path) => path.parent(),
             InputSource::Stdin(_) => None,
         };
-        let image_paths = crate::pipeline::extract_image_paths(&markdown);
-        let (image_files, image_errors) = crate::image::load_images(&image_paths, base_dir);
-        for err in &image_errors {
-            eprintln!("warning: {err}");
-        }
-        let loaded_set = image_files.key_set();
-
-        let (content_text, source_map) =
-            crate::pipeline::markdown_to_typst(&markdown, Some(&loaded_set));
 
         // 5b. Build document (content + sidebar compiled & split)
         //
@@ -196,15 +186,13 @@ pub fn run(
             let params = crate::pipeline::BuildParams {
                 theme_text,
                 data_files,
-                content_text: &content_text,
-                md_source: &markdown_clone,
-                source_map: &source_map,
+                markdown: &markdown_clone,
+                base_dir,
                 width_pt,
                 sidebar_width_pt,
                 tile_height_pt,
                 ppi,
                 fonts: font_cache,
-                image_files,
             };
             let read_base = match &session.input {
                 InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),

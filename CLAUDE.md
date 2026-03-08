@@ -13,15 +13,20 @@ Includes a terminal viewer using Kitty Graphics Protocol with tile-based lazy re
 ### Render pipeline (`mlux render`)
 
 ```
-Markdown → pulldown-cmark → Event stream → pipeline/markup.rs → Typst markup
-  → pipeline/world.rs (single main.typ: theme + width + content)
+Markdown → pulldown-cmark → Event stream
+  → diagram.rs: extract mermaid blocks → render to SVG (mermaid-rs-renderer)
+  → pipeline/markup.rs → Typst markup (mermaid → #image(), others → code fence)
+  → pipeline/world.rs (single main.typ: theme + width + content + SVG images)
   → pipeline/render.rs: typst::compile → PagedDocument → typst_render → PNG
 ```
 
 ### Terminal viewer pipeline (`mlux <file>`)
 
 ```
-Markdown → pipeline/markup.rs → Typst markup (with SourceMap)
+Markdown → build_tiled_document() orchestrates full pipeline:
+  → image.rs: extract_image_paths → load_images
+  → diagram.rs: extract_diagrams → render_diagrams (mermaid → SVG)
+  → pipeline/markup.rs → Typst markup (with SourceMap)
   → pipeline/render.rs: compile_document() → PagedDocument
   → tile.rs: split_frame() → Vec<Frame> (vertical tiles)
   → TiledDocument: lazy per-tile PNG rendering with LRU cache
@@ -75,11 +80,12 @@ Typst byte offsets back to Markdown line numbers. `tile.rs` uses this to annotat
 
 ## Key Files
 
+- `src/diagram.rs` — Mermaid diagram extraction and rendering (mermaid-rs-renderer, SVG fixup)
 - `src/pipeline/` — Render pipeline submodules (markup, world, render, build)
   - `convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, Container enum + stack for nested markup)
   - `world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
   - `render.rs` — Typst compile (`compile_document`) + tile PNG render (`render_frame_to_png`) + debug dump
-  - `build.rs` — BuildParams, build_tiled_document (orchestrates markup→world→render→tile)
+  - `build.rs` — BuildParams, build_tiled_document (orchestrates image loading→diagrams→markup→world→render→tile)
 - `src/tile.rs` — Tile-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
 - `src/viewer/` — Terminal viewer (see Viewer architecture above)
 - `src/config.rs` — Config file loading, CLI override merging, default resolution
@@ -142,6 +148,7 @@ cargo test      # all tests pass
 - crossterm 0.28, base64 0.22 (viewer terminal I/O)
 - notify 8 (file watching via inotify)
 - anyhow 1 (error handling), log 0.4 + env_logger 0.11
+- mermaid-rs-renderer 0.2 (default-features=false; mermaid diagram → SVG)
 - Rust edition 2024
 
 ## Viewer Constants

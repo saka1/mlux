@@ -832,3 +832,143 @@ fn test_image_renders() {
         png_data.len()
     );
 }
+
+#[test]
+fn test_mermaid_diagram_renders() {
+    let md =
+        "# Mermaid Test\n\n```mermaid\ngraph LR\n  A --> B\n  B --> C\n```\n\nSome text after.\n";
+    let theme = load_theme();
+
+    // Extract and render diagrams
+    let diagrams = mlux::diagram::extract_diagrams(md);
+    assert_eq!(diagrams.len(), 1, "should extract 1 mermaid diagram");
+
+    let rendered = mlux::diagram::render_diagrams(&diagrams);
+    assert_eq!(rendered.len(), 1, "should render 1 diagram to SVG");
+
+    // Build image set with rendered diagrams
+    let mut image_files = LoadedImages::default();
+    for (key, svg) in rendered {
+        image_files.insert(key, svg);
+    }
+    let loaded_set = image_files.key_set();
+
+    // Convert markdown to typst — mermaid block should become #image()
+    let (content, _source_map) = markdown_to_typst(md, Some(&loaded_set));
+    assert!(
+        content.contains("#image(\"_diagram_"),
+        "mermaid block should produce #image() call, got: {content}"
+    );
+    assert!(
+        !content.contains("```mermaid"),
+        "mermaid block should not remain as code fence"
+    );
+
+    // Full render
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+        image_files,
+    );
+    let document = compile_document(&world).expect("compilation should succeed with mermaid");
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
+    assert!(!tiles.is_empty(), "should produce at least one tile");
+
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+        .expect("rendering should succeed");
+    assert_eq!(
+        &png_data[..8],
+        b"\x89PNG\r\n\x1a\n",
+        "output should be valid PNG"
+    );
+    assert!(
+        png_data.len() > 1000,
+        "PNG should be >1KB with mermaid diagram, got {} bytes",
+        png_data.len()
+    );
+}
+
+#[test]
+fn test_mermaid_fixture_renders() {
+    let markdown =
+        fs::read_to_string("tests/fixtures/13_mermaid.md").expect("fixture should exist");
+    let theme = load_theme();
+
+    // Full pipeline: extract diagrams, render, convert, compile
+    let diagrams = mlux::diagram::extract_diagrams(&markdown);
+    assert!(
+        diagrams.len() >= 3,
+        "fixture should have at least 3 mermaid blocks, got {}",
+        diagrams.len()
+    );
+
+    let rendered = mlux::diagram::render_diagrams(&diagrams);
+    assert_eq!(
+        rendered.len(),
+        diagrams.len(),
+        "all diagrams should render successfully"
+    );
+
+    let mut image_files = LoadedImages::default();
+    for (key, svg) in rendered {
+        image_files.insert(key, svg);
+    }
+    let loaded_set = image_files.key_set();
+
+    let (content, _source_map) = markdown_to_typst(&markdown, Some(&loaded_set));
+
+    // All mermaid blocks should become #image() calls
+    assert!(
+        !content.contains("```mermaid"),
+        "no mermaid code fences should remain"
+    );
+    // Normal code blocks should be preserved
+    assert!(
+        content.contains("```rust"),
+        "rust code block should be preserved"
+    );
+
+    let font_cache = FontCache::new();
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        800.0,
+        &font_cache,
+        image_files,
+    );
+    let document = compile_document(&world).expect("compilation should succeed");
+    let tiles = split_frame(&document.pages[0].frame, 500.0);
+    assert!(
+        tiles.len() >= 2,
+        "mermaid fixture should produce multiple tiles, got {}",
+        tiles.len()
+    );
+
+    // Verify all tiles render to valid PNG
+    for (i, tile) in tiles.iter().enumerate() {
+        let png_data = render_frame_to_png(tile, &document.pages[0].fill, 144.0)
+            .unwrap_or_else(|e| panic!("tile {i} should render: {e}"));
+        assert_eq!(
+            &png_data[..8],
+            b"\x89PNG\r\n\x1a\n",
+            "tile {i} should be valid PNG"
+        );
+    }
+}
+
+#[test]
+fn test_mermaid_fallback_without_render() {
+    let md = "```mermaid\ngraph LR\n  A --> B\n```\n";
+
+    // Without rendering diagrams, mermaid blocks should fall back to code fence
+    let (content, _source_map) = markdown_to_typst(md, None);
+    assert!(
+        content.contains("```mermaid"),
+        "without available images, mermaid should render as code fence, got: {content}"
+    );
+}

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod diagram;
 pub mod fork_render;
 pub mod image;
 pub mod input;

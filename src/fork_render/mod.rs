@@ -105,14 +105,12 @@ pub fn fork_renderer(
     // Clone owned data for the child closure (BuildParams borrows).
     let theme_text = params.theme_text.to_string();
     let data_files = params.data_files;
-    let content_text = params.content_text.to_string();
-    let md_source = params.md_source.to_string();
-    let source_map = params.source_map.clone();
+    let markdown = params.markdown.to_string();
+    let base_dir = params.base_dir.map(|p| p.to_path_buf());
     let width_pt = params.width_pt;
     let sidebar_width_pt = params.sidebar_width_pt;
     let tile_height_pt = params.tile_height_pt;
     let ppi = params.ppi;
-    let image_files = params.image_files.clone();
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
 
     let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
@@ -131,15 +129,13 @@ pub fn fork_renderer(
             let doc = match build_tiled_document(&BuildParams {
                 theme_text: &theme_text,
                 data_files,
-                content_text: &content_text,
-                md_source: &md_source,
-                source_map: &source_map,
+                markdown: &markdown,
+                base_dir: base_dir.as_deref(),
                 width_pt,
                 sidebar_width_pt,
                 tile_height_pt,
                 ppi,
                 fonts: &fonts,
-                image_files,
             }) {
                 Ok(doc) => doc,
                 Err(e) => {

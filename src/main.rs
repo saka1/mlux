@@ -210,28 +210,34 @@ fn cmd_render(
         anyhow::bail!("input file is empty or contains only whitespace");
     }
 
-    // Load images
     let base_dir = if is_stdin { None } else { input.parent() };
-    let image_paths = pipeline::extract_image_paths(&markdown);
-    let (image_files, image_errors) = mlux::image::load_images(&image_paths, base_dir);
-    for err in &image_errors {
-        eprintln!("warning: {err}");
-    }
-    let loaded_set = image_files.key_set();
-
-    // Convert markdown to typst
-    let (content_text, source_map) = pipeline::markdown_to_typst(&markdown, Some(&loaded_set));
 
     if dump {
+        // Dump mode: build world directly for source inspection (outside sandbox)
+        let image_paths = pipeline::extract_image_paths(&markdown);
+        let (image_files, image_errors) = mlux::image::load_images(&image_paths, base_dir);
+        for err in &image_errors {
+            eprintln!("warning: {err}");
+        }
+
+        // Render diagrams
+        let diagrams = mlux::diagram::extract_diagrams(&markdown);
+        let mut image_files = image_files;
+        for (key, svg) in mlux::diagram::render_diagrams(&diagrams) {
+            image_files.insert(key, svg);
+        }
+
+        let loaded_set = image_files.key_set();
+        let (content_text, _source_map) = pipeline::markdown_to_typst(&markdown, Some(&loaded_set));
+
         let font_cache = FontCache::new();
-        // Dump mode: build world directly for source inspection
         let world = MluxWorld::new(
             theme_text,
             mlux::theme::data_files(theme),
             &content_text,
             width,
             &font_cache,
-            image_files.clone(),
+            image_files,
         );
         let source_text = world.main_source().text();
         eprintln!(
@@ -270,15 +276,13 @@ fn cmd_render(
     let params = BuildParams {
         theme_text,
         data_files,
-        content_text: &content_text,
-        md_source: &markdown,
-        source_map: &source_map,
+        markdown: &markdown,
+        base_dir,
         width_pt: width,
         sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
         tile_height_pt: tile_height,
         ppi,
         fonts: &font_cache,
-        image_files,
     };
 
     let stem = output

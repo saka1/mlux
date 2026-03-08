@@ -133,6 +133,38 @@ Typst 的にリストアイテム外のテキストとして扱われる。
 
 ---
 
+## Bug 5: mermaid-rs-renderer が不正な SVG を出力する (ワークアラウンド済み)
+
+**重要度**: Medium — SVG が Typst の XML パーサーで拒否される
+**発見**: Mermaid 対応実装時
+**ステータス**: **ワークアラウンド済み** — `diagram.rs` の `fix_svg_font_family()` で修正
+
+### 症状
+
+`mermaid-rs-renderer::render()` が生成する SVG の `font-family` 属性に
+エスケープされていないダブルクォートが含まれる:
+
+```xml
+font-family="Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif"
+```
+
+`"Segoe UI"` の内側のダブルクォートが XML 属性値を途中で閉じてしまい、
+Typst の SVG パーサー (usvg) が `expected a whitespace not 'S' at 1:1400` で失敗する。
+
+### 原因
+
+mermaid-rs-renderer v0.2.0 のバグ。`font-family` CSS 値をそのまま
+XML 属性に埋め込んでおり、CSS では合法な `"Segoe UI"` が XML では不正。
+正しくは `&quot;` にエスケープするか、シングルクォートを使うべき。
+
+### ワークアラウンド
+
+`diagram.rs` の `fix_svg_font_family()` が SVG 文字列を後処理し、
+`font-family` 属性内の内側ダブルクォートをシングルクォートに置換する。
+上流への報告・修正後にワークアラウンドを除去できる。
+
+---
+
 ## 備考
 
 - Bug 1, 2, 3, 4 はすべて修正済み。

@@ -1,10 +1,10 @@
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
 use log::info;
 
-use super::markup::SourceMap;
 use super::world::{FontCache, MluxWorld};
 use crate::tile::{SourceMappingParams, TiledDocument, VisualLine, extract_visual_lines_with_map};
 
@@ -12,55 +12,69 @@ use crate::tile::{SourceMappingParams, TiledDocument, VisualLine, extract_visual
 pub struct BuildParams<'a> {
     pub theme_text: &'a str,
     pub data_files: crate::theme::DataFiles,
-    pub content_text: &'a str,
-    pub md_source: &'a str,
-    pub source_map: &'a SourceMap,
+    pub markdown: &'a str,
+    pub base_dir: Option<&'a Path>,
     pub width_pt: f64,
     pub sidebar_width_pt: f64,
     pub tile_height_pt: f64,
     pub ppi: f32,
     pub fonts: &'a FontCache,
-    pub image_files: crate::image::LoadedImages,
 }
 
-/// Build a TiledDocument from converted Typst content.
+/// Build a TiledDocument from Markdown source.
 ///
 /// Shared pipeline used by both `cmd_render` and the terminal viewer.
-/// Compiles content, extracts visual lines with source mapping,
-/// generates + compiles sidebar, and assembles into a TiledDocument.
+/// Runs image loading, diagram rendering, Markdown→Typst conversion,
+/// Typst compilation, visual line extraction, sidebar generation,
+/// and tile assembly.
 pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let BuildParams {
         theme_text,
         data_files,
-        content_text,
-        md_source,
-        source_map,
+        markdown,
+        base_dir,
         width_pt,
         sidebar_width_pt,
         tile_height_pt,
         ppi,
         fonts,
-        image_files,
     } = params;
     let start = Instant::now();
 
-    // 1. Compile content document
+    // 1. Image pipeline
+    let image_paths = super::markup::extract_image_paths(markdown);
+    let (mut image_files, image_errors) = crate::image::load_images(&image_paths, *base_dir);
+    for err in &image_errors {
+        log::warn!("{err}");
+    }
+
+    // 2. Diagram pipeline
+    let diagrams = crate::diagram::extract_diagrams(markdown);
+    for (key, svg) in crate::diagram::render_diagrams(&diagrams) {
+        image_files.insert(key, svg);
+    }
+
+    // 3. Markdown -> Typst
+    let loaded_set = image_files.key_set();
+    let (content_text, source_map) = super::markup::markdown_to_typst(markdown, Some(&loaded_set));
+
+    // 4. Compile content document
     let content_world = MluxWorld::new(
         theme_text,
         data_files,
-        content_text,
+        &content_text,
         *width_pt,
         fonts,
-        image_files.clone(),
+        image_files,
     );
     let document = super::render::compile_document(&content_world)?;
 
-    // 2. Extract visual lines with source mapping
+    // 5. Extract visual lines with source mapping
     let mapping_params = SourceMappingParams {
         source: content_world.main_source(),
         content_offset: content_world.content_offset(),
-        source_map,
-        md_source,
+        source_map: &source_map,
+        md_source: markdown,
     };
     let visual_lines = extract_visual_lines_with_map(&document, *ppi, Some(&mapping_params));
 
@@ -69,12 +83,12 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     }
     let page_height_pt = document.pages[0].frame.size().y.to_pt();
 
-    // 3. Compile sidebar document using visual lines
+    // 6. Compile sidebar document using visual lines
     let sidebar_source = generate_sidebar_typst(&visual_lines, *sidebar_width_pt, page_height_pt);
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, fonts);
     let sidebar_doc = super::render::compile_document(&sidebar_world)?;
 
-    // 4. Build TiledDocument with both content + sidebar
+    // 7. Build TiledDocument with both content + sidebar
     let tiled_doc =
         TiledDocument::new(&document, &sidebar_doc, visual_lines, *tile_height_pt, *ppi)?;
     info!(

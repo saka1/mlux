@@ -5,8 +5,7 @@
 //! and run each test sequentially in a single thread.
 
 use mlux::fork_render::spawn_renderer;
-use mlux::image::LoadedImages;
-use mlux::pipeline::{BuildParams, FontCache, build_tiled_document, markdown_to_typst};
+use mlux::pipeline::{BuildParams, FontCache, build_tiled_document};
 use mlux::tile::VisibleTiles;
 
 const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
@@ -18,21 +17,18 @@ fn load_theme() -> &'static str {
 fn test_fork_render_matches_local() {
     let md = "# Hello\n\nSome **bold** text.\n\n- Item 1\n- Item 2\n";
     let theme_text = load_theme();
-    let (content_text, source_map) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
 
     let params = BuildParams {
         theme_text,
         data_files: mlux::theme::data_files("catppuccin"),
-        content_text: &content_text,
-        md_source: md,
-        source_map: &source_map,
+        markdown: md,
+        base_dir: None,
         width_pt: 400.0,
         sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
         tile_height_pt: 500.0,
         ppi: 144.0,
         fonts: &font_cache,
-        image_files: LoadedImages::default(),
     };
 
     // Local render
@@ -69,21 +65,18 @@ fn test_fork_render_matches_local() {
 fn test_fork_render_metadata_methods() {
     let md = "# Title\n\nParagraph.\n";
     let theme_text = load_theme();
-    let (content_text, source_map) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
 
     let params = BuildParams {
         theme_text,
         data_files: mlux::theme::data_files("catppuccin"),
-        content_text: &content_text,
-        md_source: md,
-        source_map: &source_map,
+        markdown: md,
+        base_dir: None,
         width_pt: 400.0,
         sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
         tile_height_pt: 500.0,
         ppi: 144.0,
         fonts: &font_cache,
-        image_files: LoadedImages::default(),
     };
 
     let (meta, _renderer, mut _child) = spawn_renderer(&params, None, true).unwrap();
