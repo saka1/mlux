@@ -253,7 +253,8 @@ pub(super) fn draw_status_bar(
     };
 
     let padded = format!("{:<width$}", middle, width = total_cols as usize);
-    write!(out, "{}", padded.on_dark_grey().white())?;
+    let truncated: String = padded.chars().take(total_cols as usize).collect();
+    write!(out, "{}", truncated.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
     out.flush()
 }
@@ -269,7 +270,8 @@ pub(super) fn draw_loading_screen(layout: &Layout, filename: &str) -> io::Result
     let total_cols = (layout.sidebar_cols + layout.image_cols) as usize;
     let msg = format!(" {filename} | Building\u{2026}  q:quit");
     let padded = format!("{:<width$}", msg, width = total_cols);
-    write!(out, "{}", padded.on_dark_grey().white())?;
+    let truncated: String = padded.chars().take(total_cols).collect();
+    write!(out, "{}", truncated.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
     out.flush()
 }
@@ -282,7 +284,8 @@ pub(super) fn draw_command_bar(layout: &Layout, input: &str) -> io::Result<()> {
     let total_cols = (layout.sidebar_cols + layout.image_cols) as usize;
     let prompt = format!(":{input}_");
     let padded = format!("{:<width$}", prompt, width = total_cols);
-    write!(out, "{}", padded.on_dark_grey().white())?;
+    let truncated: String = padded.chars().take(total_cols).collect();
+    write!(out, "{}", truncated.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
     out.flush()
 }
