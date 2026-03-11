@@ -1836,6 +1836,7 @@ dependencies = [
  "crossterm",
  "env_logger",
  "landlock",
+ "libc",
  "log",
  "mermaid-rs-renderer",
  "mitex",

@@ -40,7 +40,20 @@ pub const THEMES: &[ThemeEntry] = &[
 ];
 
 /// Default theme name.
-pub const DEFAULT_THEME: &str = "catppuccin";
+pub const DEFAULT_THEME: &str = "auto";
+
+/// Resolve "auto" theme name based on terminal brightness.
+pub fn resolve_theme_name(name: &str, is_light: bool) -> &str {
+    if name == "auto" {
+        if is_light {
+            "catppuccin-latte"
+        } else {
+            "catppuccin"
+        }
+    } else {
+        name
+    }
+}
 
 fn find(name: &str) -> Option<&'static ThemeEntry> {
     THEMES.iter().find(|t| t.name == name)
@@ -68,8 +81,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_theme_exists() {
-        assert!(get(DEFAULT_THEME).is_some());
+    fn default_theme_is_auto() {
+        assert_eq!(DEFAULT_THEME, "auto");
     }
 
     #[test]
@@ -96,5 +109,24 @@ mod tests {
         let (bg, fg) = sidebar_colors("nonexistent");
         assert_eq!(bg, "#1e1e2e");
         assert_eq!(fg, "#6c7086");
+    }
+
+    #[test]
+    fn resolve_auto_dark() {
+        assert_eq!(resolve_theme_name("auto", false), "catppuccin");
+    }
+
+    #[test]
+    fn resolve_auto_light() {
+        assert_eq!(resolve_theme_name("auto", true), "catppuccin-latte");
+    }
+
+    #[test]
+    fn resolve_explicit_theme() {
+        assert_eq!(resolve_theme_name("catppuccin", true), "catppuccin");
+        assert_eq!(
+            resolve_theme_name("catppuccin-latte", false),
+            "catppuccin-latte"
+        );
     }
 }

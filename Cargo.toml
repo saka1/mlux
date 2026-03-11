@@ -35,6 +35,7 @@ zstd = "0.13"
 mitex = "0.2"
 mermaid-rs-renderer = { version = "0.2", default-features = false }
 bincode = { version = "2", features = ["serde"] }
+libc = "0.2"
 nix = { version = "0.29", features = ["process", "signal"] }
 ureq = "3"
 

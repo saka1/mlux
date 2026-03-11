@@ -204,7 +204,25 @@ fn cmd_render(
     let width = config.width;
     let ppi = config.ppi;
     let tile_height = config.viewer.tile_height;
-    let theme = &config.theme;
+
+    // Resolve "auto" theme: detect terminal background if on a TTY
+    let is_light = if config.theme == "auto" {
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() {
+            // Enter raw mode temporarily to query OSC 11
+            let _raw = crossterm::terminal::enable_raw_mode();
+            let result = mlux::viewer::detect_terminal_theme(std::time::Duration::from_millis(100))
+                == mlux::viewer::TerminalTheme::Light;
+            let _ = crossterm::terminal::disable_raw_mode();
+            result
+        } else {
+            false // not a TTY → dark fallback
+        }
+    } else {
+        false
+    };
+    let theme_resolved = mlux::theme::resolve_theme_name(&config.theme, is_light);
+    let theme = theme_resolved;
 
     // Read input markdown (support `-` for stdin)
     let is_stdin = input.as_os_str() == "-";

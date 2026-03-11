@@ -27,6 +27,8 @@ mod mode_url;
 mod state;
 mod terminal;
 
+pub use terminal::{TerminalTheme, detect_terminal_theme};
+
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     terminal as crossterm_terminal,
@@ -99,6 +101,10 @@ pub fn run(
     // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = terminal::RawGuard::enter()?;
 
+    // 4a. Detect terminal theme (must be in raw mode, before alternate screen content)
+    let detected_light = terminal::detect_terminal_theme(Duration::from_millis(100))
+        == terminal::TerminalTheme::Light;
+
     // Session: persistent state across document rebuilds
     let watcher_init = if watch {
         match &input {
@@ -134,8 +140,9 @@ pub fn run(
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
         // 1. Load theme (inside the loop because config reload may change the theme name)
-        let theme_text = crate::theme::get(&session.config.theme)
-            .ok_or_else(|| anyhow::anyhow!("unknown theme '{}'", session.config.theme))?;
+        let theme_name = crate::theme::resolve_theme_name(&session.config.theme, detected_light);
+        let theme_text = crate::theme::get(theme_name)
+            .ok_or_else(|| anyhow::anyhow!("unknown theme '{theme_name}'"))?;
 
         // 5a. Read markdown (re-read on each iteration for reload support)
         // For stdin mode, drain any available data first
@@ -170,7 +177,7 @@ pub fn run(
         let layout_copy = session.layout;
         let ppi = session.config.ppi;
         let tile_height = session.config.viewer.tile_height;
-        let data_files = crate::theme::data_files(&session.config.theme);
+        let data_files = crate::theme::data_files(theme_name);
 
         // ChildProcess handle kept alive for the duration of the inner loop.
         // Dropped on reload/resize/quit → sends SIGKILL to child.
@@ -197,7 +204,7 @@ pub fn run(
                 layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
 
             let params = crate::pipeline::BuildParams {
-                theme_name: &session.config.theme,
+                theme_name,
                 theme_text,
                 data_files,
                 markdown: &markdown_clone,

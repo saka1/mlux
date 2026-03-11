@@ -6,8 +6,10 @@ use crossterm::{
     style::{self, Stylize},
     terminal,
 };
-use log::debug;
+use log::{debug, warn};
 use std::io::{self, Write, stdout};
+use std::os::unix::io::AsRawFd;
+use std::time::Duration;
 
 use super::state::{Layout, LoadedTiles, ViewState};
 use crate::tile::VisibleTiles;
@@ -298,6 +300,145 @@ pub(super) fn send_osc52(text: &str) -> io::Result<()> {
     out.flush()
 }
 
+// ---------------------------------------------------------------------------
+// Terminal theme detection via OSC 11
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalTheme {
+    Light,
+    Dark,
+}
+
+/// Detect terminal background brightness via OSC 11 query.
+/// Must be called in raw mode. Falls back to Dark on failure.
+pub fn detect_terminal_theme(timeout: Duration) -> TerminalTheme {
+    match detect_terminal_theme_inner(timeout) {
+        Some(theme) => theme,
+        None => TerminalTheme::Dark,
+    }
+}
+
+fn detect_terminal_theme_inner(timeout: Duration) -> Option<TerminalTheme> {
+    // Open /dev/tty for read+write
+    let mut tty = match std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("cannot open /dev/tty for theme detection, falling back to dark theme: {e}");
+            return None;
+        }
+    };
+
+    // Send OSC 11 query
+    if tty.write_all(b"\x1b]11;?\x1b\\").is_err() || tty.flush().is_err() {
+        warn!("failed to send OSC 11 query, falling back to dark theme");
+        return None;
+    }
+
+    // Poll for response with timeout
+    let timeout_ms = timeout.as_millis() as i32;
+    let fd = tty.as_raw_fd();
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+
+    let ready = unsafe { libc::poll(&mut pollfd as *mut _, 1, timeout_ms) };
+    if ready <= 0 {
+        warn!(
+            "OSC 11 query timed out after {}ms, falling back to dark theme",
+            timeout.as_millis()
+        );
+        return None;
+    }
+
+    // Read response
+    let mut buf = [0u8; 256];
+    let n = {
+        use std::io::Read;
+        match tty.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => {
+                warn!("failed to read OSC 11 response, falling back to dark theme");
+                return None;
+            }
+        }
+    };
+
+    let (r, g, b) = match parse_osc11_response(&buf[..n]) {
+        Some(rgb) => rgb,
+        None => {
+            warn!(
+                "failed to parse OSC 11 response: {:?}, falling back to dark theme",
+                &buf[..n]
+            );
+            return None;
+        }
+    };
+
+    // Approximate luminance for light/dark classification.
+    // OSC 11 returns raw RGB without color space information, so we cannot
+    // do a strictly correct conversion (no guarantee of sRGB/BT.709/BT.2020,
+    // no gamma metadata). We skip sRGB linearization and use BT.709
+    // coefficients directly on the raw values. This is technically wrong,
+    // but the threshold (0.5) has wide margin for typical backgrounds —
+    // dark themes sit around 0.1 and light themes around 0.9 — so the
+    // color-space ambiguity never flips the result in practice.
+    let rf = r as f64 / 0xFFFF as f64;
+    let gf = g as f64 / 0xFFFF as f64;
+    let bf = b as f64 / 0xFFFF as f64;
+    let luminance = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
+    debug!("OSC 11: rgb({r:#06x},{g:#06x},{b:#06x}) luminance={luminance:.3}");
+
+    if luminance > 0.5 {
+        Some(TerminalTheme::Light)
+    } else {
+        Some(TerminalTheme::Dark)
+    }
+}
+
+/// Parse OSC 11 response: `\x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\` or `...\x07`
+///
+/// Supports 1-digit (F), 2-digit (FF), and 4-digit (FFFF) hex per channel.
+fn parse_osc11_response(buf: &[u8]) -> Option<(u16, u16, u16)> {
+    let s = std::str::from_utf8(buf).ok()?;
+    let rgb_pos = s.find("rgb:")?;
+    let after_rgb = &s[rgb_pos + 4..];
+
+    // Find end: ST (\x1b\\) or BEL (\x07) or end of string
+    let end = after_rgb
+        .find('\x1b')
+        .or_else(|| after_rgb.find('\x07'))
+        .unwrap_or(after_rgb.len());
+    let channels_str = &after_rgb[..end];
+
+    let parts: Vec<&str> = channels_str.split('/').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let r = parse_color_channel(parts[0])?;
+    let g = parse_color_channel(parts[1])?;
+    let b = parse_color_channel(parts[2])?;
+    Some((r, g, b))
+}
+
+/// Parse a single hex color channel, normalizing to 16-bit (0–0xFFFF).
+fn parse_color_channel(s: &str) -> Option<u16> {
+    let val = u16::from_str_radix(s, 16).ok()?;
+    match s.len() {
+        1 => Some(val * 0x1111), // F -> FFFF
+        2 => Some(val * 0x0101), // FF -> FFFF
+        4 => Some(val),          // FFFF
+        _ => None,
+    }
+}
+
 pub(super) fn check_tty() -> anyhow::Result<()> {
     use std::io::IsTerminal;
     // Only stdout matters. crossterm's `use-dev-tty` reads keyboard from /dev/tty
@@ -311,4 +452,86 @@ pub(super) fn check_tty() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_osc11_4digit() {
+        // xterm-style 4-digit channels
+        let buf = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\";
+        let (r, g, b) = parse_osc11_response(buf).unwrap();
+        assert_eq!(r, 0x1e1e);
+        assert_eq!(g, 0x1e1e);
+        assert_eq!(b, 0x2e2e);
+    }
+
+    #[test]
+    fn parse_osc11_2digit() {
+        let buf = b"\x1b]11;rgb:ff/ff/ff\x1b\\";
+        let (r, g, b) = parse_osc11_response(buf).unwrap();
+        assert_eq!(r, 0xffff);
+        assert_eq!(g, 0xffff);
+        assert_eq!(b, 0xffff);
+    }
+
+    #[test]
+    fn parse_osc11_1digit() {
+        let buf = b"\x1b]11;rgb:0/0/0\x07";
+        let (r, g, b) = parse_osc11_response(buf).unwrap();
+        assert_eq!(r, 0);
+        assert_eq!(g, 0);
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    fn parse_osc11_bel_terminator() {
+        let buf = b"\x1b]11;rgb:ffff/ffff/ffff\x07";
+        let (r, g, b) = parse_osc11_response(buf).unwrap();
+        assert_eq!(r, 0xffff);
+        assert_eq!(g, 0xffff);
+        assert_eq!(b, 0xffff);
+    }
+
+    #[test]
+    fn parse_osc11_invalid() {
+        assert!(parse_osc11_response(b"garbage").is_none());
+        assert!(parse_osc11_response(b"\x1b]11;rgb:ff/ff\x1b\\").is_none());
+    }
+
+    #[test]
+    fn parse_channel_normalization() {
+        assert_eq!(parse_color_channel("f"), Some(0xffff));
+        assert_eq!(parse_color_channel("0"), Some(0));
+        assert_eq!(parse_color_channel("80"), Some(0x8080));
+        assert_eq!(parse_color_channel("1e1e"), Some(0x1e1e));
+    }
+
+    #[test]
+    fn luminance_dark() {
+        // Catppuccin Mocha base: #1e1e2e → very dark
+        let r = 0x1e1eu16;
+        let g = 0x1e1eu16;
+        let b = 0x2e2eu16;
+        let rf = r as f64 / 0xFFFF as f64;
+        let gf = g as f64 / 0xFFFF as f64;
+        let bf = b as f64 / 0xFFFF as f64;
+        let lum = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
+        assert!(lum < 0.5, "luminance {lum} should be < 0.5 for dark bg");
+    }
+
+    #[test]
+    fn luminance_light() {
+        // White background: rgb:ffff/ffff/ffff
+        let r = 0xFFFFu16;
+        let g = 0xFFFFu16;
+        let b = 0xFFFFu16;
+        let rf = r as f64 / 0xFFFF as f64;
+        let gf = g as f64 / 0xFFFF as f64;
+        let bf = b as f64 / 0xFFFF as f64;
+        let lum = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
+        assert!(lum > 0.5, "luminance {lum} should be > 0.5 for light bg");
+    }
 }

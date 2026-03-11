@@ -173,7 +173,7 @@ mod tests {
     fn empty_toml() {
         let cfg: ConfigFile = toml::from_str("").unwrap();
         let resolved = cfg.resolve();
-        assert_eq!(resolved.theme, "catppuccin");
+        assert_eq!(resolved.theme, "auto");
         assert_eq!(resolved.width, 660.0);
         assert_eq!(resolved.ppi, 144.0);
         assert_eq!(resolved.viewer.scroll_step, 3);
@@ -193,7 +193,7 @@ mod tests {
         assert_eq!(resolved.ppi, 288.0);
         assert_eq!(resolved.viewer.scroll_step, 10);
         // Defaults for unspecified fields
-        assert_eq!(resolved.theme, "catppuccin");
+        assert_eq!(resolved.theme, "auto");
         assert_eq!(resolved.width, 660.0);
         assert_eq!(resolved.viewer.sidebar_cols, 6);
     }
