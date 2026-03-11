@@ -5,6 +5,10 @@ use std::time::Instant;
 use log::info;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
+use super::markup_util::{
+    escape_typst, escape_typst_string_literal, typst_image, typst_image_placeholder,
+};
+
 /// Convert a LaTeX math expression to Typst math markup using mitex.
 /// Returns the original LaTeX string (prefixed with indicators for debugging)
 /// if conversion fails.
@@ -90,11 +94,21 @@ pub fn extract_image_paths(markdown: &str) -> Vec<String> {
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
     for event in parser {
-        if let Event::Start(Tag::Image { dest_url, .. }) = event {
-            let url = dest_url.to_string();
-            if !url.is_empty() && seen.insert(url.clone()) {
-                paths.push(url);
+        match event {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let url = dest_url.to_string();
+                if !url.is_empty() && seen.insert(url.clone()) {
+                    paths.push(url);
+                }
             }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                for src in super::markup_html::extract_img_srcs(&html) {
+                    if seen.insert(src.clone()) {
+                        paths.push(src);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     paths
@@ -402,11 +416,7 @@ pub fn markdown_to_typst(
                     let key = crate::diagram::diagram_key(&code_block_buf);
                     let is_available = available_images.is_some_and(|set| set.contains(&key));
                     if is_available {
-                        push_to_target(
-                            &mut output,
-                            &mut cell_buf,
-                            &format!("#align(center)[#image(\"{key}\")]\n"),
-                        );
+                        push_to_target(&mut output, &mut cell_buf, &typst_image(&key));
                     } else {
                         // Fallback: render as regular code block
                         let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
@@ -531,21 +541,9 @@ pub fn markdown_to_typst(
                 Some(Container::Image { path }) => {
                     let is_available = available_images.is_some_and(|set| set.contains(&path));
                     if is_available {
-                        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
-                        push_to_target(
-                            &mut output,
-                            &mut cell_buf,
-                            &format!("#align(center)[#image(\"{escaped}\")]\n"),
-                        );
+                        push_to_target(&mut output, &mut cell_buf, &typst_image(&path));
                     } else {
-                        let escaped = escape_typst(&path);
-                        push_to_target(
-                            &mut output,
-                            &mut cell_buf,
-                            &format!(
-                                "#block(fill: luma(230), inset: 8pt, radius: 4pt)[Image: {escaped}]\n"
-                            ),
-                        );
+                        push_to_target(&mut output, &mut cell_buf, &typst_image_placeholder(&path));
                     }
                 }
                 other => {
@@ -649,6 +647,25 @@ pub fn markdown_to_typst(
                     });
                 }
             }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                let snippets = super::markup_html::render_html_imgs(&html, available_images);
+                if !snippets.is_empty() {
+                    if block_depth == 0 {
+                        block_starts.push((output.len(), md_range));
+                    }
+                    for s in &snippets {
+                        push_to_target(&mut output, &mut cell_buf, s);
+                    }
+                    if block_depth == 0
+                        && let Some((typst_start, md_range_start)) = block_starts.pop()
+                    {
+                        source_map_blocks.push(BlockMapping {
+                            typst_byte_range: typst_start..output.len(),
+                            md_byte_range: md_range_start,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -743,35 +760,6 @@ fn fill_blank_lines(text: &str) -> String {
     result
 }
 
-/// Escape characters that have special meaning in Typst markup.
-fn escape_typst(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' | '['
-            | ']' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-/// Escape characters meaningful inside a Typst string literal ("...").
-fn escape_typst_string_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,15 +773,6 @@ mod tests {
         let md = "Hello, world!";
         let typst = md_to_typst(md);
         assert_eq!(typst, "Hello, world!\n");
-    }
-
-    #[test]
-    fn test_escape_special_chars() {
-        assert_eq!(escape_typst("#hello"), "\\#hello");
-        assert_eq!(escape_typst("a * b"), "a \\* b");
-        assert_eq!(escape_typst("$100"), "\\$100");
-        assert_eq!(escape_typst("foo(bar)"), "foo\\(bar\\)");
-        assert_eq!(escape_typst("foo[bar]"), "foo\\[bar\\]");
     }
 
     #[test]
@@ -1002,21 +981,6 @@ mod tests {
             "empty URL should not produce #link"
         );
         assert!(typst.contains("link"));
-    }
-
-    #[test]
-    fn test_escape_typst_string_literal_backslash() {
-        assert_eq!(escape_typst_string_literal("foo\\bar"), "foo\\\\bar");
-    }
-
-    #[test]
-    fn test_escape_typst_string_literal_quote() {
-        assert_eq!(escape_typst_string_literal("foo\"bar"), "foo\\\"bar");
-    }
-
-    #[test]
-    fn test_escape_typst_string_literal_both() {
-        assert_eq!(escape_typst_string_literal("a\\\"b"), "a\\\\\\\"b");
     }
 
     #[test]
