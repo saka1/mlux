@@ -7,6 +7,11 @@ powered by Rust and [Typst](https://typst.app/).
 
 <img src="docs/ss.png" alt="mlux terminal viewer" width="700">
 
+### Gallery
+
+<img src="docs/gallery01.png" alt="Rendering gallery (light theme)" width="300">
+<img src="docs/gallery02.png" alt="Rendering gallery (dark theme)" width="300">
+
 ## How it works
 
 Modern terminals like [Kitty](https://sw.kovidgoyal.net/kitty/) and [Ghostty](https://ghostty.org/) that support the
