@@ -159,7 +159,7 @@ pub fn generate_sidebar_typst(
     let mut src = String::new();
     writeln!(
         src,
-        "#set page(width: {sidebar_width_pt:.1}pt, height: {page_height_pt:.1}pt, margin: 0pt, fill: rgb(\"{bg}\"))"
+        "#set page(width: {sidebar_width_pt}pt, height: {page_height_pt}pt, margin: 0pt, fill: rgb(\"{bg}\"))"
     )
     .unwrap();
     writeln!(
@@ -175,7 +175,7 @@ pub fn generate_sidebar_typst(
         // 8pt text has ~6pt ascent, so shift up to align baselines.
         writeln!(
             src,
-            "#place(top + right, dy: {dy:.1}pt - 6pt, dx: -4pt)[#text(size: 8pt)[{line_num}]]"
+            "#place(top + right, dy: {dy}pt - 6pt, dx: -4pt)[#text(size: 8pt)[{line_num}]]"
         )
         .unwrap();
     }
