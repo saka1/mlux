@@ -843,7 +843,8 @@ fn test_mermaid_diagram_renders() {
     let diagrams = mlux::diagram::extract_diagrams(md);
     assert_eq!(diagrams.len(), 1, "should extract 1 mermaid diagram");
 
-    let rendered = mlux::diagram::render_diagrams(&diagrams);
+    let rendered =
+        mlux::diagram::render_diagrams(&diagrams, mlux::theme::mermaid_colors("catppuccin"));
     assert_eq!(rendered.len(), 1, "should render 1 diagram to SVG");
 
     // Build image set with rendered diagrams
@@ -906,7 +907,8 @@ fn test_mermaid_fixture_renders() {
         diagrams.len()
     );
 
-    let rendered = mlux::diagram::render_diagrams(&diagrams);
+    let rendered =
+        mlux::diagram::render_diagrams(&diagrams, mlux::theme::mermaid_colors("catppuccin"));
     assert_eq!(
         rendered.len(),
         diagrams.len(),

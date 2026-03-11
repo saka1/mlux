@@ -4,6 +4,8 @@ use std::hash::{Hash, Hasher};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use typst::foundations::Bytes;
 
+use crate::theme::MermaidColors;
+
 /// Compute a deterministic key from diagram source content.
 pub fn diagram_key(source: &str) -> String {
     let mut h = DefaultHasher::new();
@@ -107,16 +109,46 @@ fn fix_svg_font_family(svg: &str) -> String {
     result
 }
 
+/// Build `RenderOptions` from theme-provided Mermaid colours.
+fn mermaid_options(colors: &MermaidColors) -> mermaid_rs_renderer::RenderOptions {
+    let mut opts = mermaid_rs_renderer::RenderOptions::modern();
+    let t = &mut opts.theme;
+    t.background = colors.background.into();
+    t.primary_color = colors.primary_color.into();
+    t.secondary_color = colors.secondary_color.into();
+    t.tertiary_color = colors.tertiary_color.into();
+    t.primary_text_color = colors.primary_text_color.into();
+    t.text_color = colors.text_color.into();
+    t.primary_border_color = colors.primary_border_color.into();
+    t.line_color = colors.line_color.into();
+    t.edge_label_background = colors.edge_label_background.into();
+    t.cluster_background = colors.cluster_background.into();
+    t.cluster_border = colors.cluster_border.into();
+    t.sequence_actor_fill = colors.sequence_actor_fill.into();
+    t.sequence_actor_border = colors.sequence_actor_border.into();
+    t.sequence_actor_line = colors.sequence_actor_line.into();
+    t.sequence_note_fill = colors.sequence_note_fill.into();
+    t.sequence_note_border = colors.sequence_note_border.into();
+    t.sequence_activation_fill = colors.sequence_activation_fill.into();
+    t.sequence_activation_border = colors.sequence_activation_border.into();
+    opts
+}
+
 /// Render diagram blocks to SVG bytes.
 ///
 /// Uses `catch_unwind` to handle panics from the renderer gracefully.
 /// Failed diagrams are logged and omitted from the result.
-pub fn render_diagrams(diagrams: &[(String, String)]) -> Vec<(String, Bytes)> {
+pub fn render_diagrams(
+    diagrams: &[(String, String)],
+    colors: &MermaidColors,
+) -> Vec<(String, Bytes)> {
+    let opts = mermaid_options(colors);
     diagrams
         .iter()
         .filter_map(|(key, source)| {
+            let opts = opts.clone();
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                mermaid_rs_renderer::render(source)
+                mermaid_rs_renderer::render_with_options(source, opts)
             })) {
                 Ok(Ok(svg)) => {
                     let fixed = fix_svg_font_family(&svg);
@@ -175,10 +207,14 @@ mod tests {
         assert_eq!(diagrams.len(), 2);
     }
 
+    fn light_colors() -> &'static MermaidColors {
+        crate::theme::mermaid_colors("catppuccin-latte")
+    }
+
     #[test]
     fn test_render_diagrams_valid() {
         let diagrams = vec![("test.svg".to_string(), "graph LR\n  A --> B".to_string())];
-        let results = render_diagrams(&diagrams);
+        let results = render_diagrams(&diagrams, light_colors());
         assert_eq!(results.len(), 1);
         let svg = std::str::from_utf8(results[0].1.as_slice()).unwrap();
         assert!(
@@ -208,7 +244,7 @@ mod tests {
             "bad.svg".to_string(),
             "not a valid diagram at all %%%".to_string(),
         )];
-        let results = render_diagrams(&diagrams);
+        let results = render_diagrams(&diagrams, light_colors());
         // Should not panic; may produce empty or may still render
         // The important thing is no panic
         let _ = results;

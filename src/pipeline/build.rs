@@ -45,7 +45,8 @@ fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> 
 
     // 2. Diagram pipeline
     let diagrams = crate::diagram::extract_diagrams(params.markdown);
-    for (key, svg) in crate::diagram::render_diagrams(&diagrams) {
+    let mermaid_colors = crate::theme::mermaid_colors(params.theme_name);
+    for (key, svg) in crate::diagram::render_diagrams(&diagrams, mermaid_colors) {
         image_files.insert(key, svg);
     }
 
