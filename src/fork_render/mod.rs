@@ -103,6 +103,7 @@ pub fn fork_renderer(
     no_sandbox: bool,
 ) -> Result<(TileRenderer, ChildProcess)> {
     // Clone owned data for the child closure (BuildParams borrows).
+    let theme_name = params.theme_name.to_string();
     let theme_text = params.theme_text.to_string();
     let data_files = params.data_files;
     let markdown = params.markdown.to_string();
@@ -129,6 +130,7 @@ pub fn fork_renderer(
             let fonts = crate::pipeline::FontCache::new();
 
             let doc = match build_tiled_document(&BuildParams {
+                theme_name: &theme_name,
                 theme_text: &theme_text,
                 data_files,
                 markdown: &markdown,
@@ -195,6 +197,7 @@ pub fn fork_dump(
 ) -> Result<ChildProcess> {
     use crate::pipeline::build_and_dump;
 
+    let theme_name = params.theme_name.to_string();
     let theme_text = params.theme_text.to_string();
     let data_files = params.data_files;
     let markdown = params.markdown.to_string();
@@ -216,6 +219,7 @@ pub fn fork_dump(
         let fonts = crate::pipeline::FontCache::new();
 
         if let Err(e) = build_and_dump(&BuildParams {
+            theme_name: &theme_name,
             theme_text: &theme_text,
             data_files,
             markdown: &markdown,

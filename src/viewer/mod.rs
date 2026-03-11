@@ -197,6 +197,7 @@ pub fn run(
                 layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
 
             let params = crate::pipeline::BuildParams {
+                theme_name: &session.config.theme,
                 theme_text,
                 data_files,
                 markdown: &markdown_clone,

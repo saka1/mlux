@@ -12,6 +12,7 @@ use crate::tile::{SourceMappingParams, TiledDocument, VisualLine, extract_visual
 
 /// Parameters for [`build_tiled_document`].
 pub struct BuildParams<'a> {
+    pub theme_name: &'a str,
     pub theme_text: &'a str,
     pub data_files: crate::theme::DataFiles,
     pub markdown: &'a str,
@@ -120,8 +121,12 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let page_height_pt = document.pages[0].frame.size().y.to_pt();
 
     // 6. Compile sidebar document using visual lines
-    let sidebar_source =
-        generate_sidebar_typst(&visual_lines, params.sidebar_width_pt, page_height_pt);
+    let sidebar_source = generate_sidebar_typst(
+        &visual_lines,
+        params.sidebar_width_pt,
+        page_height_pt,
+        params.theme_name,
+    );
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
     let sidebar_doc = super::render::compile_document(&sidebar_world)?;
 
@@ -148,16 +153,18 @@ pub fn generate_sidebar_typst(
     lines: &[VisualLine],
     sidebar_width_pt: f64,
     page_height_pt: f64,
+    theme_name: &str,
 ) -> String {
+    let (bg, fg) = crate::theme::sidebar_colors(theme_name);
     let mut src = String::new();
     writeln!(
         src,
-        "#set page(width: {sidebar_width_pt:.1}pt, height: {page_height_pt:.1}pt, margin: 0pt, fill: rgb(\"#1e1e2e\"))"
+        "#set page(width: {sidebar_width_pt:.1}pt, height: {page_height_pt:.1}pt, margin: 0pt, fill: rgb(\"{bg}\"))"
     )
     .unwrap();
     writeln!(
         src,
-        "#set text(font: \"DejaVu Sans Mono\", size: 8pt, fill: rgb(\"#6c7086\"))"
+        "#set text(font: \"DejaVu Sans Mono\", size: 8pt, fill: rgb(\"{fg}\"))"
     )
     .unwrap();
 

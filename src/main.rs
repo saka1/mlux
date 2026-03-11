@@ -238,6 +238,7 @@ fn cmd_render(
     let data_files = mlux::theme::data_files(theme);
     let font_cache = FontCache::new();
     let params = BuildParams {
+        theme_name: theme,
         theme_text,
         data_files,
         markdown: &markdown,

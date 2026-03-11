@@ -20,6 +20,7 @@ fn test_fork_render_matches_local() {
     let font_cache = FontCache::new();
 
     let params = BuildParams {
+        theme_name: "catppuccin",
         theme_text,
         data_files: mlux::theme::data_files("catppuccin"),
         markdown: md,
@@ -69,6 +70,7 @@ fn test_fork_render_metadata_methods() {
     let font_cache = FontCache::new();
 
     let params = BuildParams {
+        theme_name: "catppuccin",
         theme_text,
         data_files: mlux::theme::data_files("catppuccin"),
         markdown: md,
@@ -104,6 +106,7 @@ fn test_fork_render_metadata_methods() {
 fn make_failing_params(font_cache: &FontCache) -> BuildParams<'_> {
     // Invalid typst in theme_text causes compilation failure in the child
     BuildParams {
+        theme_name: "catppuccin",
         theme_text: "#invalid-typst-syntax{{{{",
         data_files: &[],
         markdown: "# Hello\n",
