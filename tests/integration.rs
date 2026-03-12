@@ -974,3 +974,39 @@ fn test_mermaid_fallback_without_render() {
         "without available images, mermaid should render as code fence, got: {content}"
     );
 }
+
+#[test]
+fn test_inline_code_no_line_overlap() {
+    // Regression test: inline code with `inset: (y: 2pt)` increased layout box height,
+    // causing background rectangles to overlap the next text line. The fix uses
+    // `outset: (y: 2pt)` instead, which only expands the painted area without
+    // affecting layout. We verify that inline code doesn't compress line spacing
+    // compared to plain text.
+    let md_plain = "This is a plain paragraph that should wrap across multiple visual lines when rendered at a narrow width for testing purposes here.\n";
+    let md_code = "This has `inline_code` in a paragraph that should wrap across multiple visual lines when rendered at a narrow width for testing purposes here.\n";
+
+    let vlines_plain = source_map_pipeline(md_plain);
+    let vlines_code = source_map_pipeline(md_code);
+
+    // Both should wrap into multiple visual lines at WIDTH_PT=400
+    assert!(
+        vlines_plain.len() >= 2,
+        "plain paragraph should wrap into >=2 visual lines, got {}",
+        vlines_plain.len()
+    );
+    assert!(
+        vlines_code.len() >= 2,
+        "paragraph with inline code should wrap into >=2 visual lines, got {}",
+        vlines_code.len()
+    );
+
+    // Line spacing with inline code should be the same as without.
+    // With the old `inset: (y: 2pt)`, inline code boxes were taller and caused
+    // uneven/compressed spacing that led to visual overlap.
+    let spacing_plain = vlines_plain[1].y_pt - vlines_plain[0].y_pt;
+    let spacing_code = vlines_code[1].y_pt - vlines_code[0].y_pt;
+    assert!(
+        (spacing_code - spacing_plain).abs() < 1.0,
+        "inline code should not change line spacing: plain={spacing_plain:.1}pt, code={spacing_code:.1}pt"
+    );
+}

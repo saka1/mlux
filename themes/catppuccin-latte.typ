@@ -17,7 +17,7 @@
 
 // インラインコード
 #show raw.where(block: false): it => box(
-  fill: rgb("#e6e9ef"), inset: (x: 4pt, y: 2pt), radius: 3pt,
+  fill: rgb("#e6e9ef"), inset: (x: 4pt), outset: (y: 2pt), radius: 3pt,
   text(font: "DejaVu Sans Mono", size: 10pt, it))
 
 // リスト
