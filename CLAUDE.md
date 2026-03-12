@@ -34,98 +34,34 @@ Markdown → build_tiled_document() orchestrates full pipeline:
 ```
 
 The document is compiled once with `height: auto` (single tall page), then the Frame tree
-is split into vertical tiles. Only visible tiles are rendered to PNG on demand,
-keeping peak memory proportional to tile size, not document size.
+is split into vertical tiles. Only visible tiles are rendered to PNG on demand.
 
-### Viewer architecture (`src/viewer/`)
+### Viewer design
 
-The viewer uses a two-loop architecture:
-
-- **Outer loop** (`mod.rs`): Handles document lifecycle — initial build, resize (rebuilds
-  with new dimensions), file reload (re-reads markdown), and config reload.
-  Font cache is shared across iterations.
-- **Inner loop** (`mod.rs` within `thread::scope`): Handles input events, scrolling,
-  and mode transitions. Runs a prefetch worker thread that renders adjacent tiles
-  in the background via mpsc channels.
-
-Modal input handling with Effect pattern:
-
-- **Modes**: `Normal` (tile display + vim-style navigation), `Search` (heading picker),
-  `Command` (`:` prompt for `:reload`, `:quit`)
-- **Effect pattern**: Mode handlers return `Vec<Effect>` (ScrollTo, Flash, SetMode, Yank, etc.)
-  which the apply loop in `run()` executes. This separates "what to do" from "how to do it".
-- **Input**: `InputAccumulator` in `input.rs` handles vim-style number prefix accumulation
-  (e.g., `10j`, `56g`, `56y`).
-
-Submodule responsibilities:
-- `mod.rs` — Main run loop, Effect enum, effect application
-- `state.rs` — Layout calculation, ViewState, redraw, prefetch dispatch
-- `input.rs` — Key event mapping, Action enum, InputAccumulator
-- `terminal.rs` — Raw mode guard, Kitty Graphics Protocol commands, status bar
-- `mode_normal.rs` — Normal mode handler (scroll, jump, yank, mode transitions)
-- `mode_search.rs` — Search/heading picker mode
-- `mode_command.rs` — Command mode (`:reload`, `:quit`)
+- **Two-loop**: Outer loop handles document lifecycle (build/resize/reload).
+  Inner loop (in `thread::scope`) handles input, scrolling, mode transitions, and prefetch worker.
+- **Effect pattern**: Mode handlers return `Vec<Effect>` — the apply loop in `run()` executes them.
+- **Modes**: `Normal` (vim-style navigation), `Search` (heading picker), `Command` (`:reload`, `:quit`)
+- **Source mapping**: `markdown_to_typst()` produces a `SourceMap` (Typst byte offset → Markdown line).
+  `tile.rs` uses this for sidebar line numbers and yank operations.
 
 ### Config system (`src/config.rs`)
 
-Two-layer config: `ConfigFile` (TOML deserialization, all `Option`) → `Config` (resolved
-with defaults). Config loaded from `~/.config/mlux/config.toml` (respects `$XDG_CONFIG_HOME`).
-CLI args override config via `CliOverrides`, which are preserved across live config reloads.
-
-### Source mapping (`markup.rs` → `tile.rs`)
-
-`markdown_to_typst()` produces both Typst markup and a `SourceMap` that maps
-Typst byte offsets back to Markdown line numbers. `tile.rs` uses this to annotate each
-`VisualLine` with `md_line_range` for sidebar line numbers and yank operations.
-
-## Key Files
-
-- `src/diagram.rs` — Mermaid diagram extraction and rendering (mermaid-rs-renderer, SVG fixup)
-- `src/pipeline/` — Render pipeline submodules (markup, world, render, build)
-  - `convert.rs` — Markdown→Typst conversion (pulldown-cmark event handler, Container enum + stack for nested markup)
-  - `world.rs` — Typst World trait implementation (virtual filesystem for typst compiler)
-  - `render.rs` — Typst compile (`compile_document`) + tile PNG render (`render_frame_to_png`) + debug dump
-  - `build.rs` — BuildParams, build_tiled_document (orchestrates image loading→diagrams→markup→world→render→tile)
-- `src/tile.rs` — Tile-based document model: frame splitting, visual line extraction, lazy rendering, viewport calculation
-- `src/viewer/` — Terminal viewer (see Viewer architecture above)
-- `src/config.rs` — Config file loading, CLI override merging, default resolution
-- `src/watch.rs` — File change detection via `notify` crate (inotify on Linux)
-- `themes/catppuccin.typ` — Default dark theme (Catppuccin Mocha)
-- `tests/integration.rs` — Integration tests (fixture-based: load md → convert → render → verify PNG)
-- `docs/terminal-viewer-design.md` — Terminal viewer design decisions and architecture
-- `docs/kitty-graphics-protocol.md` — Kitty Graphics Protocol full spec reference
+Two-layer: `ConfigFile` (TOML, all `Option`) → `Config` (resolved with defaults).
+CLI args override config via `CliOverrides`, preserved across live config reloads.
 
 ## Commands
 
 ```bash
-# Build
 cargo build
+cargo run -- <input.md>                    # terminal viewer (Kitty Graphics Protocol)
+cargo run -- render <input.md> -o out.png  # render to PNG [--width 800] [--ppi 144] [--theme catppuccin]
+cargo run -- render <input.md> --dump      # dump frame tree (debug)
+cargo run -- --log /tmp/mlux.log <input.md>  # debug logging
+cargo test                                 # all tests
+cargo test <test_name>                     # single test
 
-# View in terminal (default mode, requires Kitty Graphics Protocol support)
-cargo run -- <input.md>
-
-# Render to PNG tiles (outputs output-000.png, output-001.png, ...)
-cargo run -- render <input.md> -o <output.png> [--width 800] [--ppi 144] [--tile-height 500] [--theme catppuccin]
-
-# Dump PagedDocument frame tree (debug)
-cargo run -- render <input.md> --dump
-
-# Test (71 unit tests + 18 integration tests)
-cargo test
-
-# Run a single test
-cargo test <test_name>
-
-# Check
-cargo check
-
-# Lint (clippy) — must stay warning-free
-cargo clippy
-
-# Debug logging (writes to file to avoid corrupting terminal UI)
-cargo run -- --log /tmp/mlux.log <input.md>
-
-# Fuzz testing (requires nightly-2025-11-01; newer nightlies may break libfuzzer-sys)
+# Fuzz (requires nightly-2025-11-01)
 cargo +nightly-2025-11-01 fuzz run fuzz_convert -- -max_total_time=30
 cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
 ```
@@ -135,41 +71,18 @@ cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
 After any code change, ensure all pass:
 
 ```bash
-cargo fmt       # auto-format (or `cargo fmt --check` to verify)
+cargo fmt       # auto-format
 cargo clippy    # zero warnings
 cargo test      # all tests pass
 ```
 
-## Dependencies
+## Non-obvious Notes
 
-- typst 0.14, typst-render 0.14, typst-kit 0.14 (features: embed-fonts)
-- pulldown-cmark 0.12 (options: ENABLE_TABLES, ENABLE_STRIKETHROUGH)
-- clap 4 (derive), serde 1 + toml 0.8 (config)
-- crossterm 0.28, base64 0.22 (viewer terminal I/O)
-- notify 8 (file watching via inotify)
-- anyhow 1 (error handling), log 0.4 + env_logger 0.11
-- mermaid-rs-renderer 0.2 (default-features=false; mermaid diagram → SVG)
-- Rust edition 2024
-
-## Viewer Constants
-
-All configurable via `~/.config/mlux/config.toml` (defaults shown):
-
-- PPI = 144.0, Width = 660pt
-- Tile height = 500pt minimum (at least viewport height)
-- Scroll step = 3 terminal cells per j/k press
-- Frame budget = 32ms (~30fps)
-- Sidebar = 6 columns
-- Kitty Protocol: all commands use `q=2` to suppress responses (avoids crossterm misparse)
-
-## Notes
-
-- Theme is inlined into main.typ (not #include) because set-rule propagation
-  didn't work with separate virtual files in typst 0.14.2
+- Theme is inlined into main.typ (not #include) — set-rule propagation doesn't work with separate virtual files in typst 0.14
+- File watcher monitors the parent directory, not the file itself — Linux inotify loses watch handle on atomic-save (rename)
+- `pipeline/convert.rs` uses a Container enum + stack for nested markup state tracking
+- typst-kit feature name is `embed-fonts` (not `embedded-fonts`)
 - IPAGothic is the primary CJK font; Noto Sans CJK JP as fallback
 - FontBook uses lowercased family names for lookups
-- The `typst/` directory contains typst source for API reference only (not used as dependency)
-- typst-kit feature name is `embed-fonts` (not `embedded-fonts`)
-- `pipeline/markup.rs` uses a Container enum + stack for nested markup state tracking
-- File watcher monitors the parent directory (not the file itself) because Linux inotify
-  loses the watch handle on atomic-save (rename)
+- Kitty Protocol commands use `q=2` to suppress responses (avoids crossterm misparse)
+- Rust edition 2024
