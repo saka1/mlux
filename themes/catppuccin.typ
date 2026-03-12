@@ -15,10 +15,10 @@
   fill: rgb("#313244"), inset: 12pt, radius: 6pt, width: 100%,
   text(font: "DejaVu Sans Mono", size: 10pt, it))
 
-// インラインコード
+// インラインコード (raw の ShowSet が size: 0.8em を適用するため / 0.8 で補正)
 #show raw.where(block: false): it => box(
-  fill: rgb("#313244"), inset: (x: 4pt), outset: (y: 2pt), radius: 3pt,
-  text(font: "DejaVu Sans Mono", size: 10pt, it))
+  fill: rgb("#313244"), inset: (x: 0.3em / 0.8), outset: (y: 0.15em / 0.8), radius: 3pt,
+  text(font: "DejaVu Sans Mono", size: 0.85em / 0.8, it))
 
 // リスト
 #set list(marker: ([•], [‣], [–]), indent: 1em, body-indent: 0.7em)
