@@ -7,11 +7,6 @@ powered by Rust and [Typst](https://typst.app/).
 
 <img src="docs/ss.png" alt="mlux terminal viewer" width="700">
 
-### Gallery
-
-<img src="docs/gallery01.png" alt="Rendering gallery (light theme)" width="300">
-<img src="docs/gallery02.png" alt="Rendering gallery (dark theme)" width="300">
-
 ## How it works
 
 Modern terminals like [Kitty](https://sw.kovidgoyal.net/kitty/) and [Ghostty](https://ghostty.org/) that support the
@@ -134,3 +129,8 @@ mlux does its best to render safely, but there are a few things worth knowing:
 - **Remote images** — Fetching remote images (`http://`, `https://`) is disabled by default. Use `--allow-remote-images` to opt in.
 
 Rendering untrusted Markdown is safer than executing arbitrary code, but it's not a guarantee. Keep that in mind when processing documents from untrusted sources.
+
+## Gallery
+
+<img src="docs/gallery01.png" alt="Rendering gallery (light theme)" width="300">
+<img src="docs/gallery02.png" alt="Rendering gallery (dark theme)" width="300">
