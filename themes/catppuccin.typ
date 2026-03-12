@@ -2,13 +2,13 @@
 #set text(font: "Noto Sans JP", size: 12pt, fill: rgb("#cdd6f4"))
 #set par(leading: 1em, justify: true, first-line-indent: 0pt)
 
-// 見出し
-#show heading.where(level: 1): it => block(below: 1em, above: 2.2em,
-  text(24pt, weight: "bold", fill: rgb("#cba6f7"), it.body))
-#show heading.where(level: 2): it => block(below: 1em, above: 1.9em,
-  text(20pt, weight: "bold", fill: rgb("#f5c2e7"), it.body))
-#show heading.where(level: 3): it => block(below: 1em, above: 1.6em,
-  text(16pt, weight: "bold", fill: rgb("#f5e0dc"), it.body))
+// 見出し (above: 1.4em, below: 0.9em — em はフォントサイズ基準)
+#show heading.where(level: 1): it => text(24pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#cba6f7"), it.body)))
+#show heading.where(level: 2): it => text(20pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#f5c2e7"), it.body)))
+#show heading.where(level: 3): it => text(16pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#f5e0dc"), it.body)))
 
 // コードブロック
 #show raw.where(block: true): it => block(
@@ -47,12 +47,12 @@
 #show strike: set strike(stroke: 1pt + rgb("#a6adc8"))
 
 // 見出し h4-h6
-#show heading.where(level: 4): it => block(below: 1em, above: 1.3em,
-  text(14pt, weight: "bold", fill: rgb("#eba0ac"), it.body))
-#show heading.where(level: 5): it => block(below: 1em, above: 1.2em,
-  text(13pt, weight: "bold", fill: rgb("#f9e2af"), it.body))
-#show heading.where(level: 6): it => block(below: 1em, above: 1.0em,
-  text(12pt, weight: "bold", fill: rgb("#a6adc8"), it.body))
+#show heading.where(level: 4): it => text(14pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#eba0ac"), it.body)))
+#show heading.where(level: 5): it => text(13pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#f9e2af"), it.body)))
+#show heading.where(level: 6): it => text(12pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#a6adc8"), it.body)))
 
 // 数式: 本文フォントとのバランス調整
 #show math.equation: set text(font: "STIX Two Math", size: 13pt)
