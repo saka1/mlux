@@ -1404,7 +1404,7 @@ mod tests {
         let available: HashSet<String> = HashSet::new();
         let typst = markdown_to_typst(md, Some(&available)).0;
         assert!(
-            typst.contains("#block(fill: luma(230)"),
+            typst.contains("#image-placeholder("),
             "missing image should produce placeholder, got: {typst}"
         );
         assert!(
@@ -1418,7 +1418,7 @@ mod tests {
         let md = "![alt](photo.png)";
         let typst = markdown_to_typst(md, None).0;
         assert!(
-            typst.contains("#block(fill: luma(230)"),
+            typst.contains("#image-placeholder("),
             "no available images should produce placeholder, got: {typst}"
         );
     }

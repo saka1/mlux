@@ -34,9 +34,12 @@ pub(super) fn typst_image(path: &str) -> String {
 }
 
 /// Render a placeholder block for an unavailable image.
+///
+/// Calls the `image-placeholder` function defined in the theme, so each theme
+/// can use its own palette color (e.g. Catppuccin Surface 2).
 pub(super) fn typst_image_placeholder(path: &str) -> String {
-    let escaped = escape_typst(path);
-    format!("#block(fill: luma(230), inset: 8pt, radius: 4pt)[Image: {escaped}]\n")
+    let escaped = escape_typst_string_literal(path);
+    format!("#image-placeholder(\"{escaped}\")\n")
 }
 
 #[cfg(test)]
@@ -86,7 +89,7 @@ mod tests {
     #[test]
     fn test_typst_image_placeholder() {
         let result = typst_image_placeholder("missing.png");
-        assert!(result.contains("Image: missing.png"));
-        assert!(result.contains("luma(230)"));
+        assert!(result.contains("#image-placeholder("), "got: {result}");
+        assert!(result.contains("missing.png"), "got: {result}");
     }
 }

@@ -112,7 +112,7 @@ mod tests {
         let available: HashSet<String> = HashSet::new();
         let result = render_html_imgs(r#"<img src="missing.png">"#, Some(&available));
         assert_eq!(result.len(), 1);
-        assert!(result[0].contains("Image:"));
+        assert!(result[0].contains("#image-placeholder("));
     }
 
     #[test]

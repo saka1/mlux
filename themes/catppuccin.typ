@@ -60,5 +60,8 @@
 // 水平線: Surface 2
 #show line: set line(stroke: 1pt + rgb("#585b70"))
 
+// 画像プレースホルダー: Surface 2 ボーダー
+#let image-placeholder(path) = block(stroke: 0.5pt + rgb("#585b70"), inset: 8pt, radius: 4pt)[Image: #path]
+
 // コードブロック: Catppuccin Mocha シンタックスハイライト
 #set raw(theme: "catppuccin-mocha.tmTheme")
