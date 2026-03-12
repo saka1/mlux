@@ -1,5 +1,17 @@
 name: Release
 
+# Version string specification (see build.rs + src/main.rs long_version()):
+#
+# build.rs sets MLUX_BUILD_GIT_DESCRIBE from `git describe --tags --always`.
+# long_version() uses this to construct the version string:
+#
+#   describe=""                  → Cargo.toml version (crates.io / tarball)
+#   describe starts with 'v'    → describe as-is (e.g. "v1.6.0", "v1.6.0-3-gabcdef")
+#   describe is hash only       → "{cargo_version}-dev+{hash}" (shallow clone, no tags)
+#
+# The build job creates a local tag so that `git describe` returns "v{version}"
+# for release binaries. The real tag is pushed later in the release job.
+
 on:
   workflow_dispatch:
 
@@ -60,6 +72,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      # Local tag so build.rs `git describe` produces "v1.x.0" instead of "-dev+hash"
+      # (real tag is pushed later in the release job)
+      - name: Tag for version string
+        run: git tag "v${{ needs.validate.outputs.version }}"
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package
