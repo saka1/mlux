@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "mlux"
-version = "1.6.3"
+version = "1.6.4"
 dependencies = [
  "anyhow",
  "base64",
