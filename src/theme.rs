@@ -106,16 +106,21 @@ pub const THEMES: &[ThemeEntry] = &[
 /// Default theme name.
 pub const DEFAULT_THEME: &str = "auto";
 
-/// Resolve "auto" theme name based on terminal brightness.
+/// Resolve theme name aliases based on terminal brightness.
+///
+/// Supported aliases: `"auto"` (detect), `"dark"`, `"light"`.
 pub fn resolve_theme_name(name: &str, is_light: bool) -> &str {
-    if name == "auto" {
-        if is_light {
-            "catppuccin-latte"
-        } else {
-            "catppuccin"
+    match name {
+        "auto" => {
+            if is_light {
+                "catppuccin-latte"
+            } else {
+                "catppuccin"
+            }
         }
-    } else {
-        name
+        "dark" => "catppuccin",
+        "light" => "catppuccin-latte",
+        _ => name,
     }
 }
 
@@ -217,5 +222,17 @@ mod tests {
             resolve_theme_name("catppuccin-latte", false),
             "catppuccin-latte"
         );
+    }
+
+    #[test]
+    fn resolve_dark_alias() {
+        assert_eq!(resolve_theme_name("dark", false), "catppuccin");
+        assert_eq!(resolve_theme_name("dark", true), "catppuccin");
+    }
+
+    #[test]
+    fn resolve_light_alias() {
+        assert_eq!(resolve_theme_name("light", false), "catppuccin-latte");
+        assert_eq!(resolve_theme_name("light", true), "catppuccin-latte");
     }
 }
