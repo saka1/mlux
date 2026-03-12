@@ -75,6 +75,16 @@ pub fn load_images(
     base_dir: Option<&Path>,
     allow_remote: bool,
 ) -> (LoadedImages, Vec<ImageError>) {
+    // Normalize empty base_dir ("") to "." — Path::new("file.md").parent()
+    // returns Some("") which fails canonicalize().
+    let base_dir = base_dir.map(|p| {
+        if p.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            p
+        }
+    });
+
     let mut loaded = HashMap::new();
     let mut errors = Vec::new();
 
@@ -327,5 +337,16 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("https://test.invalid/img.png"));
         assert!(msg.contains("connection refused"));
+    }
+
+    #[test]
+    fn test_empty_base_dir_normalized_to_dot() {
+        // Path::new("file.md").parent() returns Some("") which previously
+        // caused canonicalize() to fail. Verify empty base_dir is normalized to ".".
+        let paths = vec!["tests/fixtures/test_image.png".to_string()];
+        let (loaded, errors) = load_images(&paths, Some(Path::new("")), false);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.get("tests/fixtures/test_image.png").is_some());
     }
 }
