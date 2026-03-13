@@ -52,6 +52,9 @@ zstd = "0.13"
 name = "fork_render"
 harness = false
 
+[lints.clippy]
+all = "deny"
+
 [profile.release]
 strip = "debuginfo"
 lto = "thin"

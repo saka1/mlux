@@ -169,7 +169,7 @@ fn main() {
                             eprintln!("Error: failed to resolve {}: {e}", p.display());
                             std::process::exit(1);
                         }
-                    }
+                    },
                     None => {
                         eprintln!("Error: input file required (or pipe via stdin)");
                         std::process::exit(1);

@@ -1028,7 +1028,7 @@ fn build_hashes(md: &str) -> Vec<TilePairHash> {
         data_files: mlux::theme::data_files("catppuccin"),
         markdown: md,
         base_dir: None,
-        width_pt: WIDTH_PT as f64,
+        width_pt: WIDTH_PT,
         sidebar_width_pt: 50.0,
         tile_height_pt: 200.0,
         ppi: PPI,
@@ -1087,7 +1087,7 @@ fn test_tile_hash_merge_recovers_unchanged_tiles() {
 
     // At least some tiles should be recovered (early tiles are unchanged)
     assert!(
-        new_cache.len() > 0,
+        !new_cache.is_empty(),
         "merge should recover at least some tiles (recovered {}/{total})",
         new_cache.len()
     );
