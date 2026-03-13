@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -719,6 +720,32 @@ pub fn split_frame(frame: &Frame, tile_height_pt: f64) -> Vec<Frame> {
 }
 
 // ---------------------------------------------------------------------------
+// TileHash — content-addressed tile identity
+// ---------------------------------------------------------------------------
+
+/// 64-bit content hash identifying a tile's visual content.
+///
+/// Uses `Frame`'s derive `Hash` (which covers all fields including Span).
+/// Same source text + same `FileId` produces identical Spans, so the hash
+/// is deterministic across recompilations of the same input.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct TileHash(u64);
+
+/// Combined hash of content + sidebar tiles. Both must match for cache reuse.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct TilePairHash {
+    pub content: TileHash,
+    pub sidebar: TileHash,
+}
+
+/// Hash a Frame using its derive `Hash` impl.
+pub fn compute_tile_hash(frame: &Frame) -> TileHash {
+    let mut h = DefaultHasher::new();
+    frame.hash(&mut h);
+    TileHash(h.finish())
+}
+
+// ---------------------------------------------------------------------------
 // TiledDocument — lazy tile-based rendering
 // ---------------------------------------------------------------------------
 
@@ -750,6 +777,9 @@ pub struct DocumentMeta {
     pub total_height_px: u32,
     pub page_height_pt: f64,
     pub visual_lines: Vec<VisualLine>,
+    /// Per-tile content hashes (tile index order). Empty if not computed.
+    #[serde(default)]
+    pub tile_hashes: Vec<TilePairHash>,
 }
 
 impl DocumentMeta {
@@ -1033,7 +1063,27 @@ impl TiledDocument {
         &self.visual_lines
     }
 
-    /// Extract pure metadata (no renderable data).
+    /// Compute content hashes for all tile pairs.
+    pub fn compute_tile_hashes(&self) -> Vec<TilePairHash> {
+        let start = Instant::now();
+        let hashes: Vec<TilePairHash> = self
+            .tiles
+            .iter()
+            .zip(self.sidebar_tiles.iter())
+            .map(|(content, sidebar)| TilePairHash {
+                content: compute_tile_hash(content),
+                sidebar: compute_tile_hash(sidebar),
+            })
+            .collect();
+        info!(
+            "tile: computed {} tile hashes in {:.1}ms",
+            hashes.len(),
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        hashes
+    }
+
+    /// Extract pure metadata (no renderable data), including tile hashes.
     pub fn metadata(&self) -> DocumentMeta {
         DocumentMeta {
             tile_count: self.tiles.len(),
@@ -1043,6 +1093,7 @@ impl TiledDocument {
             total_height_px: self.total_height_px,
             page_height_pt: self.page_height_pt,
             visual_lines: self.visual_lines.clone(),
+            tile_hashes: self.compute_tile_hashes(),
         }
     }
 
@@ -1111,14 +1162,151 @@ impl TiledDocumentCache {
         }
     }
 
+    pub fn remove(&mut self, idx: usize) -> Option<TilePngs> {
+        self.data.remove(&idx)
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.data.clear();
     }
 }
 
+/// Merge cached tile PNGs from a previous build into a new cache.
+///
+/// For each tile in the new document, if the old document has a tile with
+/// the same content hash, move the PNG over. Returns the new cache.
+pub fn merge_tile_cache(
+    new_hashes: &[TilePairHash],
+    old_hashes: &[TilePairHash],
+    old_cache: &mut TiledDocumentCache,
+) -> TiledDocumentCache {
+    let mut new_cache = TiledDocumentCache::new();
+    for (new_idx, new_hash) in new_hashes.iter().enumerate() {
+        if let Some(old_idx) = old_hashes.iter().position(|h| h == new_hash)
+            && let Some(pngs) = old_cache.remove(old_idx)
+        {
+            new_cache.insert(new_idx, pngs);
+        }
+    }
+    new_cache
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // TileHash tests
+    // -----------------------------------------------------------------------
+
+    /// Create a simple Frame with a rect shape for hash testing.
+    fn make_test_frame(width: f64, height: f64) -> Frame {
+        let mut frame = Frame::hard(Axes::new(Abs::pt(width), Abs::pt(height)));
+        let shape = typst::visualize::Shape {
+            geometry: Geometry::Rect(Axes::new(Abs::pt(width), Abs::pt(height))),
+            fill: None,
+            fill_rule: Default::default(),
+            stroke: None,
+        };
+        frame.push(Point::zero(), FrameItem::Shape(shape, Span::detached()));
+        frame
+    }
+
+    #[test]
+    fn compute_tile_hash_same_frame_same_hash() {
+        let f1 = make_test_frame(100.0, 200.0);
+        let f2 = make_test_frame(100.0, 200.0);
+        assert_eq!(compute_tile_hash(&f1), compute_tile_hash(&f2));
+    }
+
+    #[test]
+    fn compute_tile_hash_different_frame_different_hash() {
+        let f1 = make_test_frame(100.0, 200.0);
+        let f2 = make_test_frame(100.0, 201.0);
+        assert_ne!(compute_tile_hash(&f1), compute_tile_hash(&f2));
+    }
+
+    #[test]
+    fn compute_tile_hash_empty_frames() {
+        let f1 = Frame::hard(Axes::new(Abs::pt(100.0), Abs::pt(100.0)));
+        let f2 = Frame::hard(Axes::new(Abs::pt(100.0), Abs::pt(100.0)));
+        assert_eq!(compute_tile_hash(&f1), compute_tile_hash(&f2));
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_tile_cache tests
+    // -----------------------------------------------------------------------
+
+    fn make_hash(v: u8) -> TilePairHash {
+        TilePairHash {
+            content: TileHash(v as u64),
+            sidebar: TileHash(v as u64),
+        }
+    }
+
+    fn make_pngs(tag: u8) -> TilePngs {
+        TilePngs {
+            content: vec![tag],
+            sidebar: vec![tag],
+        }
+    }
+
+    #[test]
+    fn merge_tile_cache_full_match() {
+        let hashes = vec![make_hash(1), make_hash(2)];
+        let mut old_cache = TiledDocumentCache::new();
+        old_cache.insert(0, make_pngs(10));
+        old_cache.insert(1, make_pngs(20));
+
+        let new = merge_tile_cache(&hashes, &hashes, &mut old_cache);
+        assert_eq!(new.len(), 2);
+        assert_eq!(new.get(0).unwrap().content, vec![10]);
+        assert_eq!(new.get(1).unwrap().content, vec![20]);
+    }
+
+    #[test]
+    fn merge_tile_cache_partial_match() {
+        let old_hashes = vec![make_hash(1), make_hash(2)];
+        let new_hashes = vec![make_hash(1), make_hash(3)];
+        let mut old_cache = TiledDocumentCache::new();
+        old_cache.insert(0, make_pngs(10));
+        old_cache.insert(1, make_pngs(20));
+
+        let new = merge_tile_cache(&new_hashes, &old_hashes, &mut old_cache);
+        assert_eq!(new.len(), 1);
+        assert!(new.contains(0));
+        assert!(!new.contains(1));
+    }
+
+    #[test]
+    fn merge_tile_cache_zero_match() {
+        let old_hashes = vec![make_hash(1), make_hash(2)];
+        let new_hashes = vec![make_hash(3), make_hash(4)];
+        let mut old_cache = TiledDocumentCache::new();
+        old_cache.insert(0, make_pngs(10));
+        old_cache.insert(1, make_pngs(20));
+
+        let new = merge_tile_cache(&new_hashes, &old_hashes, &mut old_cache);
+        assert_eq!(new.len(), 0);
+    }
+
+    #[test]
+    fn merge_tile_cache_evicted_not_recovered() {
+        let hashes = vec![make_hash(1)];
+        let mut old_cache = TiledDocumentCache::new();
+        // Don't insert anything — simulates evicted tile (no PNG in cache)
+
+        let new = merge_tile_cache(&hashes, &hashes, &mut old_cache);
+        assert_eq!(new.len(), 0);
+    }
 
     fn make_vl(md_line_range: Option<(usize, usize)>) -> VisualLine {
         VisualLine {

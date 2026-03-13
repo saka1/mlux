@@ -1010,3 +1010,110 @@ fn test_inline_code_no_line_overlap() {
         "inline code should not change line spacing: plain={spacing_plain:.1}pt, code={spacing_code:.1}pt"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Content-addressed tile hash / merge tests
+// ---------------------------------------------------------------------------
+
+use mlux::pipeline::build_tiled_document;
+use mlux::tile::{TilePairHash, TiledDocumentCache, merge_tile_cache};
+
+/// Build a TiledDocument from markdown, returning metadata with hashes.
+fn build_hashes(md: &str) -> Vec<TilePairHash> {
+    let theme = load_theme();
+    let font_cache = FontCache::new();
+    let params = mlux::pipeline::BuildParams {
+        theme_name: "catppuccin",
+        theme_text: theme,
+        data_files: mlux::theme::data_files("catppuccin"),
+        markdown: md,
+        base_dir: None,
+        width_pt: WIDTH_PT as f64,
+        sidebar_width_pt: 50.0,
+        tile_height_pt: 200.0,
+        ppi: PPI,
+        fonts: &font_cache,
+        allow_remote_images: false,
+    };
+    let doc = build_tiled_document(&params).expect("build should succeed");
+    let meta = doc.metadata();
+    assert!(
+        !meta.tile_hashes.is_empty(),
+        "metadata should contain tile hashes"
+    );
+    meta.tile_hashes
+}
+
+#[test]
+fn test_tile_hash_identical_builds_match() {
+    let md = "# Hello\n\nWorld\n\nParagraph two.\n";
+    let h1 = build_hashes(md);
+    let h2 = build_hashes(md);
+    assert_eq!(h1.len(), h2.len());
+    for i in 0..h1.len() {
+        assert_eq!(
+            h1[i], h2[i],
+            "tile {i} hash should be identical for identical input"
+        );
+    }
+}
+
+#[test]
+fn test_tile_hash_merge_recovers_unchanged_tiles() {
+    // Build original document with multiple tiles
+    let lines: Vec<String> = (0..50).map(|i| format!("Line {i}\n")).collect();
+    let md_original: String = lines.iter().cloned().collect();
+
+    let old_hashes = build_hashes(&md_original);
+    let mut old_cache = TiledDocumentCache::new();
+    // Simulate rendering all tiles
+    for i in 0..old_hashes.len() {
+        old_cache.insert(
+            i,
+            mlux::tile::TilePngs {
+                content: vec![i as u8],
+                sidebar: vec![i as u8],
+            },
+        );
+    }
+
+    // Modify only the last line
+    let mut md_modified = md_original.clone();
+    md_modified.push_str("Extra line at the end.\n");
+
+    let new_hashes = build_hashes(&md_modified);
+    let total = new_hashes.len();
+    let new_cache = merge_tile_cache(&new_hashes, &old_hashes, &mut old_cache);
+
+    // At least some tiles should be recovered (early tiles are unchanged)
+    assert!(
+        new_cache.len() > 0,
+        "merge should recover at least some tiles (recovered {}/{total})",
+        new_cache.len()
+    );
+}
+
+#[test]
+fn test_tile_hash_no_change_full_recovery() {
+    let md = "# Title\n\nSome content.\n";
+    let hashes = build_hashes(md);
+    let mut old_cache = TiledDocumentCache::new();
+    for i in 0..hashes.len() {
+        old_cache.insert(
+            i,
+            mlux::tile::TilePngs {
+                content: vec![i as u8],
+                sidebar: vec![i as u8],
+            },
+        );
+    }
+
+    // Rebuild identical document
+    let total = hashes.len();
+    let new_cache = merge_tile_cache(&hashes, &hashes, &mut old_cache);
+    assert_eq!(
+        new_cache.len(),
+        total,
+        "identical rebuild should recover all {total} tiles"
+    );
+}

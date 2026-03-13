@@ -82,7 +82,6 @@ cargo test      # all tests pass
 - File watcher monitors the parent directory, not the file itself — Linux inotify loses watch handle on atomic-save (rename)
 - `pipeline/convert.rs` uses a Container enum + stack for nested markup state tracking
 - typst-kit feature name is `embed-fonts` (not `embedded-fonts`)
-- IPAGothic is the primary CJK font; Noto Sans CJK JP as fallback
 - FontBook uses lowercased family names for lookups
 - Kitty Protocol commands use `q=2` to suppress responses (avoids crossterm misparse)
 - Rust edition 2024

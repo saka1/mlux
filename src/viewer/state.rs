@@ -165,7 +165,7 @@ impl LoadedTiles {
 
     /// Ensure a tile (content + sidebar) is loaded in the terminal.
     ///
-    /// If the tile is not in cache, sends a request to the prefetch worker
+    /// If the tile is not in the doc cache, sends a request to the prefetch worker
     /// and blocks until the result arrives.
     pub(super) fn ensure_loaded(
         &mut self,

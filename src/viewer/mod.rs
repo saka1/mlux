@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use crate::config::{CliOverrides, Config};
 use crate::input::InputSource;
 use crate::pipeline::FontCache;
-use crate::tile::{TilePngs, TiledDocumentCache};
+use crate::tile::{TilePairHash, TilePngs, TiledDocumentCache, merge_tile_cache};
 use crate::watch::FileWatcher;
 
 use effect::{Effect, Session, ViewContext, ViewerMode, Viewport};
@@ -136,6 +136,10 @@ pub fn run(
     // Stdin buffer and EOF flag (stdin mode only)
     let mut stdin_buf = String::new();
     let mut stdin_eof = false;
+
+    // Previous cache + hashes for content-addressed merge across rebuilds
+    let mut prev_cache: Option<TiledDocumentCache> = None;
+    let mut prev_hashes: Option<Vec<TilePairHash>> = None;
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
@@ -260,11 +264,19 @@ pub fn run(
                 }
             }
         };
+        // Merge cached tiles from previous generation
+        let mut cache = match (prev_cache.take(), prev_hashes.take()) {
+            (Some(mut old_cache), Some(old_hashes)) => {
+                let c = merge_tile_cache(&meta.tile_hashes, &old_hashes, &mut old_cache);
+                info!("merge: recovered {}/{} tiles", c.len(), meta.tile_count);
+                c
+            }
+            _ => TiledDocumentCache::new(),
+        };
+
         let img_w = meta.width_px;
         let img_h = meta.total_height_px;
         let (vp_w, vp_h) = state::vp_dims(&session.layout, img_w, img_h);
-
-        let mut cache = TiledDocumentCache::new();
 
         // 6. thread::scope — prefetch worker + inner event loop
         let mut vp = Viewport {
@@ -294,7 +306,7 @@ pub fn run(
             // synchronous rendering on the main thread.
             //
             // Results flow back to main via res_tx/res_rx channel.
-            // The main thread drains res_rx.try_recv() into the cache.
+            // The main thread drains res_rx.try_recv() into the doc.
             let mut renderer = renderer;
             s.spawn(move || {
                 debug!("prefetch worker: started");
@@ -318,7 +330,7 @@ pub fn run(
             // in_flight: set of tile indices sent to the worker but not yet received.
             // Owned exclusively by the main thread (worker never accesses it).
             // Inserted by send_prefetch(), removed on res_rx.try_recv().
-            // Checked together with cache to prevent duplicate renders.
+            // Checked together with doc to prevent duplicate renders.
             let mut in_flight: HashSet<usize> = HashSet::new();
 
             // Vim-style number prefix accumulator
@@ -534,6 +546,18 @@ pub fn run(
             }
             // req_tx dropped here → worker recv() gets Err → worker exits → scope joins
         })?;
+
+        // Preserve cache + hashes for merge on reload/resize; discard on navigation
+        match &exit {
+            ExitReason::Reload | ExitReason::Resize { .. } | ExitReason::ConfigReload => {
+                prev_cache = Some(cache);
+                prev_hashes = Some(meta.tile_hashes.clone());
+            }
+            _ => {
+                prev_cache = None;
+                prev_hashes = None;
+            }
+        }
 
         if session.handle_exit(exit, vp.view.y_offset)? {
             break 'outer;
