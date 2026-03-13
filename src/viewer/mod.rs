@@ -131,6 +131,7 @@ pub fn run(
         scroll_carry: 0,
         pending_flash: None,
         watch,
+        detected_light,
     };
 
     // Stdin buffer and EOF flag (stdin mode only)

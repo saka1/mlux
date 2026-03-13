@@ -272,6 +272,7 @@ pub(super) struct Session {
     pub scroll_carry: u32,
     pub pending_flash: Option<String>,
     pub watch: bool,
+    pub detected_light: bool,
 }
 
 impl Session {
@@ -318,7 +319,11 @@ impl Session {
                 match config::reload_config(&self.cli_overrides) {
                     Ok(new_config) => {
                         // Verify built-in theme exists before committing
-                        if crate::theme::get(&new_config.theme).is_none() {
+                        let resolved = crate::theme::resolve_theme_name(
+                            &new_config.theme,
+                            self.detected_light,
+                        );
+                        if crate::theme::get(resolved).is_none() {
                             self.pending_flash = Some(format!(
                                 "Reload failed: unknown theme '{}'",
                                 new_config.theme
