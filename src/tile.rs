@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use log::{debug, info, trace};
 use serde::{Deserialize, Serialize};
 use typst::foundations::Smart;
+use typst::introspection::Tag;
 use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::{Source, Span};
 use typst::visualize::{Geometry, Paint};
@@ -336,7 +337,7 @@ fn collect_visual_lines_structural(
 
 /// Check whether a Group frame should be recursed into for visual line extraction.
 fn should_recurse(frame: &Frame) -> bool {
-    has_line_structure(frame) || has_dominant_child_group(frame)
+    has_line_structure(frame) || has_dominant_child_group(frame) || has_raw_line_tags(frame)
 }
 
 /// Check if child Groups are arranged vertically without overlap (line structure).
@@ -372,6 +373,24 @@ fn has_dominant_child_group(frame: &Frame) -> bool {
     frame.items().any(|(_, item)| {
         if let FrameItem::Group(g) = item {
             g.frame.size().y.to_pt() > parent_h * 0.5
+        } else {
+            false
+        }
+    })
+}
+
+/// Check if the frame contains RawLine Tags (code block line markers).
+///
+/// Typst's `RawLine` element is `Tagged`, so every code block line —
+/// even for unrecognized languages — emits `Tag::Start`/`Tag::End` pairs.
+/// When syntax highlighting is active, each line also gets a child Group;
+/// when it's not, only bare Text items remain. This function detects
+/// the latter case so that `should_recurse` can split them into
+/// individual visual lines.
+fn has_raw_line_tags(frame: &Frame) -> bool {
+    frame.items().any(|(_, item)| {
+        if let FrameItem::Tag(Tag::Start(content, _)) = item {
+            content.elem().name() == "line"
         } else {
             false
         }

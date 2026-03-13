@@ -163,7 +163,13 @@ fn main() {
                 InputSource::Stdin(input::StdinReader::new())
             } else {
                 match cli.input {
-                    Some(p) => InputSource::File(p),
+                    Some(p) => match p.canonicalize() {
+                        Ok(canonical) => InputSource::File(canonical),
+                        Err(e) => {
+                            eprintln!("Error: failed to resolve {}: {e}", p.display());
+                            std::process::exit(1);
+                        }
+                    }
                     None => {
                         eprintln!("Error: input file required (or pipe via stdin)");
                         std::process::exit(1);
@@ -240,17 +246,16 @@ fn cmd_render(
         anyhow::bail!("input file is empty or contains only whitespace");
     }
 
-    let base_dir = if is_stdin { None } else { input.parent() };
-    let read_base = if is_stdin {
-        None
+    let (base_dir, read_base) = if is_stdin {
+        (None, None)
     } else {
-        Some(
-            input
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .canonicalize()
-                .context("failed to canonicalize input directory")?,
-        )
+        let canonical = input
+            .canonicalize()
+            .with_context(|| format!("failed to resolve {}", input.display()))?;
+        let parent = canonical
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        (Some(parent.to_path_buf()), Some(parent.to_path_buf()))
     };
 
     let data_files = mlux::theme::data_files(theme);
@@ -260,7 +265,7 @@ fn cmd_render(
         theme_text,
         data_files,
         markdown: &markdown,
-        base_dir,
+        base_dir: base_dir.as_deref(),
         width_pt: width,
         sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
         tile_height_pt: tile_height,

@@ -222,7 +222,7 @@ pub fn run(
                 allow_remote_images: session.cli_overrides.allow_remote_images,
             };
             let read_base = match &session.input {
-                InputSource::File(p) => p.parent().and_then(|d| d.canonicalize().ok()),
+                InputSource::File(p) => p.parent().map(|d| d.to_path_buf()),
                 InputSource::Stdin(_) => None,
             };
             // Fork before any threads (fork safety).

@@ -1117,3 +1117,45 @@ fn test_tile_hash_no_change_full_recovery() {
         "identical rebuild should recover all {total} tiles"
     );
 }
+
+#[test]
+fn test_code_block_no_lang_lines_are_individual() {
+    let md = "# H\n\n```\nline1\nline2\nline3\n```\n";
+    let vlines = source_map_pipeline(md);
+
+    let code_vls: Vec<usize> = vlines
+        .iter()
+        .enumerate()
+        .filter(|(_, vl)| {
+            vl.md_line_exact.is_some() && vl.md_line_range.is_some_and(|(s, _)| s >= 3)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        code_vls.len(),
+        3,
+        "3-line no-language code block should produce 3 visual lines with md_line_exact, got {}",
+        code_vls.len()
+    );
+}
+
+#[test]
+fn test_code_block_unrecognized_lang_lines_are_individual() {
+    let md = "# H\n\n```console\n$ cargo build\n$ cargo test\n```\n";
+    let vlines = source_map_pipeline(md);
+
+    let code_vls: Vec<usize> = vlines
+        .iter()
+        .enumerate()
+        .filter(|(_, vl)| {
+            vl.md_line_exact.is_some() && vl.md_line_range.is_some_and(|(s, _)| s >= 3)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        code_vls.len(),
+        2,
+        "2-line console code block should produce 2 visual lines with md_line_exact, got {}",
+        code_vls.len()
+    );
+}

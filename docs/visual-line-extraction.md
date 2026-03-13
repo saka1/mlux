@@ -181,3 +181,74 @@ TextItem  (20.0, 48.6)pt  size=8.0pt  glyphs=1  text="line3"
 - ターミナルペースト時に視覚的差異なし
 - 多くのエディタは保存時に trailing whitespace を除去
 - 必要なら、ヤンク実装時に `text.trim() == ""` のフィルタを1行追加で対処可能
+
+---
+
+## 問題3: 未認識言語のコードブロックが1視覚行に潰れる
+
+### 症状
+
+言語タグなし（` ``` `）や Typst が認識しない言語（`console` 等）のコードブロックが、
+行数に関係なく1つの視覚行として扱われる。サイドバー行番号が1行しか表示されない。
+
+### 原因: フレームツリー構造の違い
+
+認識言語と未認識言語でフレームツリーの構造が異なる:
+
+| 言語 | フレームツリー | `should_recurse()` |
+|---|---|---|
+| 認識言語 (`rust`, `toml` 等) | RawLine Tags + per-line **Groups** (syntax highlighting) | `has_line_structure()` で検出 ✅ |
+| 未認識言語 (`console`, なし) | RawLine Tags + bare **Text** items (Groups なし) | 検出不可 ❌ |
+
+`should_recurse()` は `has_line_structure()` (child Groups の垂直配置) と
+`has_dominant_child_group()` (50%超の child Group) のみで判定していたため、
+Groups を持たないコードブロックは再帰されず、1視覚行に潰れていた。
+
+### RawLine Tag による検出
+
+Typst の `RawLine` 要素は `#[elem(name = "line", Tagged)]` として定義されている。
+`Tagged` trait により、言語認識の有無にかかわらず全行に `Tag::Start`/`Tag::End` ペアが
+フレームツリーに挿入される。
+
+#### Typst の raw ブロック処理フロー
+
+```
+RawElem → synthesize() → highlight() or non_highlighted_result()
+  → per-line RawLine → RAW_RULE show function
+  → LinebreakElem で行分割
+```
+
+`highlight()` は認識言語に対してシンタックスハイライト付きの子要素を生成し、
+`non_highlighted_result()` は未認識言語に対してプレーンテキストの子要素を生成する。
+いずれの場合も `RawLine` は `Tagged` なので Tag ペアが出力される。
+
+### 対策: `has_raw_line_tags()`
+
+`should_recurse()` の第3条件として `has_raw_line_tags()` を追加:
+
+```rust
+fn has_raw_line_tags(frame: &Frame) -> bool {
+    frame.items().any(|(_, item)| {
+        if let FrameItem::Tag(Tag::Start(content, _)) = item {
+            content.elem().name() == "line"
+        } else {
+            false
+        }
+    })
+}
+```
+
+RawLine Tag が検出された場合、フレームを再帰し、bare Text items を
+`flush_pending_texts` の Y-tolerance グルーピングで個別の視覚行に分割する。
+
+### 影響範囲
+
+- コードブロック（raw 要素）のみに影響
+- リスト、段落、数式等は child Groups を持つため既存のパスで処理される
+- 認識言語のコードブロックは `has_line_structure()` が先に true を返すため変化なし
+
+### 備考: `#metadata()` はフレームツリーに現れない
+
+カスタムアンカーの代替として `#metadata()` の使用を検討したが、
+`Locatable` のみで `Tagged` ではないため、フレームツリーに Tag として現れない。
+RawLine の既存 Tag を利用する方が正しいアプローチ。
