@@ -6,7 +6,7 @@ use std::io;
 use std::sync::mpsc;
 
 use super::terminal;
-use crate::tile::{DocumentMeta, TilePngs, TileStore, VisibleTiles, VisualLine};
+use crate::tile::{DocumentMeta, TileList, TilePngs, VisibleTiles, VisualLine};
 
 // ---------------------------------------------------------------------------
 // Layout / ViewState
@@ -169,18 +169,18 @@ impl LoadedTiles {
     /// and blocks until the result arrives.
     pub(super) fn ensure_loaded(
         &mut self,
-        cache: &mut TileStore,
+        cache: &mut TileList,
         idx: usize,
         req_tx: &mpsc::Sender<usize>,
         res_rx: &mpsc::Receiver<(usize, TilePngs)>,
         in_flight: &mut HashSet<usize>,
     ) -> anyhow::Result<()> {
         if let Some(action) = self.plan_load(idx) {
-            if !cache.contains(idx) {
+            if !cache.is_rendered(idx) {
                 if in_flight.insert(idx) {
                     let _ = req_tx.send(idx);
                 }
-                while !cache.contains(idx) {
+                while !cache.is_rendered(idx) {
                     let (i, pngs) = res_rx.recv()?;
                     in_flight.remove(&i);
                     cache.insert(i, pngs);
@@ -237,7 +237,7 @@ pub(super) struct PrefetchChannels<'a> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn redraw(
     meta: &DocumentMeta,
-    cache: &mut TileStore,
+    cache: &mut TileList,
     loaded: &mut LoadedTiles,
     layout: &Layout,
     state: &ViewState,
@@ -278,7 +278,7 @@ pub(super) fn redraw(
 ///
 /// `cache` だけでは TOCTOU (Time-of-Check-to-Time-of-Use) が発生する:
 ///   1. worker がタイル N をレンダリング完了 → `res_tx.send()` で結果送信
-///   2. main thread の `send_prefetch()` が `cache.contains(N)` を検査 → false
+///   2. main thread の `send_prefetch()` が `cache.is_rendered(N)` を検査 → false
 ///      (結果は mpsc チャネル内にあるが、まだ `cache.insert()` されていない)
 ///   3. タイル N を再リクエスト → worker が同じタイルを二重レンダリング
 ///
@@ -290,14 +290,14 @@ pub(super) fn redraw(
 pub(super) fn send_prefetch(
     tx: &mpsc::Sender<usize>,
     meta: &DocumentMeta,
-    cache: &TileStore,
+    cache: &TileList,
     in_flight: &mut HashSet<usize>,
     y_offset: u32,
 ) {
     let current = (y_offset / meta.tile_height_px) as usize;
     // Forward 2 + backward 1
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
-        if idx < meta.tile_count && !cache.contains(idx) && !in_flight.contains(&idx) {
+        if idx < meta.tile_count && !cache.is_rendered(idx) && !in_flight.contains(&idx) {
             debug!("prefetch: requesting tile {idx} (current={current})");
             let _ = tx.send(idx);
             in_flight.insert(idx);

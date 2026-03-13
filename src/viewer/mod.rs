@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use crate::config::{CliOverrides, Config};
 use crate::input::InputSource;
 use crate::pipeline::FontCache;
-use crate::tile::{TilePngs, TileStore};
+use crate::tile::{TileList, TilePngs};
 use crate::watch::FileWatcher;
 
 use effect::{Effect, Session, ViewContext, ViewerMode, Viewport};
@@ -137,9 +137,9 @@ pub fn run(
     let mut stdin_buf = String::new();
     let mut stdin_eof = false;
 
-    // TileStore lives across outer loop iterations: on Reload, evolve() diffs
+    // TileList lives across outer loop iterations: on Reload, evolve() diffs
     // tile hashes and carries over cached PNGs for unchanged tiles.
-    let mut store = TileStore::default();
+    let mut store = TileList::default();
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {

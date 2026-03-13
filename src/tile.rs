@@ -1079,7 +1079,7 @@ fn compute_tile_hashes(tiles: &[Frame]) -> Vec<u64> {
 }
 
 // ---------------------------------------------------------------------------
-// TileStore — content-addressed lazy list of rendered tiles
+// TileList — content-addressed lazy list of rendered tiles
 // ---------------------------------------------------------------------------
 
 /// A pair of rendered PNGs: content + sidebar for the same tile index.
@@ -1089,96 +1089,131 @@ pub struct TilePngs {
     pub sidebar: Vec<u8>,
 }
 
+/// A single tile in the lazy list: identity (hash) + optional cached rendering.
+struct TileEntry {
+    /// Content hash computed from this tile's Frame tree.
+    hash: u64,
+    /// Rendered PNG pair (None = not yet computed, will be lazily rendered).
+    rendered: Option<TilePngs>,
+}
+
 /// A content-addressed lazy list of rendered tiles.
 ///
 /// Each tile is identified by a content hash computed from its Frame tree.
-/// PNGs are rendered lazily (on demand via prefetch worker). When a new
-/// document version is built, [`TileStore::evolve`] diffs hashes and carries
-/// over cached PNGs for unchanged tiles — only modified tiles are re-rendered.
+/// PNGs are rendered lazily (on demand via the prefetch worker). When a new
+/// document version is built, [`TileList::evolve`] matches tiles by hash
+/// (not by index), so shifted tiles — e.g. after inserting a paragraph at the
+/// top — can still reuse their cached PNGs.
+///
+/// This is a pure data structure: it knows each tile's identity and caches
+/// rendered results, but does not trigger rendering itself. The viewer loop
+/// controls when and how tiles are rendered.
 ///
 /// Separated from [`TiledDocument`] to allow concurrent `&TiledDocument`
 /// access (e.g., from a prefetch worker thread) while the main thread owns
-/// `&mut TileStore`.
+/// `&mut TileList`.
 #[derive(Default)]
-pub struct TileStore {
-    /// Content hash per tile, computed from Frame after split_frame().
-    hashes: Vec<u64>,
-    /// Lazily populated: tile index → rendered PNGs.
-    rendered: HashMap<usize, TilePngs>,
+pub struct TileList {
+    tiles: Vec<TileEntry>,
 }
 
-impl TileStore {
-    /// Create a store for a new document (all tiles unrendered).
+impl TileList {
+    /// Create a list for a new document (all tiles unrendered).
     pub fn new(hashes: Vec<u64>) -> Self {
         Self {
-            hashes,
-            rendered: HashMap::new(),
+            tiles: hashes
+                .into_iter()
+                .map(|hash| TileEntry {
+                    hash,
+                    rendered: None,
+                })
+                .collect(),
         }
     }
 
-    /// Evolve from a previous version, carrying over cached PNGs for unchanged tiles.
+    /// Evolve from a previous version, carrying over cached PNGs for
+    /// unchanged tiles.
     ///
-    /// Tiles whose hash at the same index matches are retained; all others are
-    /// discarded and will be lazily re-rendered on demand.
+    /// Matching is **content-addressed**: tiles are matched by hash, not by
+    /// index. This means tiles that shifted position (e.g., due to content
+    /// inserted above) can still reuse their cached rendering.
+    ///
+    /// Each cached PNG is consumed at most once — if multiple new tiles share
+    /// the same hash, only the first one reuses the cached PNG.
     pub fn evolve(self, new_hashes: Vec<u64>) -> Self {
-        let old_len = self.hashes.len();
-        let min_len = old_len.min(new_hashes.len());
-        let mut rendered = HashMap::new();
-        for (idx, cached) in self.rendered {
-            if idx < min_len && self.hashes[idx] == new_hashes[idx] {
-                rendered.insert(idx, cached);
-            }
-        }
+        // Build a pool of rendered PNGs keyed by hash.
+        // If multiple old tiles share the same hash, we keep one arbitrarily.
+        let old_len = self.tiles.len();
+        let mut pool: HashMap<u64, TilePngs> = self
+            .tiles
+            .into_iter()
+            .filter_map(|entry| entry.rendered.map(|pngs| (entry.hash, pngs)))
+            .collect();
+        let pool_size = pool.len();
+
+        let tiles: Vec<TileEntry> = new_hashes
+            .into_iter()
+            .map(|hash| TileEntry {
+                hash,
+                rendered: pool.remove(&hash),
+            })
+            .collect();
+
+        let retained = tiles.iter().filter(|e| e.rendered.is_some()).count();
         info!(
-            "tile store: evolved {} → {} tiles, retained {} cached",
+            "tile list: evolved {} → {} tiles, retained {}/{} cached",
             old_len,
-            new_hashes.len(),
-            rendered.len(),
+            tiles.len(),
+            retained,
+            pool_size,
         );
-        Self {
-            hashes: new_hashes,
-            rendered,
-        }
+
+        Self { tiles }
     }
 
     /// Number of tiles in the current document version.
     pub fn len(&self) -> usize {
-        self.hashes.len()
+        self.tiles.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hashes.is_empty()
+        self.tiles.is_empty()
     }
 
+    /// Get the rendered PNG pair for a tile, if available.
     pub fn get(&self, idx: usize) -> Option<&TilePngs> {
-        self.rendered.get(&idx)
+        self.tiles.get(idx)?.rendered.as_ref()
     }
 
-    pub fn contains(&self, idx: usize) -> bool {
-        self.rendered.contains_key(&idx)
+    /// Check whether a tile has been rendered.
+    pub fn is_rendered(&self, idx: usize) -> bool {
+        self.tiles
+            .get(idx)
+            .is_some_and(|e| e.rendered.is_some())
     }
 
+    /// Store a rendered PNG pair for a tile.
     pub fn insert(&mut self, idx: usize, pngs: TilePngs) {
-        self.rendered.insert(idx, pngs);
-    }
-
-    /// Evict entries far from `center`, keeping only those within `keep_radius`.
-    pub fn evict_distant(&mut self, center: usize, keep_radius: usize) {
-        let to_evict: Vec<usize> = self
-            .rendered
-            .keys()
-            .filter(|&&k| (k as isize - center as isize).unsigned_abs() > keep_radius)
-            .copied()
-            .collect();
-        for k in to_evict {
-            self.rendered.remove(&k);
-            trace!("cache evict tile {}", k);
+        if let Some(entry) = self.tiles.get_mut(idx) {
+            entry.rendered = Some(pngs);
         }
     }
 
+    /// Release rendered PNGs for tiles far from the viewport center.
+    pub fn evict_distant(&mut self, center: usize, keep_radius: usize) {
+        for (i, entry) in self.tiles.iter_mut().enumerate() {
+            if (i as isize - center as isize).unsigned_abs() > keep_radius
+                && entry.rendered.is_some()
+            {
+                entry.rendered = None;
+                trace!("tile list: evict tile {}", i);
+            }
+        }
+    }
+
+    /// Discard all state (tiles and cached renderings).
     pub fn clear(&mut self) {
-        self.rendered.clear();
-        self.hashes.clear();
+        self.tiles.clear();
     }
 }
 
@@ -1291,128 +1326,90 @@ mod tests {
         assert_eq!(urls[1].url, "https://help.x.com/en/using-x/types-of-posts");
     }
 
-    // --- TileStore tests ---
+    // --- TileList tests ---
+
+    fn pngs(tag: u8) -> TilePngs {
+        TilePngs {
+            content: vec![tag],
+            sidebar: vec![tag + 100],
+        }
+    }
 
     #[test]
-    fn test_tile_store_evolve_retains_matching() {
-        let mut store = TileStore::new(vec![100, 200, 300]);
-        store.insert(
-            0,
-            TilePngs {
-                content: vec![1],
-                sidebar: vec![2],
-            },
-        );
-        store.insert(
-            1,
-            TilePngs {
-                content: vec![3],
-                sidebar: vec![4],
-            },
-        );
-        store.insert(
-            2,
-            TilePngs {
-                content: vec![5],
-                sidebar: vec![6],
-            },
-        );
+    fn tile_list_evolve_retains_matching() {
+        let mut list = TileList::new(vec![100, 200, 300]);
+        list.insert(0, pngs(0));
+        list.insert(1, pngs(1));
+        list.insert(2, pngs(2));
 
         // Tile 1 changed hash
-        let store = store.evolve(vec![100, 999, 300]);
-        assert!(store.contains(0), "unchanged tile should be retained");
-        assert!(!store.contains(1), "changed tile should be evicted");
-        assert!(store.contains(2), "unchanged tile should be retained");
+        let list = list.evolve(vec![100, 999, 300]);
+        assert!(list.is_rendered(0), "unchanged tile retained");
+        assert!(!list.is_rendered(1), "changed tile evicted");
+        assert!(list.is_rendered(2), "unchanged tile retained");
     }
 
     #[test]
-    fn test_tile_store_evolve_handles_length_change() {
-        let mut store = TileStore::new(vec![100, 200, 300]);
-        store.insert(
-            0,
-            TilePngs {
-                content: vec![1],
-                sidebar: vec![2],
-            },
-        );
-        store.insert(
-            1,
-            TilePngs {
-                content: vec![3],
-                sidebar: vec![4],
-            },
-        );
-        store.insert(
-            2,
-            TilePngs {
-                content: vec![5],
-                sidebar: vec![6],
-            },
-        );
+    fn tile_list_evolve_content_addressed_shift() {
+        // Key test: content-addressed matching handles shifts.
+        // Inserting a new tile at the top shifts everything down.
+        let mut list = TileList::new(vec![100, 200, 300]);
+        list.insert(0, pngs(0));
+        list.insert(1, pngs(1));
+        list.insert(2, pngs(2));
 
-        // Document grew: new tile inserted, tile 2 has different hash now
-        let store = store.evolve(vec![100, 200, 999, 300]);
-        assert!(store.contains(0), "unchanged tile retained");
-        assert!(store.contains(1), "unchanged tile retained");
-        assert!(!store.contains(2), "hash differs (was 300, now 999)");
-        assert_eq!(store.len(), 4);
+        // New tile 999 inserted at position 0, old tiles shift down
+        let list = list.evolve(vec![999, 100, 200, 300]);
+        assert!(!list.is_rendered(0), "new tile at top → not cached");
+        assert!(list.is_rendered(1), "hash 100 reused from old index 0");
+        assert!(list.is_rendered(2), "hash 200 reused from old index 1");
+        assert!(list.is_rendered(3), "hash 300 reused from old index 2");
+
+        // Verify content is correct (PNG tag from old tile 0)
+        assert_eq!(list.get(1).unwrap().content, vec![0]);
     }
 
     #[test]
-    fn test_tile_store_evolve_from_empty() {
-        let store = TileStore::default();
-        let store = store.evolve(vec![100, 200, 300]);
-        assert_eq!(store.len(), 3);
-        assert!(!store.contains(0), "nothing was cached");
+    fn tile_list_evolve_shrink() {
+        let mut list = TileList::new(vec![100, 200, 300]);
+        list.insert(0, pngs(0));
+        list.insert(2, pngs(2));
+
+        // Document shrank: only hash 100 survives
+        let list = list.evolve(vec![100, 200]);
+        assert!(list.is_rendered(0), "hash 100 matched");
+        assert_eq!(list.len(), 2);
     }
 
     #[test]
-    fn test_tile_store_evolve_shrink() {
-        let mut store = TileStore::new(vec![100, 200, 300]);
-        store.insert(
-            0,
-            TilePngs {
-                content: vec![1],
-                sidebar: vec![2],
-            },
-        );
-        store.insert(
-            2,
-            TilePngs {
-                content: vec![5],
-                sidebar: vec![6],
-            },
-        );
-
-        // Document shrank to 2 tiles
-        let store = store.evolve(vec![100, 200]);
-        assert!(store.contains(0), "tile 0 hash matched");
-        assert!(!store.contains(2), "tile 2 out of range");
-        assert_eq!(store.len(), 2);
+    fn tile_list_evolve_from_empty() {
+        let list = TileList::default();
+        let list = list.evolve(vec![100, 200, 300]);
+        assert_eq!(list.len(), 3);
+        assert!(!list.is_rendered(0), "nothing was cached");
     }
 
     #[test]
-    fn test_tile_store_evolve_identical() {
-        let mut store = TileStore::new(vec![100, 200, 300]);
-        store.insert(
-            0,
-            TilePngs {
-                content: vec![1],
-                sidebar: vec![2],
-            },
-        );
-        store.insert(
-            1,
-            TilePngs {
-                content: vec![3],
-                sidebar: vec![4],
-            },
-        );
+    fn tile_list_evolve_identical() {
+        let mut list = TileList::new(vec![100, 200, 300]);
+        list.insert(0, pngs(0));
+        list.insert(1, pngs(1));
 
         // Same hashes — all cached tiles retained
-        let store = store.evolve(vec![100, 200, 300]);
-        assert!(store.contains(0));
-        assert!(store.contains(1));
-        assert!(!store.contains(2), "was never cached");
+        let list = list.evolve(vec![100, 200, 300]);
+        assert!(list.is_rendered(0));
+        assert!(list.is_rendered(1));
+        assert!(!list.is_rendered(2), "was never cached");
+    }
+
+    #[test]
+    fn tile_list_evolve_duplicate_hash_uses_one() {
+        // If multiple new tiles share the same hash, only one gets the cached PNG.
+        let mut list = TileList::new(vec![100]);
+        list.insert(0, pngs(0));
+
+        let list = list.evolve(vec![100, 100, 100]);
+        let rendered_count = (0..3).filter(|&i| list.is_rendered(i)).count();
+        assert_eq!(rendered_count, 1, "only one PNG available for hash 100");
     }
 }
