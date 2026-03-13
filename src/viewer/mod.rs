@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use crate::config::{CliOverrides, Config};
 use crate::input::InputSource;
 use crate::pipeline::FontCache;
-use crate::tile::{TilePngs, TiledDocumentCache};
+use crate::tile::{TilePngs, TileStore};
 use crate::watch::FileWatcher;
 
 use effect::{Effect, Session, ViewContext, ViewerMode, Viewport};
@@ -136,6 +136,10 @@ pub fn run(
     // Stdin buffer and EOF flag (stdin mode only)
     let mut stdin_buf = String::new();
     let mut stdin_eof = false;
+
+    // TileStore lives across outer loop iterations: on Reload, evolve() diffs
+    // tile hashes and carries over cached PNGs for unchanged tiles.
+    let mut store = TileStore::default();
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
@@ -264,7 +268,9 @@ pub fn run(
         let img_h = meta.total_height_px;
         let (vp_w, vp_h) = state::vp_dims(&session.layout, img_w, img_h);
 
-        let mut cache = TiledDocumentCache::new();
+        // Evolve tile store: on Reload, retain cached PNGs for unchanged tiles.
+        // On first load or after clear (Resize/ConfigReload/Navigate), starts fresh.
+        store = store.evolve(meta.tile_hashes.clone());
 
         // 6. thread::scope — prefetch worker + inner event loop
         let mut vp = Viewport {
@@ -294,7 +300,7 @@ pub fn run(
             // synchronous rendering on the main thread.
             //
             // Results flow back to main via res_tx/res_rx channel.
-            // The main thread drains res_rx.try_recv() into the cache.
+            // The main thread drains res_rx.try_recv() into the store.
             let mut renderer = renderer;
             s.spawn(move || {
                 debug!("prefetch worker: started");
@@ -318,7 +324,7 @@ pub fn run(
             // in_flight: set of tile indices sent to the worker but not yet received.
             // Owned exclusively by the main thread (worker never accesses it).
             // Inserted by send_prefetch(), removed on res_rx.try_recv().
-            // Checked together with cache to prevent duplicate renders.
+            // Checked together with store to prevent duplicate renders.
             let mut in_flight: HashSet<usize> = HashSet::new();
 
             // Vim-style number prefix accumulator
@@ -327,7 +333,7 @@ pub fn run(
             // Initial redraw + prefetch
             state::redraw(
                 &meta,
-                &mut cache,
+                &mut store,
                 &mut vp.tiles,
                 &session.layout,
                 &vp.view,
@@ -339,13 +345,13 @@ pub fn run(
                     in_flight: &mut in_flight,
                 },
             )?;
-            state::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.view.y_offset);
+            state::send_prefetch(&req_tx, &meta, &store, &mut in_flight, vp.view.y_offset);
 
             // Inner event loop
             let mut last_render = Instant::now();
 
             loop {
-                // Drain prefetch results into cache.
+                // Drain prefetch results into store.
                 while let Ok((idx, pngs)) = res_rx.try_recv() {
                     debug!(
                         "main: received prefetched tile {idx} (content={}, sidebar={} bytes)",
@@ -353,7 +359,7 @@ pub fn run(
                         pngs.sidebar.len()
                     );
                     in_flight.remove(&idx);
-                    cache.insert(idx, pngs);
+                    store.insert(idx, pngs);
                 }
 
                 let has_live_source = session.watcher.is_some()
@@ -492,11 +498,11 @@ pub fn run(
                             pngs.sidebar.len()
                         );
                         in_flight.remove(&idx);
-                        cache.insert(idx, pngs);
+                        store.insert(idx, pngs);
                     }
                     state::redraw(
                         &meta,
-                        &mut cache,
+                        &mut store,
                         &mut vp.tiles,
                         &session.layout,
                         &vp.view,
@@ -508,8 +514,8 @@ pub fn run(
                             in_flight: &mut in_flight,
                         },
                     )?;
-                    state::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.view.y_offset);
-                    cache.evict_distant(
+                    state::send_prefetch(&req_tx, &meta, &store, &mut in_flight, vp.view.y_offset);
+                    store.evict_distant(
                         (vp.view.y_offset / meta.tile_height_px) as usize,
                         session.config.viewer.evict_distance,
                     );
@@ -534,6 +540,14 @@ pub fn run(
             }
             // req_tx dropped here → worker recv() gets Err → worker exits → scope joins
         })?;
+
+        // Clear the tile store for exits that invalidate tile layout
+        // (Resize changes tile boundaries, ConfigReload may change theme/PPI,
+        // Navigate/GoBack switch to a different document entirely).
+        // On Reload, the store is preserved so evolve() can diff hashes.
+        if !matches!(exit, ExitReason::Reload) {
+            store.clear();
+        }
 
         if session.handle_exit(exit, vp.view.y_offset)? {
             break 'outer;

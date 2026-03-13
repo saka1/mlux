@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -750,6 +751,8 @@ pub struct DocumentMeta {
     pub total_height_px: u32,
     pub page_height_pt: f64,
     pub visual_lines: Vec<VisualLine>,
+    /// Content hash per tile, for incremental rendering on reload.
+    pub tile_hashes: Vec<u64>,
 }
 
 impl DocumentMeta {
@@ -829,7 +832,7 @@ impl DocumentMeta {
 /// A document split into renderable tiles for lazy, bounded-memory rendering.
 ///
 /// All methods take `&self` — rendering is pure (no internal caching).
-/// Use [`TiledDocumentCache`] separately for caching rendered PNGs.
+/// Use [`TileStore`] separately for caching rendered PNGs.
 pub struct TiledDocument {
     tiles: Vec<Frame>,
     sidebar_tiles: Vec<Frame>,
@@ -842,6 +845,8 @@ pub struct TiledDocument {
     total_height_px: u32,
     page_height_pt: f64,
     visual_lines: Vec<VisualLine>,
+    /// Content hash per tile (for incremental rendering on reload).
+    tile_hashes: Vec<u64>,
 }
 
 impl TiledDocument {
@@ -872,6 +877,7 @@ impl TiledDocument {
         );
 
         let tiles = split_frame(&page.frame, tile_height_pt);
+        let tile_hashes = compute_tile_hashes(&tiles);
 
         // Split sidebar with the same tile boundaries
         if sidebar_doc.pages.is_empty() {
@@ -903,6 +909,7 @@ impl TiledDocument {
             total_height_px,
             page_height_pt,
             visual_lines,
+            tile_hashes,
         })
     }
 
@@ -1043,6 +1050,7 @@ impl TiledDocument {
             total_height_px: self.total_height_px,
             page_height_pt: self.page_height_pt,
             visual_lines: self.visual_lines.clone(),
+            tile_hashes: self.tile_hashes.clone(),
         }
     }
 
@@ -1055,7 +1063,23 @@ impl TiledDocument {
 }
 
 // ---------------------------------------------------------------------------
-// TiledDocumentCache — external cache for rendered tile PNGs
+// Tile hashing
+// ---------------------------------------------------------------------------
+
+/// Compute a content hash for each tile Frame using the standard Hash trait.
+fn compute_tile_hashes(tiles: &[Frame]) -> Vec<u64> {
+    tiles
+        .iter()
+        .map(|frame| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            frame.hash(&mut hasher);
+            hasher.finish()
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// TileStore — content-addressed lazy list of rendered tiles
 // ---------------------------------------------------------------------------
 
 /// A pair of rendered PNGs: content + sidebar for the same tile index.
@@ -1065,54 +1089,96 @@ pub struct TilePngs {
     pub sidebar: Vec<u8>,
 }
 
-/// Cache for rendered tile PNGs, separated from [`TiledDocument`] to allow
-/// concurrent `&TiledDocument` access (e.g., from a prefetch worker thread)
-/// while the main thread owns `&mut TiledDocumentCache`.
-pub struct TiledDocumentCache {
-    data: HashMap<usize, TilePngs>,
+/// A content-addressed lazy list of rendered tiles.
+///
+/// Each tile is identified by a content hash computed from its Frame tree.
+/// PNGs are rendered lazily (on demand via prefetch worker). When a new
+/// document version is built, [`TileStore::evolve`] diffs hashes and carries
+/// over cached PNGs for unchanged tiles — only modified tiles are re-rendered.
+///
+/// Separated from [`TiledDocument`] to allow concurrent `&TiledDocument`
+/// access (e.g., from a prefetch worker thread) while the main thread owns
+/// `&mut TileStore`.
+#[derive(Default)]
+pub struct TileStore {
+    /// Content hash per tile, computed from Frame after split_frame().
+    hashes: Vec<u64>,
+    /// Lazily populated: tile index → rendered PNGs.
+    rendered: HashMap<usize, TilePngs>,
 }
 
-impl Default for TiledDocumentCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TiledDocumentCache {
-    pub fn new() -> Self {
+impl TileStore {
+    /// Create a store for a new document (all tiles unrendered).
+    pub fn new(hashes: Vec<u64>) -> Self {
         Self {
-            data: HashMap::new(),
+            hashes,
+            rendered: HashMap::new(),
         }
     }
 
+    /// Evolve from a previous version, carrying over cached PNGs for unchanged tiles.
+    ///
+    /// Tiles whose hash at the same index matches are retained; all others are
+    /// discarded and will be lazily re-rendered on demand.
+    pub fn evolve(self, new_hashes: Vec<u64>) -> Self {
+        let old_len = self.hashes.len();
+        let min_len = old_len.min(new_hashes.len());
+        let mut rendered = HashMap::new();
+        for (idx, cached) in self.rendered {
+            if idx < min_len && self.hashes[idx] == new_hashes[idx] {
+                rendered.insert(idx, cached);
+            }
+        }
+        info!(
+            "tile store: evolved {} → {} tiles, retained {} cached",
+            old_len,
+            new_hashes.len(),
+            rendered.len(),
+        );
+        Self {
+            hashes: new_hashes,
+            rendered,
+        }
+    }
+
+    /// Number of tiles in the current document version.
+    pub fn len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
+
     pub fn get(&self, idx: usize) -> Option<&TilePngs> {
-        self.data.get(&idx)
+        self.rendered.get(&idx)
     }
 
     pub fn contains(&self, idx: usize) -> bool {
-        self.data.contains_key(&idx)
+        self.rendered.contains_key(&idx)
     }
 
     pub fn insert(&mut self, idx: usize, pngs: TilePngs) {
-        self.data.insert(idx, pngs);
+        self.rendered.insert(idx, pngs);
     }
 
     /// Evict entries far from `center`, keeping only those within `keep_radius`.
     pub fn evict_distant(&mut self, center: usize, keep_radius: usize) {
         let to_evict: Vec<usize> = self
-            .data
+            .rendered
             .keys()
             .filter(|&&k| (k as isize - center as isize).unsigned_abs() > keep_radius)
             .copied()
             .collect();
         for k in to_evict {
-            self.data.remove(&k);
+            self.rendered.remove(&k);
             trace!("cache evict tile {}", k);
         }
     }
 
     pub fn clear(&mut self) {
-        self.data.clear();
+        self.rendered.clear();
+        self.hashes.clear();
     }
 }
 
@@ -1223,5 +1289,130 @@ mod tests {
         assert_eq!(urls.len(), 2, "each list item should produce one URL");
         assert_eq!(urls[0].url, "https://help.x.com/ja/using-x/create-a-thread");
         assert_eq!(urls[1].url, "https://help.x.com/en/using-x/types-of-posts");
+    }
+
+    // --- TileStore tests ---
+
+    #[test]
+    fn test_tile_store_evolve_retains_matching() {
+        let mut store = TileStore::new(vec![100, 200, 300]);
+        store.insert(
+            0,
+            TilePngs {
+                content: vec![1],
+                sidebar: vec![2],
+            },
+        );
+        store.insert(
+            1,
+            TilePngs {
+                content: vec![3],
+                sidebar: vec![4],
+            },
+        );
+        store.insert(
+            2,
+            TilePngs {
+                content: vec![5],
+                sidebar: vec![6],
+            },
+        );
+
+        // Tile 1 changed hash
+        let store = store.evolve(vec![100, 999, 300]);
+        assert!(store.contains(0), "unchanged tile should be retained");
+        assert!(!store.contains(1), "changed tile should be evicted");
+        assert!(store.contains(2), "unchanged tile should be retained");
+    }
+
+    #[test]
+    fn test_tile_store_evolve_handles_length_change() {
+        let mut store = TileStore::new(vec![100, 200, 300]);
+        store.insert(
+            0,
+            TilePngs {
+                content: vec![1],
+                sidebar: vec![2],
+            },
+        );
+        store.insert(
+            1,
+            TilePngs {
+                content: vec![3],
+                sidebar: vec![4],
+            },
+        );
+        store.insert(
+            2,
+            TilePngs {
+                content: vec![5],
+                sidebar: vec![6],
+            },
+        );
+
+        // Document grew: new tile inserted, tile 2 has different hash now
+        let store = store.evolve(vec![100, 200, 999, 300]);
+        assert!(store.contains(0), "unchanged tile retained");
+        assert!(store.contains(1), "unchanged tile retained");
+        assert!(!store.contains(2), "hash differs (was 300, now 999)");
+        assert_eq!(store.len(), 4);
+    }
+
+    #[test]
+    fn test_tile_store_evolve_from_empty() {
+        let store = TileStore::default();
+        let store = store.evolve(vec![100, 200, 300]);
+        assert_eq!(store.len(), 3);
+        assert!(!store.contains(0), "nothing was cached");
+    }
+
+    #[test]
+    fn test_tile_store_evolve_shrink() {
+        let mut store = TileStore::new(vec![100, 200, 300]);
+        store.insert(
+            0,
+            TilePngs {
+                content: vec![1],
+                sidebar: vec![2],
+            },
+        );
+        store.insert(
+            2,
+            TilePngs {
+                content: vec![5],
+                sidebar: vec![6],
+            },
+        );
+
+        // Document shrank to 2 tiles
+        let store = store.evolve(vec![100, 200]);
+        assert!(store.contains(0), "tile 0 hash matched");
+        assert!(!store.contains(2), "tile 2 out of range");
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn test_tile_store_evolve_identical() {
+        let mut store = TileStore::new(vec![100, 200, 300]);
+        store.insert(
+            0,
+            TilePngs {
+                content: vec![1],
+                sidebar: vec![2],
+            },
+        );
+        store.insert(
+            1,
+            TilePngs {
+                content: vec![3],
+                sidebar: vec![4],
+            },
+        );
+
+        // Same hashes — all cached tiles retained
+        let store = store.evolve(vec![100, 200, 300]);
+        assert!(store.contains(0));
+        assert!(store.contains(1));
+        assert!(!store.contains(2), "was never cached");
     }
 }

@@ -6,7 +6,7 @@ use std::io;
 use std::sync::mpsc;
 
 use super::terminal;
-use crate::tile::{DocumentMeta, TilePngs, TiledDocumentCache, VisibleTiles, VisualLine};
+use crate::tile::{DocumentMeta, TilePngs, TileStore, VisibleTiles, VisualLine};
 
 // ---------------------------------------------------------------------------
 // Layout / ViewState
@@ -169,7 +169,7 @@ impl LoadedTiles {
     /// and blocks until the result arrives.
     pub(super) fn ensure_loaded(
         &mut self,
-        cache: &mut TiledDocumentCache,
+        cache: &mut TileStore,
         idx: usize,
         req_tx: &mpsc::Sender<usize>,
         res_rx: &mpsc::Receiver<(usize, TilePngs)>,
@@ -237,7 +237,7 @@ pub(super) struct PrefetchChannels<'a> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn redraw(
     meta: &DocumentMeta,
-    cache: &mut TiledDocumentCache,
+    cache: &mut TileStore,
     loaded: &mut LoadedTiles,
     layout: &Layout,
     state: &ViewState,
@@ -290,7 +290,7 @@ pub(super) fn redraw(
 pub(super) fn send_prefetch(
     tx: &mpsc::Sender<usize>,
     meta: &DocumentMeta,
-    cache: &TiledDocumentCache,
+    cache: &TileStore,
     in_flight: &mut HashSet<usize>,
     y_offset: u32,
 ) {
