@@ -1,10 +1,11 @@
-//! Effect types, viewer mode, and effect application logic.
+//! Effect types, viewer mode, exit reasons, and effect application logic.
 //!
 //! State model:
 //!   - `Viewport`: mutable state for the current document view (mode, scroll, tiles, UI)
 //!   - `ViewContext`: read-only environment for effect application (layout, document, nav)
 //!   - `Session`: persistent state across document rebuilds (config, file mgmt, nav history)
 //!
+//! Layout geometry lives in `layout.rs`, tile cache in `tiles.rs`.
 //! See `docs/viewer-state-model.md` for the full design rationale.
 
 use crossterm::terminal as crossterm_terminal;
@@ -16,12 +17,23 @@ use crate::input::InputSource;
 use crate::tile::VisualLine;
 use crate::watch::FileWatcher;
 
+use super::layout::{self, Layout, ScrollState};
 use super::mode_command::CommandState;
 use super::mode_search::{self, LastSearch, SearchState};
 use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
-use super::state::{self, ExitReason, Layout, LoadedTiles, ViewState};
 use super::terminal;
+use super::tiles::LoadedTiles;
+
+/// Why the inner event loop exited back to the outer rebuild loop.
+pub(super) enum ExitReason {
+    Quit,
+    Resize { new_cols: u16, new_rows: u16 },
+    Reload,
+    ConfigReload,
+    Navigate { path: PathBuf },
+    GoBack,
+}
 
 /// Viewer mode: normal (tile display), search (picker UI), command (`:` prompt), or URL picker.
 pub(super) enum ViewerMode {
@@ -72,7 +84,7 @@ pub(super) struct JumpEntry {
 /// for each document build; destroyed when the build is replaced.
 pub(super) struct Viewport {
     pub mode: ViewerMode,
-    pub view: ViewState,
+    pub scroll: ScrollState,
     pub tiles: LoadedTiles,
     pub flash: Option<String>,
     pub dirty: bool,
@@ -87,6 +99,7 @@ pub(super) struct ViewContext<'a> {
     pub layout: &'a Layout,
     pub acc_value: Option<u32>,
     pub input: &'a InputSource,
+    pub filename: &'a str,
     pub jump_stack: &'a [JumpEntry],
     pub markdown: &'a str,
     pub visual_lines: &'a [VisualLine],
@@ -109,7 +122,7 @@ impl Viewport {
                 if snapped != y {
                     debug!("scroll snap: {y} -> {snapped} (cell_h={cell_h})");
                 }
-                self.view.y_offset = snapped;
+                self.scroll.y_offset = snapped;
                 self.dirty = true;
             }
             Effect::MarkDirty => {
@@ -121,7 +134,8 @@ impl Viewport {
             Effect::RedrawStatusBar => {
                 terminal::draw_status_bar(
                     ctx.layout,
-                    &self.view,
+                    &self.scroll,
+                    ctx.filename,
                     ctx.acc_value,
                     self.flash.as_deref(),
                 )?;
@@ -219,7 +233,8 @@ impl Viewport {
                     } else {
                         terminal::draw_status_bar(
                             ctx.layout,
-                            &self.view,
+                            &self.scroll,
+                            ctx.filename,
                             ctx.acc_value,
                             self.flash.as_deref(),
                         )?;
@@ -237,7 +252,8 @@ impl Viewport {
                     self.flash = Some("No previous file".into());
                     terminal::draw_status_bar(
                         ctx.layout,
-                        &self.view,
+                        &self.scroll,
+                        ctx.filename,
                         ctx.acc_value,
                         self.flash.as_deref(),
                     )?;
@@ -283,7 +299,7 @@ impl Session {
         new_rows: u16,
     ) -> anyhow::Result<()> {
         let new_winsize = crossterm_terminal::window_size()?;
-        self.layout = state::compute_layout(
+        self.layout = layout::compute_layout(
             new_cols,
             new_rows,
             new_winsize.width,
@@ -340,7 +356,7 @@ impl Session {
                         // Recalculate layout if sidebar_cols changed
                         if new_config.viewer.sidebar_cols != self.config.viewer.sidebar_cols {
                             let winsize = crossterm_terminal::window_size()?;
-                            self.layout = state::compute_layout(
+                            self.layout = layout::compute_layout(
                                 winsize.columns,
                                 winsize.rows,
                                 winsize.width,

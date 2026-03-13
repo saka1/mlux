@@ -19,13 +19,14 @@
 
 mod effect;
 mod input;
+mod layout;
 mod mode_command;
 mod mode_normal;
 mod mode_search;
 mod mode_toc;
 mod mode_url;
-mod state;
 mod terminal;
+mod tiles;
 
 pub use terminal::{TerminalTheme, detect_terminal_theme};
 
@@ -45,11 +46,12 @@ use crate::pipeline::FontCache;
 use crate::tile::{TilePairHash, TilePngs, TiledDocumentCache, merge_tile_cache};
 use crate::watch::FileWatcher;
 
-use effect::{Effect, Session, ViewContext, ViewerMode, Viewport};
+use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
 use input::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
 };
-use state::{ExitReason, LoadedTiles, PrefetchChannels, ViewState};
+use layout::ScrollState;
+use tiles::{LoadedTiles, PrefetchChannels};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
 const FAST_THRESHOLD: Duration = Duration::from_millis(100);
@@ -115,7 +117,7 @@ pub fn run(
         None
     };
     let mut session = Session {
-        layout: state::compute_layout(
+        layout: layout::compute_layout(
             term_cols,
             term_rows,
             pixel_w,
@@ -277,17 +279,16 @@ pub fn run(
 
         let img_w = meta.width_px;
         let img_h = meta.total_height_px;
-        let (vp_w, vp_h) = state::vp_dims(&session.layout, img_w, img_h);
+        let (vp_w, vp_h) = layout::vp_dims(&session.layout, img_w, img_h);
 
         // 6. thread::scope — prefetch worker + inner event loop
         let mut vp = Viewport {
             mode: ViewerMode::Normal,
-            view: ViewState {
+            scroll: ScrollState {
                 y_offset: session.scroll_carry.min(meta.max_scroll(vp_h)),
                 img_h,
                 vp_w,
                 vp_h,
-                filename: session.filename.clone(),
             },
             tiles: LoadedTiles::new(session.config.viewer.evict_distance),
             flash: session.pending_flash.take(),
@@ -338,12 +339,13 @@ pub fn run(
             let mut acc = InputAccumulator::new();
 
             // Initial redraw + prefetch
-            state::redraw(
+            tiles::redraw(
                 &meta,
                 &mut cache,
                 &mut vp.tiles,
                 &session.layout,
-                &vp.view,
+                &vp.scroll,
+                &session.filename,
                 acc.peek(),
                 None,
                 &mut PrefetchChannels {
@@ -352,7 +354,7 @@ pub fn run(
                     in_flight: &mut in_flight,
                 },
             )?;
-            state::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.view.y_offset);
+            tiles::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.scroll.y_offset);
 
             // Inner event loop
             let mut last_render = Instant::now();
@@ -392,7 +394,7 @@ pub fn run(
 
                     match ev {
                         Event::Key(key_event) => {
-                            let max_y = meta.max_scroll(vp.view.vp_h);
+                            let max_y = meta.max_scroll(vp.scroll.vp_h);
 
                             let effects = match &mut vp.mode {
                                 ViewerMode::Normal => {
@@ -402,7 +404,7 @@ pub fn run(
                                     match map_key_event(key_event, &mut acc) {
                                         Some(action) => {
                                             let mut ctx = mode_normal::NormalCtx {
-                                                state: &vp.view,
+                                                scroll: &vp.scroll,
                                                 visual_lines: &meta.visual_lines,
                                                 max_scroll: max_y,
                                                 scroll_step: session.config.viewer.scroll_step
@@ -472,6 +474,7 @@ pub fn run(
                                 layout: &session.layout,
                                 acc_value: acc.peek(),
                                 input: &session.input,
+                                filename: &session.filename,
                                 jump_stack: &session.jump_stack,
                                 markdown: &markdown,
                                 visual_lines: &meta.visual_lines,
@@ -507,12 +510,13 @@ pub fn run(
                         in_flight.remove(&idx);
                         cache.insert(idx, pngs);
                     }
-                    state::redraw(
+                    tiles::redraw(
                         &meta,
                         &mut cache,
                         &mut vp.tiles,
                         &session.layout,
-                        &vp.view,
+                        &vp.scroll,
+                        &session.filename,
                         acc.peek(),
                         vp.flash.as_deref(),
                         &mut PrefetchChannels {
@@ -521,9 +525,15 @@ pub fn run(
                             in_flight: &mut in_flight,
                         },
                     )?;
-                    state::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.view.y_offset);
+                    tiles::send_prefetch(
+                        &req_tx,
+                        &meta,
+                        &cache,
+                        &mut in_flight,
+                        vp.scroll.y_offset,
+                    );
                     cache.evict_distant(
-                        (vp.view.y_offset / meta.tile_height_px) as usize,
+                        (vp.scroll.y_offset / meta.tile_height_px) as usize,
                         session.config.viewer.evict_distance,
                     );
                     vp.dirty = false;
@@ -560,7 +570,7 @@ pub fn run(
             }
         }
 
-        if session.handle_exit(exit, vp.view.y_offset)? {
+        if session.handle_exit(exit, vp.scroll.y_offset)? {
             break 'outer;
         }
     }

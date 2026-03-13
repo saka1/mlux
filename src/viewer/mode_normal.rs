@@ -2,17 +2,18 @@
 
 use log::debug;
 
+use super::effect::ExitReason;
 use super::input::Action;
+use super::layout::{ScrollState, visual_line_offset};
 use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};
 use super::mode_toc::{TocState, collect_headings};
 use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
-use super::state::{ExitReason, ViewState, visual_line_offset};
 use super::{Effect, ViewerMode};
 use crate::tile::{VisualLine, extract_urls, yank_exact, yank_lines};
 
 pub(super) struct NormalCtx<'a> {
-    pub state: &'a ViewState,
+    pub scroll: &'a ScrollState,
     pub visual_lines: &'a [VisualLine],
     pub max_scroll: u32,
     pub scroll_step: u32,
@@ -30,52 +31,52 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         Action::Digit => vec![Effect::RedrawStatusBar],
 
         Action::ScrollDown(count) => {
-            let y = (ctx.state.y_offset + count * ctx.scroll_step).min(ctx.max_scroll);
+            let y = (ctx.scroll.y_offset + count * ctx.scroll_step).min(ctx.max_scroll);
             debug!(
                 "scroll down: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.state.y_offset, y, ctx.scroll_step, ctx.max_scroll
+                ctx.scroll.y_offset, y, ctx.scroll_step, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
         Action::ScrollUp(count) => {
-            let y = ctx.state.y_offset.saturating_sub(count * ctx.scroll_step);
+            let y = ctx.scroll.y_offset.saturating_sub(count * ctx.scroll_step);
             debug!(
                 "scroll up: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.state.y_offset, y, ctx.scroll_step, ctx.max_scroll
+                ctx.scroll.y_offset, y, ctx.scroll_step, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
         Action::HalfPageDown(count) => {
-            let y = (ctx.state.y_offset + count * ctx.half_page).min(ctx.max_scroll);
+            let y = (ctx.scroll.y_offset + count * ctx.half_page).min(ctx.max_scroll);
             debug!(
                 "scroll half-down: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.state.y_offset, y, ctx.half_page, ctx.max_scroll
+                ctx.scroll.y_offset, y, ctx.half_page, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
         Action::HalfPageUp(count) => {
-            let y = ctx.state.y_offset.saturating_sub(count * ctx.half_page);
+            let y = ctx.scroll.y_offset.saturating_sub(count * ctx.half_page);
             debug!(
                 "scroll half-up: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.state.y_offset, y, ctx.half_page, ctx.max_scroll
+                ctx.scroll.y_offset, y, ctx.half_page, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
 
         Action::JumpToTop => {
-            debug!("scroll top: y_offset {} → 0", ctx.state.y_offset);
+            debug!("scroll top: y_offset {} → 0", ctx.scroll.y_offset);
             vec![Effect::ScrollTo(0)]
         }
         Action::JumpToBottom => {
             debug!(
                 "scroll bottom: y_offset {} → {} (max={})",
-                ctx.state.y_offset, ctx.max_scroll, ctx.max_scroll
+                ctx.scroll.y_offset, ctx.max_scroll, ctx.max_scroll
             );
             vec![Effect::ScrollTo(ctx.max_scroll)]
         }
         Action::JumpToLine(n) => {
             let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, n);
-            debug!("jump to line {n}: y_offset {} → {}", ctx.state.y_offset, y);
+            debug!("jump to line {n}: y_offset {} → {}", ctx.scroll.y_offset, y);
             vec![Effect::ScrollTo(y)]
         }
 
@@ -289,13 +290,13 @@ mod tests {
     }
 
     fn make_ctx<'a>(
-        state: &'a ViewState,
+        scroll: &'a ScrollState,
         visual_lines: &'a [VisualLine],
         markdown: &'a str,
         last_search: &'a mut Option<LastSearch>,
     ) -> NormalCtx<'a> {
         NormalCtx {
-            state,
+            scroll,
             visual_lines,
             max_scroll: 1000,
             scroll_step: 30,
@@ -305,13 +306,12 @@ mod tests {
         }
     }
 
-    fn make_state(y_offset: u32) -> ViewState {
-        ViewState {
+    fn make_state(y_offset: u32) -> ScrollState {
+        ScrollState {
             y_offset,
             img_h: 2000,
             vp_w: 800,
             vp_h: 600,
-            filename: "test.md".into(),
         }
     }
 

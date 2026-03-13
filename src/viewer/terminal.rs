@@ -11,7 +11,8 @@ use std::io::{self, Write, stdout};
 use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 
-use super::state::{Layout, LoadedTiles, ViewState};
+use super::layout::{Layout, ScrollState};
+use super::tiles::LoadedTiles;
 use crate::tile::VisibleTiles;
 
 const CHUNK_SIZE: usize = 4096;
@@ -116,7 +117,7 @@ pub(super) fn place_tiles(
     loaded: &LoadedTiles,
     layout: &Layout,
     params: &PlaceParams,
-    get_id: fn(&super::state::TileImageIds) -> u32,
+    get_id: fn(&super::tiles::TileImageIds) -> u32,
 ) -> io::Result<()> {
     let mut out = stdout();
     let w = params.img_width;
@@ -180,7 +181,7 @@ pub(super) fn place_content_tiles(
     visible: &VisibleTiles,
     loaded: &LoadedTiles,
     layout: &Layout,
-    state: &ViewState,
+    scroll: &ScrollState,
 ) -> io::Result<()> {
     place_tiles(
         visible,
@@ -189,7 +190,7 @@ pub(super) fn place_content_tiles(
         &PlaceParams {
             start_col: layout.image_col,
             num_cols: layout.image_cols,
-            img_width: state.vp_w,
+            img_width: scroll.vp_w,
         },
         |ids| ids.content_id,
     )
@@ -221,18 +222,19 @@ pub(super) fn place_sidebar_tiles(
 /// `flash`: ヤンク成功等の一時メッセージ（次のキー入力でクリア）
 pub(super) fn draw_status_bar(
     layout: &Layout,
-    state: &ViewState,
+    scroll: &ScrollState,
+    filename: &str,
     acc_peek: Option<u32>,
     flash: Option<&str>,
 ) -> io::Result<()> {
     let mut out = stdout();
     out.queue(cursor::MoveTo(0, layout.status_row))?;
 
-    let max_y = state.img_h.saturating_sub(state.vp_h);
+    let max_y = scroll.img_h.saturating_sub(scroll.vp_h);
     let pct = if max_y == 0 {
         100
     } else {
-        ((state.y_offset as u64 * 100) / max_y as u64) as u32
+        ((scroll.y_offset as u64 * 100) / max_y as u64) as u32
     };
 
     let total_cols = layout.sidebar_cols + layout.image_cols;
@@ -240,17 +242,17 @@ pub(super) fn draw_status_bar(
     let middle = if let Some(msg) = flash {
         format!(
             " {} | {} | y={}/{} px  {}%",
-            state.filename, msg, state.y_offset, state.img_h, pct
+            filename, msg, scroll.y_offset, scroll.img_h, pct
         )
     } else if let Some(n) = acc_peek {
         format!(
             " {} | :{n}_ | y={}/{} px  {}%",
-            state.filename, state.y_offset, state.img_h, pct
+            filename, scroll.y_offset, scroll.img_h, pct
         )
     } else {
         format!(
             " {} | y={}/{} px  {}%  [/:search n/N:match Ng:goto j/k d/u ::cmd q:quit]",
-            state.filename, state.y_offset, state.img_h, pct
+            filename, scroll.y_offset, scroll.img_h, pct
         )
     };
 
