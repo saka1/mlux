@@ -17,6 +17,39 @@ Session (プロセス寿命)
 | `Viewport` | 1 回のドキュメントビルド | `&mut self` | `mod.rs` 内部ループ |
 | `ViewContext` | 1 回のエフェクト適用サイクル | 読取専用 (`&`) | キーイベントごとに生成 |
 
+## ファイル構成
+
+| ファイル | 内容 |
+|---------|------|
+| `effect.rs` | `Session`, `Viewport`, `ViewContext`, `Effect`, `ExitReason`, `ViewerMode` |
+| `layout.rs` | `Layout`, `ScrollState`, `compute_layout()`, `vp_dims()`, `visual_line_offset()` |
+| `tiles.rs` | `LoadedTiles`, `TileImageIds`, `PrefetchChannels`, `redraw()`, `send_prefetch()` |
+| `mod.rs` | 外部/内部イベントループ（Session と Viewport のライフサイクル管理） |
+| `mode_*.rs` | モード固有のハンドラと状態 |
+| `terminal.rs` | ターミナル I/O（Kitty Graphics Protocol, ステータスバー, OSC 52） |
+
+## 命名の根拠
+
+### なぜ Session であり AppContext ではないか
+
+`AppContext` は通常、初期化後にほぼ不変な依存性コンテナを指す（config, DB pool, logger など）。
+しかし `Session` は積極的に mutate する:
+
+- `input`, `filename`, `watcher` がファイルナビゲーションで差し替わる
+- `jump_stack` に push/pop されるナビゲーション履歴
+- `config`, `layout` が config reload で書き換わる
+- `scroll_carry`, `pending_flash` がリビルド間の橋渡しとして使われる
+
+これは Context ではなく「進行中の閲覧セッション」の状態であり、
+英語ネイティブにとっても "viewing session" は自然な概念である。
+
+### なぜ ScrollState であり ViewState ではないか
+
+旧名 `ViewState` は `Viewport` と紛らわしく、どちらが「表示状態」なのか曖昧だった。
+`ScrollState` は内容を正直に表す: スクロール位置 (`y_offset`) とスクロール境界
+(`img_h`, `vp_w`, `vp_h`) の集合体である。`filename` は `Session` に一元管理し、
+`ScrollState` からは除去した。
+
 ## Viewport
 
 **ドキュメントビルドに対するユーザの対話的な視界。**
@@ -26,8 +59,8 @@ Session (プロセス寿命)
 
 ```rust
 pub(super) struct Viewport {
-    pub mode: ViewerMode,           // Normal / Search / Command / UrlPicker
-    pub view: ViewState,            // スクロール位置 + ビューポート寸法
+    pub mode: ViewerMode,           // Normal / Search / Command / UrlPicker / Toc
+    pub scroll: ScrollState,       // スクロール位置 + ビューポート寸法
     pub tiles: LoadedTiles,         // タイルレンダリングキャッシュ（端末側画像）
     pub flash: Option<String>,      // 一時的なステータスメッセージ ("Yanked L56")
     pub dirty: bool,                // 次フレームで再描画が必要
@@ -37,7 +70,7 @@ pub(super) struct Viewport {
 
 **各フィールドがここに属する理由:**
 - `mode` — ビューポートの表示内容を決定する（タイル表示 / 検索ピッカー / コマンドプロンプト）
-- `view` — スクロール位置とジオメトリ。ドキュメントに対するビューポートの「窓」
+- `scroll` — スクロール位置とジオメトリ。ドキュメントに対するビューポートの「窓」
 - `tiles` — レンダリングキャッシュ。端末にアップロード済みのタイル群
 - `flash`, `dirty` — ビルドごとにリセットされる一時的な UI 状態
 - `last_search` — 1 回のビルド内でモード遷移をまたいで持続（n/N ナビゲーション用）
@@ -61,6 +94,7 @@ pub(super) struct ViewContext<'a> {
     pub layout: &'a Layout,         // 端末セル/ピクセルジオメトリ
     pub acc_value: Option<u32>,     // 現在の数値プレフィクス（スナップショット）
     pub input: &'a InputSource,     // ファイルパスまたは stdin
+    pub filename: &'a str,          // ステータスバー用の表示名
     pub jump_stack: &'a [JumpEntry], // ナビゲーション履歴（GoBack 判定用）
     pub markdown: &'a str,          // ソースドキュメントテキスト
     pub visual_lines: &'a [VisualLine], // ドキュメント構造
@@ -126,7 +160,7 @@ impl Session {
 
 ```
 内部ループからの ExitReason
-  → Session::handle_exit(exit, viewport.view.y_offset)  (effect.rs)
+  → Session::handle_exit(exit, viewport.scroll.y_offset)  (effect.rs)
     → セッション状態を変更（config, input, layout, ...）
     → true を返すとビューア終了
   → 終了でなければ: ドキュメント再ビルド → 新しい Viewport を生成 → 内部ループ再突入
@@ -141,7 +175,7 @@ let effects = match &mut vp.mode {        // vp.mode をボロー
     ViewerMode::Normal => {
         vp.flash = None;                   // vp.flash をボロー（別フィールド ✓）
         let mut ctx = NormalCtx {
-            state: &vp.view,               // vp.view をボロー（別フィールド ✓）
+            scroll: &vp.scroll,            // vp.scroll をボロー（別フィールド ✓）
             last_search: &mut vp.last_search, // 別フィールド ✓
             ...
         };

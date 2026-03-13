@@ -7,8 +7,9 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
+use super::effect::ExitReason;
 use super::input::TocAction;
-use super::state::{ExitReason, Layout, visual_line_offset};
+use super::layout::{Layout, visual_line_offset};
 use super::{Effect, ViewerMode};
 use crate::tile::VisualLine;
 

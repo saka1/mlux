@@ -8,7 +8,7 @@ use crossterm::{
 use std::io::{self, Write, stdout};
 
 use super::input::UrlAction;
-use super::state::Layout;
+use super::layout::Layout;
 use super::{Effect, ViewerMode};
 use crate::tile::{UrlEntry, VisualLine, extract_urls_from_lines};
 

@@ -11,7 +11,7 @@ use std::io::{self, Write, stdout};
 use super::Effect;
 use super::ViewerMode;
 use super::input::SearchAction;
-use super::state::{Layout, visual_line_offset};
+use super::layout::{Layout, visual_line_offset};
 use crate::tile::VisualLine;
 
 /// A single search match within the Markdown source.
