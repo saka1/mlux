@@ -4,6 +4,9 @@
 //! computes pixel rectangles for matching glyphs, and draws semi-transparent
 //! highlight overlays on the tile's Pixmap before PNG encoding.
 
+use std::time::Instant;
+
+use log::debug;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use typst::layout::{Frame, FrameItem, Point};
@@ -34,6 +37,8 @@ pub fn find_highlight_rects(frame: &Frame, spec: &HighlightSpec, ppi: f32) -> Ve
         return Vec::new();
     }
 
+    let start = Instant::now();
+
     let re = match RegexBuilder::new(&spec.pattern)
         .case_insensitive(spec.case_insensitive)
         .build()
@@ -45,6 +50,14 @@ pub fn find_highlight_rects(frame: &Frame, spec: &HighlightSpec, ppi: f32) -> Ve
     let pixel_per_pt = ppi / 72.0;
     let mut rects = Vec::new();
     walk_frame(frame, Point::zero(), &re, pixel_per_pt, &mut rects);
+
+    debug!(
+        "highlight: find_highlight_rects completed in {:.1}ms ({} rects, pattern={:?})",
+        start.elapsed().as_secs_f64() * 1000.0,
+        rects.len(),
+        spec.pattern,
+    );
+
     rects
 }
 
@@ -145,6 +158,7 @@ fn collect_text_rects(
 ///
 /// Uses alpha blending: highlight color is mixed with the existing pixel.
 pub fn draw_highlights(pixmap: &mut tiny_skia::Pixmap, rects: &[HighlightRect]) {
+    let start = Instant::now();
     let pw = pixmap.width();
     let ph = pixmap.height();
 
@@ -190,6 +204,14 @@ pub fn draw_highlights(pixmap: &mut tiny_skia::Pixmap, rects: &[HighlightRect]) 
             }
         }
     }
+
+    debug!(
+        "highlight: draw_highlights completed in {:.1}ms ({} rects, {}x{}px)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        rects.len(),
+        pw,
+        ph,
+    );
 }
 
 #[cfg(test)]
