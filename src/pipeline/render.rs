@@ -128,6 +128,43 @@ pub fn render_frame_to_png(
     Ok(png)
 }
 
+/// Render a single Frame to PNG bytes with highlight overlays.
+///
+/// Same as [`render_frame_to_png`] but draws highlight rectangles on the Pixmap
+/// before encoding to PNG.
+pub fn render_frame_to_png_highlighted(
+    frame: &Frame,
+    fill: &Smart<Option<Paint>>,
+    ppi: f32,
+    rects: &[crate::highlight::HighlightRect],
+) -> Result<Vec<u8>> {
+    let start = Instant::now();
+    let page = Page {
+        frame: frame.clone(),
+        fill: fill.clone(),
+        numbering: None,
+        supplement: typst::foundations::Content::empty(),
+        number: 0,
+    };
+
+    let pixel_per_pt = ppi / 72.0;
+    let mut pixmap = typst_render::render(&page, pixel_per_pt);
+    crate::highlight::draw_highlights(&mut pixmap, rects);
+
+    let png = pixmap
+        .encode_png()
+        .map_err(|e| anyhow::anyhow!("[BUG] PNG encoding failed: {e}"))?;
+    info!(
+        "render: render_frame_to_png_highlighted completed in {:.1}ms ({}x{}px, {} bytes, {} highlights)",
+        start.elapsed().as_secs_f64() * 1000.0,
+        pixmap.width(),
+        pixmap.height(),
+        png.len(),
+        rects.len(),
+    );
+    Ok(png)
+}
+
 /// Dump the PagedDocument frame tree to stderr for debugging.
 pub fn dump_document(document: &PagedDocument) {
     eprintln!("=== PagedDocument: {} page(s) ===", document.pages.len());

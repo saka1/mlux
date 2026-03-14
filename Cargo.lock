@@ -1846,6 +1846,7 @@ dependencies = [
  "pulldown-cmark",
  "regex",
  "serde",
+ "tiny-skia",
  "toml",
  "typst",
  "typst-kit",

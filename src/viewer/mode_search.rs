@@ -54,14 +54,29 @@ impl SearchState {
 pub(super) struct LastSearch {
     pub matches: Vec<SearchMatch>,
     pub current_idx: usize,
+    /// Original search query pattern.
+    pub query: String,
+    /// Whether the search was case-insensitive (smartcase).
+    pub case_insensitive: bool,
 }
 
 impl LastSearch {
     /// Create from a completed SearchState, using the selected match as current.
     pub(super) fn from_search_state(ss: &SearchState) -> Self {
+        let case_insensitive = ss.query.chars().all(|c| !c.is_uppercase());
         Self {
             matches: ss.matches.clone(),
             current_idx: ss.selected,
+            query: ss.query.clone(),
+            case_insensitive,
+        }
+    }
+
+    /// Build a [`HighlightSpec`] from this search state.
+    pub(super) fn highlight_spec(&self) -> crate::highlight::HighlightSpec {
+        crate::highlight::HighlightSpec {
+            pattern: self.query.clone(),
+            case_insensitive: self.case_insensitive,
         }
     }
 

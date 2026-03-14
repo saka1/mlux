@@ -7,7 +7,14 @@ use std::sync::mpsc;
 
 use super::layout::{Layout, ScrollState};
 use super::terminal;
+use crate::highlight::HighlightSpec;
 use crate::tile::{DocumentMeta, TilePngs, TiledDocumentCache, VisibleTiles};
+
+/// Request sent to the prefetch worker thread.
+pub(super) struct TileRequest {
+    pub idx: usize,
+    pub highlight: Option<HighlightSpec>,
+}
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
@@ -95,14 +102,18 @@ impl LoadedTiles {
         &mut self,
         cache: &mut TiledDocumentCache,
         idx: usize,
-        req_tx: &mpsc::Sender<usize>,
+        req_tx: &mpsc::Sender<TileRequest>,
         res_rx: &mpsc::Receiver<(usize, TilePngs)>,
         in_flight: &mut HashSet<usize>,
+        highlight: Option<&HighlightSpec>,
     ) -> anyhow::Result<()> {
         if let Some(action) = self.plan_load(idx) {
             if !cache.contains(idx) {
                 if in_flight.insert(idx) {
-                    let _ = req_tx.send(idx);
+                    let _ = req_tx.send(TileRequest {
+                        idx,
+                        highlight: highlight.cloned(),
+                    });
                 }
                 while !cache.contains(idx) {
                     let (i, pngs) = res_rx.recv()?;
@@ -140,7 +151,7 @@ fn execute_load(action: &LoadAction, pngs: &crate::tile::TilePngs) -> anyhow::Re
 
 /// Prefetch channel handles for requesting and receiving rendered tiles.
 pub(super) struct PrefetchChannels<'a> {
-    pub req_tx: &'a mpsc::Sender<usize>,
+    pub req_tx: &'a mpsc::Sender<TileRequest>,
     pub res_rx: &'a mpsc::Receiver<(usize, TilePngs)>,
     pub in_flight: &'a mut HashSet<usize>,
 }
@@ -159,19 +170,34 @@ pub(super) fn redraw(
     acc_peek: Option<u32>,
     flash: Option<&str>,
     pf: &mut PrefetchChannels<'_>,
+    highlight: Option<&HighlightSpec>,
 ) -> anyhow::Result<()> {
     let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
 
     // Phase 1: Ensure all needed tiles are rendered and sent to the terminal.
     match &visible {
         VisibleTiles::Single { idx, .. } => {
-            loaded.ensure_loaded(cache, *idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
+            loaded.ensure_loaded(cache, *idx, pf.req_tx, pf.res_rx, pf.in_flight, highlight)?;
         }
         VisibleTiles::Split {
             top_idx, bot_idx, ..
         } => {
-            loaded.ensure_loaded(cache, *top_idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
-            loaded.ensure_loaded(cache, *bot_idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
+            loaded.ensure_loaded(
+                cache,
+                *top_idx,
+                pf.req_tx,
+                pf.res_rx,
+                pf.in_flight,
+                highlight,
+            )?;
+            loaded.ensure_loaded(
+                cache,
+                *bot_idx,
+                pf.req_tx,
+                pf.res_rx,
+                pf.in_flight,
+                highlight,
+            )?;
         }
     }
 
@@ -203,18 +229,22 @@ pub(super) fn redraw(
 ///
 /// `in_flight` は main thread 専用。worker thread はアクセスしない。
 pub(super) fn send_prefetch(
-    tx: &mpsc::Sender<usize>,
+    tx: &mpsc::Sender<TileRequest>,
     meta: &DocumentMeta,
     cache: &TiledDocumentCache,
     in_flight: &mut HashSet<usize>,
     y_offset: u32,
+    highlight: Option<&HighlightSpec>,
 ) {
     let current = (y_offset / meta.tile_height_px) as usize;
     // Forward 2 + backward 1
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
         if idx < meta.tile_count && !cache.contains(idx) && !in_flight.contains(&idx) {
             debug!("prefetch: requesting tile {idx} (current={current})");
-            let _ = tx.send(idx);
+            let _ = tx.send(TileRequest {
+                idx,
+                highlight: highlight.cloned(),
+            });
             in_flight.insert(idx);
         }
     }

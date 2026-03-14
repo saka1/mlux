@@ -89,6 +89,8 @@ pub(super) struct Viewport {
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
+    /// Set when search state changes and the tile PNG cache must be fully cleared.
+    pub invalidate_cache: bool,
 }
 
 /// Read-only environment for effect application.
@@ -214,6 +216,10 @@ impl Viewport {
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
+                // Invalidate all tile caches so tiles are re-rendered with highlights.
+                self.tiles.map.clear();
+                self.invalidate_cache = true;
+                self.dirty = true;
             }
             Effect::DeletePlacements => {
                 self.tiles.delete_placements()?;
