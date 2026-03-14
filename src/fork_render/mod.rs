@@ -14,7 +14,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::highlight::HighlightSpec;
+use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::pipeline::{BuildParams, build_tiled_document};
 use crate::tile::{DocumentMeta, TilePngs};
 
@@ -24,17 +24,19 @@ pub use process::ChildProcess;
 #[derive(Serialize, Deserialize)]
 enum Request {
     RenderTile(usize),
-    RenderTileHighlighted { idx: usize, spec: HighlightSpec },
+    FindHighlightRects { idx: usize, spec: HighlightSpec },
     Shutdown,
 }
 
 /// Response from child to parent.
 ///
-/// The first message is always `Meta`. Subsequent messages are `Tile` or `Error`.
+/// The first message is always `Meta`. Subsequent messages are `Tile`, `Rects`,
+/// or `Error`.
 #[derive(Serialize, Deserialize)]
 enum Response {
     Meta(DocumentMeta),
     Tile(TilePngs),
+    Rects(Vec<HighlightRect>),
     Error(String),
 }
 
@@ -56,7 +58,7 @@ impl TileRenderer {
         {
             Response::Meta(m) => Ok(m),
             Response::Error(e) => anyhow::bail!("child build error: {e}"),
-            Response::Tile(_) => anyhow::bail!("unexpected Tile response, expected Meta"),
+            _ => anyhow::bail!("unexpected response, expected Meta"),
         }
     }
 
@@ -66,24 +68,24 @@ impl TileRenderer {
         match self.rx.recv()? {
             Response::Tile(pngs) => Ok(pngs),
             Response::Error(e) => anyhow::bail!("{e}"),
-            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
+            _ => anyhow::bail!("unexpected response, expected Tile"),
         }
     }
 
-    /// Request a tile pair with search highlight overlays on the content tile.
-    pub fn render_tile_pair_highlighted(
+    /// Request highlight rectangles for a tile's content (no rendering).
+    pub fn find_highlight_rects(
         &mut self,
         idx: usize,
         spec: &HighlightSpec,
-    ) -> Result<TilePngs> {
-        self.tx.send(&Request::RenderTileHighlighted {
+    ) -> Result<Vec<HighlightRect>> {
+        self.tx.send(&Request::FindHighlightRects {
             idx,
             spec: spec.clone(),
         })?;
         match self.rx.recv()? {
-            Response::Tile(pngs) => Ok(pngs),
+            Response::Rects(rects) => Ok(rects),
             Response::Error(e) => anyhow::bail!("{e}"),
-            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
+            _ => anyhow::bail!("unexpected response, expected Rects"),
         }
     }
 
@@ -195,18 +197,15 @@ pub fn fork_renderer(
                             break;
                         }
                     }
-                    Request::RenderTileHighlighted { idx, spec } => {
+                    Request::FindHighlightRects { idx, spec } => {
                         let resp =
                             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                doc.render_tile_pair_highlighted(idx, &spec)
+                                doc.find_tile_highlight_rects(idx, &spec)
                             })) {
-                                Ok(Ok(pngs)) => Response::Tile(pngs),
-                                Ok(Err(e)) => {
-                                    Response::Error(format!("render tile {idx} highlighted: {e:#}"))
-                                }
-                                Err(_) => {
-                                    Response::Error(format!("render tile {idx} highlighted: panic"))
-                                }
+                                Ok(rects) => Response::Rects(rects),
+                                Err(_) => Response::Error(format!(
+                                    "find highlight rects tile {idx}: panic"
+                                )),
                             };
                         if resp_tx.send(&resp).is_err() {
                             break;
@@ -312,7 +311,7 @@ mod tests {
             bincode::serde::decode_from_slice(&encoded2, bincode::config::standard()).unwrap();
         assert!(matches!(decoded2, Request::Shutdown));
 
-        let req3 = Request::RenderTileHighlighted {
+        let req3 = Request::FindHighlightRects {
             idx: 7,
             spec: HighlightSpec {
                 pattern: "hello".into(),
@@ -323,7 +322,7 @@ mod tests {
         let (decoded3, _): (Request, _) =
             bincode::serde::decode_from_slice(&encoded3, bincode::config::standard()).unwrap();
         match decoded3 {
-            Request::RenderTileHighlighted { idx, spec } => {
+            Request::FindHighlightRects { idx, spec } => {
                 assert_eq!(idx, 7);
                 assert_eq!(spec.pattern, "hello");
                 assert!(spec.case_insensitive);

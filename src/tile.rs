@@ -1123,34 +1123,13 @@ impl TiledDocument {
         Ok(TilePngs { content, sidebar })
     }
 
-    /// Render a content tile with search highlight overlays.
-    fn render_tile_highlighted(
+    /// Find highlight rectangles for a tile's content (no rendering).
+    pub fn find_tile_highlight_rects(
         &self,
         idx: usize,
         spec: &crate::highlight::HighlightSpec,
-    ) -> Result<Vec<u8>> {
-        let rects = crate::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi);
-        if rects.is_empty() {
-            self.render_tile(idx)
-        } else {
-            crate::pipeline::render_frame_to_png_highlighted(
-                &self.tiles[idx],
-                &self.page_fill,
-                self.ppi,
-                &rects,
-            )
-        }
-    }
-
-    /// Render both content and sidebar tiles, with content highlights.
-    pub fn render_tile_pair_highlighted(
-        &self,
-        idx: usize,
-        spec: &crate::highlight::HighlightSpec,
-    ) -> Result<TilePngs> {
-        let content = self.render_tile_highlighted(idx, spec)?;
-        let sidebar = self.render_sidebar_tile(idx)?;
-        Ok(TilePngs { content, sidebar })
+    ) -> Vec<crate::highlight::HighlightRect> {
+        crate::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi)
     }
 }
 

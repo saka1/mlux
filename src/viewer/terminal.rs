@@ -216,6 +216,72 @@ pub(super) fn place_sidebar_tiles(
     )
 }
 
+/// Place overlay tile(s) using Kitty Graphics Protocol with z=1 for alpha blending.
+///
+/// Uses the same placement coordinates as content tiles but with `z=1` so the
+/// overlay appears on top. KGP's default composition mode is alpha blending,
+/// so transparent pixels in the overlay let the content tile show through.
+pub(super) fn place_overlay_tiles(
+    visible: &VisibleTiles,
+    loaded: &LoadedTiles,
+    layout: &Layout,
+    scroll: &ScrollState,
+) -> io::Result<()> {
+    let mut out = stdout();
+    let w = scroll.vp_w;
+    let cols = layout.image_cols;
+
+    match visible {
+        VisibleTiles::Single { idx, src_y, src_h } => {
+            if let Some(ids) = loaded.map.get(idx)
+                && let Some(ov_id) = ids.overlay_id
+            {
+                let rows = ((*src_h as f64) / (layout.cell_h as f64))
+                    .ceil()
+                    .min(layout.image_rows as f64) as u16;
+                let rows = rows.max(1);
+                out.queue(cursor::MoveTo(layout.image_col, 0))?;
+                write!(
+                    out,
+                    "\x1b_Ga=p,i={ov_id},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,z=1,q=2\x1b\\",
+                )?;
+            }
+        }
+        VisibleTiles::Split {
+            top_idx,
+            top_src_y,
+            top_src_h,
+            bot_idx,
+            bot_src_h,
+        } => {
+            let top_rows = (*top_src_h as f64 / layout.cell_h as f64).round() as u16;
+            let top_rows = top_rows.clamp(1, layout.image_rows.saturating_sub(1));
+            let bot_rows = layout.image_rows.saturating_sub(top_rows);
+
+            if let Some(ids) = loaded.map.get(top_idx)
+                && let Some(ov_id) = ids.overlay_id
+            {
+                out.queue(cursor::MoveTo(layout.image_col, 0))?;
+                write!(
+                    out,
+                    "\x1b_Ga=p,i={ov_id},x=0,y={top_src_y},w={w},h={top_src_h},c={cols},r={top_rows},C=1,z=1,q=2\x1b\\",
+                )?;
+            }
+
+            if let Some(ids) = loaded.map.get(bot_idx)
+                && let Some(ov_id) = ids.overlay_id
+            {
+                out.queue(cursor::MoveTo(layout.image_col, top_rows))?;
+                write!(
+                    out,
+                    "\x1b_Ga=p,i={ov_id},x=0,y=0,w={w},h={bot_src_h},c={cols},r={bot_rows},C=1,z=1,q=2\x1b\\",
+                )?;
+            }
+        }
+    }
+    out.flush()
+}
+
 /// ステータスバーをターミナル最終行に描画。
 ///
 /// `acc_peek`: 数字蓄積中なら `:56_` のように表示

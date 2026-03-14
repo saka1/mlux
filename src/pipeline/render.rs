@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use log::{debug, info};
+use log::info;
 use typst::diag::{Severity, SourceDiagnostic, Tracepoint};
 use typst::foundations::Smart;
 use typst::layout::{Frame, FrameItem, Page, PagedDocument, Point};
@@ -124,55 +124,6 @@ pub fn render_frame_to_png(
         pixmap.width(),
         pixmap.height(),
         png.len()
-    );
-    Ok(png)
-}
-
-/// Render a single Frame to PNG bytes with highlight overlays.
-///
-/// Same as [`render_frame_to_png`] but draws highlight rectangles on the Pixmap
-/// before encoding to PNG.
-pub fn render_frame_to_png_highlighted(
-    frame: &Frame,
-    fill: &Smart<Option<Paint>>,
-    ppi: f32,
-    rects: &[crate::highlight::HighlightRect],
-) -> Result<Vec<u8>> {
-    let start = Instant::now();
-    let page = Page {
-        frame: frame.clone(),
-        fill: fill.clone(),
-        numbering: None,
-        supplement: typst::foundations::Content::empty(),
-        number: 0,
-    };
-
-    let pixel_per_pt = ppi / 72.0;
-    let mut pixmap = typst_render::render(&page, pixel_per_pt);
-    let render_ms = start.elapsed().as_secs_f64() * 1000.0;
-
-    let hl_start = Instant::now();
-    crate::highlight::draw_highlights(&mut pixmap, rects);
-    let highlight_ms = hl_start.elapsed().as_secs_f64() * 1000.0;
-
-    let enc_start = Instant::now();
-    let png = pixmap
-        .encode_png()
-        .map_err(|e| anyhow::anyhow!("[BUG] PNG encoding failed: {e}"))?;
-    let encode_ms = enc_start.elapsed().as_secs_f64() * 1000.0;
-
-    let total_ms = start.elapsed().as_secs_f64() * 1000.0;
-    info!(
-        "render: render_frame_to_png_highlighted completed in {:.1}ms ({}x{}px, {} bytes, {} highlights)",
-        total_ms,
-        pixmap.width(),
-        pixmap.height(),
-        png.len(),
-        rects.len(),
-    );
-    debug!(
-        "render: highlighted breakdown: render={:.1}ms highlight={:.1}ms encode={:.1}ms",
-        render_ms, highlight_ms, encode_ms,
     );
     Ok(png)
 }

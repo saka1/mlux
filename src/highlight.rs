@@ -1,8 +1,9 @@
-//! Word-level search highlighting for rendered tile PNGs.
+//! Word-level search highlighting via KGP overlay.
 //!
 //! Walks the Typst Frame tree to find TextItems matching a regex pattern,
-//! computes pixel rectangles for matching glyphs, and draws semi-transparent
-//! highlight overlays on the tile's Pixmap before PNG encoding.
+//! computes pixel rectangles for matching glyphs, and renders a transparent
+//! overlay PNG for placement on top of the base tile via Kitty Graphics
+//! Protocol z-index layering.
 
 use std::time::Instant;
 
@@ -20,7 +21,7 @@ pub struct HighlightSpec {
 }
 
 /// A pixel-coordinate rectangle to draw as a highlight overlay.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HighlightRect {
     pub x_px: u32,
     pub y_px: u32,
@@ -154,14 +155,37 @@ fn collect_text_rects(
     }
 }
 
-/// Draw semi-transparent highlight rectangles on a Pixmap.
+/// Render highlight rectangles as a standalone transparent PNG overlay.
 ///
-/// Uses alpha blending: highlight color is mixed with the existing pixel.
-pub fn draw_highlights(pixmap: &mut tiny_skia::Pixmap, rects: &[HighlightRect]) {
+/// Creates a transparent Pixmap of the given tile dimensions, draws
+/// semi-transparent yellow rectangles, and encodes to PNG. The resulting
+/// image is meant to be placed on top of the base tile via KGP z-index.
+pub fn render_overlay_png(
+    rects: &[HighlightRect],
+    width_px: u32,
+    height_px: u32,
+) -> Option<Vec<u8>> {
+    if rects.is_empty() || width_px == 0 || height_px == 0 {
+        return None;
+    }
+
     let start = Instant::now();
+
+    let mut pixmap = tiny_skia::Pixmap::new(width_px, height_px)?;
+    // Pixmap starts fully transparent (all zeros)
+
     let pw = pixmap.width();
     let ph = pixmap.height();
 
+    // Yellow highlight: RGBA(255, 220, 0, 80) ≈ 31% opacity
+    // Store as premultiplied alpha for tiny-skia
+    let ha = 80u8;
+    let alpha = ha as f32 / 255.0;
+    let pr = (255.0 * alpha).round() as u8;
+    let pg = (220.0 * alpha).round() as u8;
+    let pb = (0.0 * alpha).round() as u8;
+
+    let data = pixmap.data_mut();
     for rect in rects {
         let x0 = rect.x_px.min(pw);
         let y0 = rect.y_px.min(ph);
@@ -172,46 +196,31 @@ pub fn draw_highlights(pixmap: &mut tiny_skia::Pixmap, rects: &[HighlightRect]) 
             continue;
         }
 
-        // Yellow highlight: RGBA(255, 220, 0, 80) ≈ 31% opacity
-        let hr = 255u8;
-        let hg = 220u8;
-        let hb = 0u8;
-        let ha = 80u8;
-        let alpha = ha as f32 / 255.0;
-
-        let data = pixmap.data_mut();
         for y in y0..y1 {
             for x in x0..x1 {
                 let idx = (y * pw + x) as usize * 4;
                 if idx + 3 < data.len() {
-                    // tiny-skia stores premultiplied RGBA
-                    let sr = data[idx];
-                    let sg = data[idx + 1];
-                    let sb = data[idx + 2];
-                    let sa = data[idx + 3];
-
-                    // "Source over" blend with highlight on top
-                    let out_r = ((hr as f32 * alpha) + sr as f32 * (1.0 - alpha)).round() as u8;
-                    let out_g = ((hg as f32 * alpha) + sg as f32 * (1.0 - alpha)).round() as u8;
-                    let out_b = ((hb as f32 * alpha) + sb as f32 * (1.0 - alpha)).round() as u8;
-                    let out_a = ((ha as f32 + sa as f32 * (1.0 - alpha)).round() as u8).max(sa);
-
-                    data[idx] = out_r;
-                    data[idx + 1] = out_g;
-                    data[idx + 2] = out_b;
-                    data[idx + 3] = out_a;
+                    data[idx] = pr;
+                    data[idx + 1] = pg;
+                    data[idx + 2] = pb;
+                    data[idx + 3] = ha;
                 }
             }
         }
     }
 
+    let png = pixmap.encode_png().ok()?;
+
     debug!(
-        "highlight: draw_highlights completed in {:.1}ms ({} rects, {}x{}px)",
+        "highlight: render_overlay_png completed in {:.1}ms ({} rects, {}x{}px, {} bytes)",
         start.elapsed().as_secs_f64() * 1000.0,
         rects.len(),
         pw,
         ph,
+        png.len(),
     );
+
+    Some(png)
 }
 
 #[cfg(test)]
@@ -241,46 +250,36 @@ mod tests {
     }
 
     #[test]
-    fn draw_highlights_on_small_pixmap() {
-        let mut pixmap = tiny_skia::Pixmap::new(10, 10).unwrap();
-        // Fill with white
-        for px in pixmap.data_mut().chunks_exact_mut(4) {
-            px[0] = 255;
-            px[1] = 255;
-            px[2] = 255;
-            px[3] = 255;
-        }
-
+    fn render_overlay_png_basic() {
         let rects = vec![HighlightRect {
             x_px: 2,
             y_px: 2,
             w_px: 3,
             h_px: 3,
         }];
-        draw_highlights(&mut pixmap, &rects);
-
-        // Check that the highlighted pixel was tinted yellow
-        let idx = (2 * 10 + 2) as usize * 4;
-        let data = pixmap.data();
-        // After blending yellow (255,220,0,80) over white (255,255,255,255):
-        // R: 255*0.31 + 255*0.69 = 255
-        // G: 220*0.31 + 255*0.69 ≈ 244
-        // B: 0*0.31 + 255*0.69 ≈ 176
-        assert_eq!(data[idx], 255); // R stays 255
-        assert!(data[idx + 1] < 255); // G reduced
-        assert!(data[idx + 2] < 255); // B reduced significantly
+        let png = render_overlay_png(&rects, 10, 10);
+        assert!(png.is_some());
+        let png = png.unwrap();
+        // Should be valid PNG data
+        assert!(png.len() > 8);
+        assert_eq!(&png[1..4], b"PNG");
     }
 
     #[test]
-    fn draw_highlights_clamps_to_pixmap_bounds() {
-        let mut pixmap = tiny_skia::Pixmap::new(5, 5).unwrap();
+    fn render_overlay_png_empty_rects_returns_none() {
+        assert!(render_overlay_png(&[], 10, 10).is_none());
+    }
+
+    #[test]
+    fn render_overlay_png_clamps_to_bounds() {
         let rects = vec![HighlightRect {
             x_px: 3,
             y_px: 3,
             w_px: 100, // way out of bounds
             h_px: 100,
         }];
-        // Should not panic
-        draw_highlights(&mut pixmap, &rects);
+        // Should not panic, and should produce valid PNG
+        let png = render_overlay_png(&rects, 5, 5);
+        assert!(png.is_some());
     }
 }

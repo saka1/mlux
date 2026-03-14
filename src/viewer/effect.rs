@@ -216,9 +216,8 @@ impl Viewport {
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
-                // Invalidate all tile caches so tiles are re-rendered with highlights.
-                self.tiles.map.clear();
-                self.invalidate_cache = true;
+                // Only clear overlay images; base tile cache stays intact.
+                let _ = self.tiles.clear_overlays();
                 self.dirty = true;
             }
             Effect::DeletePlacements => {
