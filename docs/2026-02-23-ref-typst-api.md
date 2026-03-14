@@ -125,3 +125,22 @@ let png_bytes = pixmap.encode_png()?;
 - `typst_render::render()` は `tiny_skia::Pixmap` を返し、その `encode_png()` は `Result<Vec<u8>, EncodingError>` を返す
 - フォントフォールバックチェーン内の未インストールフォントに対して Typst が警告を出すが、チェーン内に1つでもフォントが見つかれば無害
 - `#set page()` の `height: auto` でページがコンテンツに合わせて自動サイズになる（可変高さの単一ページを生成）
+
+## mitex: LaTeX → Typst 数式変換の制約
+
+mitex 0.2.4 (`mitex::convert_math`) は LaTeX 数式を Typst 数式構文に変換するが、対応範囲は限定的。
+
+### 互換シムで解決済み (`themes/mitex-compat.typ`)
+
+| カテゴリ | LaTeX | 互換シムの方式 |
+|----------|-------|---------------|
+| 行列環境 | `pmatrix`, `bmatrix`, `vmatrix`, `matrix`, `cases` | `math.mat(delim: ...)` |
+| テキスト・演算子 | `\operatorname`, `\text`, `\mathbf` | `math.op`, `math.bold` 等 |
+| 関数 | `\sqrt`, `\pmod`, `\overbrace`, `\underbrace` | 対応する Typst 組み込み |
+
+基本演算（`\frac`, `\sum`, `\int`, `\lim`）、ギリシャ文字、括弧、アクセント等は mitex が直接変換する。
+
+### 未解決の問題
+
+- **Typst 0.14 非推奨警告**: mitex が `diff`（→`partial`）、`planck.reduce`（→`planck`）、`angle.l`/`angle.r`（→`chevron.l`/`chevron.r`）等の旧構文を出力する。動作はするが将来削除の可能性あり。
+- `\partial` → `partial` の後処理は未実装（`markup.rs` への追加が必要）。

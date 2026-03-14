@@ -296,7 +296,7 @@ Phase 4 初期の技術検証用スパイク (spike_kitty) での実機検証で
 2. **`a=T` / `a=t` どちらもOK**: `a=T` でも `i=` 付きならキャッシュされ `a=p` で参照可能。
 3. **スクロール手順**: `a=d,d=i` → `a=p` の繰り返し。画像再送信は不要。
 
-詳細は `docs/kitty-graphics-protocol.md` の「Ghostty 固有の注意点」セクションを参照。
+詳細は `docs/2026-02-23-ref-kitty-protocol.md` の「Ghostty 固有の注意点」セクションを参照。
 
 ### `q=2` による Kitty レスポンス全抑制
 

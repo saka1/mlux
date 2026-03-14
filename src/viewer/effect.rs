@@ -6,7 +6,7 @@
 //!   - `Session`: persistent state across document rebuilds (config, file mgmt, nav history)
 //!
 //! Layout geometry lives in `layout.rs`, tile cache in `tiles.rs`.
-//! See `docs/viewer-state-model.md` for the full design rationale.
+//! See `docs/2026-03-07-design-viewer-state.md` for the full design rationale.
 
 use crossterm::terminal as crossterm_terminal;
 use log::debug;

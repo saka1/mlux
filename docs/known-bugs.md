@@ -214,6 +214,33 @@ text(size: 0.85em / 0.8, it)
 
 ---
 
+## ~~Bug 7: インラインコードの背景が次の行に重なる~~ (修正済み)
+
+**重要度**: Low — レンダリングの見た目の問題
+**発見**: README.md のビューア表示で目視確認
+**ステータス**: **修正済み** — テーマの `inset` Y成分を `outset` に変更
+
+### 症状
+
+インラインコードを含む段落で、背景矩形が次の視覚行のテキストと重なる。段落が折り返されてインラインコードが行末付近にある場合に顕著。
+
+### 原因
+
+Typst の `box` における `inset` は CSS の `padding` 相当で、フレームサイズを拡大する。`inset: (y: 2pt)` で box が上下計 4pt 高くなり、行間 (`leading`) は固定のため背景矩形の下端が次の行に食い込む。
+
+### 修正内容
+
+`inset` の Y 成分を `outset` に移動。`outset` は背景の描画位置のみ拡張し、レイアウト上のサイズは変えない。
+
+```typst
+// Before: box(fill: ..., inset: (x: 4pt, y: 2pt), radius: 3pt, ...)
+// After:  box(fill: ..., inset: (x: 4pt), outset: (y: 2pt), radius: 3pt, ...)
+```
+
+対象: `themes/catppuccin.typ`, `themes/catppuccin-latte.typ`。回帰テスト `test_inline_code_no_line_overlap` 追加。
+
+---
+
 ## 備考
 
 - Bug 1, 2, 3, 4 はすべて修正済み。

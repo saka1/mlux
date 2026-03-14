@@ -418,3 +418,19 @@ pixel_y = pt_y × (ppi / 72.0)
 - ブロック単位のクロッピング → ブロックごとの部分PNG → 部分的な再送信
 - 行座標の検出 → ターミナル行とTypstレイアウト行のマッピング
 - テキスト検索 → `TextItem::text` からの全文検索 + 座標特定
+
+## 視覚行抽出の知見
+
+フレームツリーから視覚行（ユーザーが認識する1行）を抽出する際の3つの要点。
+
+### Y座標 dedup: tolerance = 5.0pt
+
+同一視覚行内でフォントサイズが混在すると、TextItem のベースライン Y 座標が最大 ~2.6pt ずれる（フォントメトリクス差 0.59pt + テーマの box inset 2.0pt）。行間の最小ギャップは 15.0pt（H3→本文）であるため、tolerance=5.0pt で行内ズレをマージしつつ行間を分離できる。
+
+### コードブロック空行: スペース挿入
+
+Typst はコードブロック内の空行に TextItem を生成しない。`markup.rs` の `fill_blank_lines()` で空行にスペース1文字を挿入し、TextItem が生成されるようにしている。
+
+### 未認識言語コードブロック: RawLine Tag 検出
+
+認識言語のコードブロックは per-line Groups を持つが、未認識言語（`console` 等）は bare Text items のみ。`has_raw_line_tags()` で Typst の `RawLine` 要素の `Tag::Start`/`Tag::End` ペアを検出し、Groups がなくても再帰分割する。RawLine は `Tagged` trait により言語認識の有無にかかわらず全行に挿入される。

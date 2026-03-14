@@ -212,7 +212,7 @@ fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdL
     // and MD block texts have matching newline counts (1:1 line correspondence).
     // This works for lists, paragraphs, headings. Tables and nested blockquotes
     // have different line structures and safely fall back to None.
-    // See docs/line-exact-generalization.md for detailed analysis.
+    // See docs/2026-02-28-design-line-exact.md for detailed analysis.
     let md_block_text = &params.md_source[block.md_byte_range.clone()];
     let typst_local_offset = content_offset - block.typst_byte_range.start;
     let typst_block_text = params.source.text().get(
