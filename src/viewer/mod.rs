@@ -295,7 +295,7 @@ pub fn run(
                 vp_w,
                 vp_h,
             },
-            tiles: DisplayState::new(session.config.viewer.evict_distance),
+            display: DisplayState::new(session.config.viewer.evict_distance),
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
@@ -361,7 +361,7 @@ pub fn run(
             display_state::redraw(
                 &meta,
                 &mut cache,
-                &mut vp.tiles,
+                &mut vp.display,
                 &session.layout,
                 &vp.scroll,
                 &session.filename,
@@ -378,14 +378,14 @@ pub fn run(
                 let spec = ls.highlight_spec();
                 display_state::update_overlays(
                     &meta,
-                    &mut vp.tiles,
+                    &mut vp.display,
                     &vp.scroll,
                     &spec,
                     &req_tx,
                     &rect_rx,
                 )?;
                 let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
-                terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
+                terminal::place_overlay_rects(&visible, &vp.display, &session.layout)?;
             }
             display_state::send_prefetch(
                 &req_tx,
@@ -552,7 +552,7 @@ pub fn run(
                     display_state::redraw(
                         &meta,
                         &mut cache,
-                        &mut vp.tiles,
+                        &mut vp.display,
                         &session.layout,
                         &vp.scroll,
                         &session.filename,
@@ -569,7 +569,7 @@ pub fn run(
                         let spec = ls.highlight_spec();
                         display_state::update_overlays(
                             &meta,
-                            &mut vp.tiles,
+                            &mut vp.display,
                             &vp.scroll,
                             &spec,
                             &req_tx,
@@ -579,7 +579,7 @@ pub fn run(
                         // redraw() already called place_overlay_rects, but the
                         // rects were empty at that point (cleared by SetLastSearch).
                         let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
-                        terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
+                        terminal::place_overlay_rects(&visible, &vp.display, &session.layout)?;
                     }
                     display_state::send_prefetch(
                         &req_tx,

@@ -103,7 +103,7 @@ pub(super) struct JumpEntry {
 pub(super) struct Viewport {
     pub mode: ViewerMode,
     pub scroll: ScrollState,
-    pub tiles: DisplayState,
+    pub display: DisplayState,
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
@@ -202,7 +202,7 @@ impl Viewport {
                         // ensure_loaded() re-uploads from cache.
                         ops.push(RenderOp::ClearScreen);
                         ops.push(RenderOp::DeleteAllImages);
-                        self.tiles.clear_all();
+                        self.display.clear_all();
                         self.dirty = true;
                     }
                 }
@@ -210,7 +210,7 @@ impl Viewport {
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
-                self.tiles.clear_overlay_state();
+                self.display.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
@@ -218,7 +218,7 @@ impl Viewport {
                 ops.push(RenderOp::DeletePlacements);
             }
             Effect::InvalidateOverlays => {
-                self.tiles.clear_overlay_state();
+                self.display.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
@@ -229,7 +229,7 @@ impl Viewport {
                     if !matches!(self.mode, ViewerMode::Normal) {
                         ops.push(RenderOp::ClearScreen);
                         ops.push(RenderOp::DeleteAllImages);
-                        self.tiles.map.clear();
+                        self.display.map.clear();
                         self.mode = ViewerMode::Normal;
                         self.dirty = true;
                     } else {
@@ -462,10 +462,10 @@ pub(super) fn execute_render_ops(
                 let _ = open::that_in_background(url);
             }
             RenderOp::DeletePlacements => {
-                vp.tiles.delete_placements()?;
+                vp.display.delete_placements()?;
             }
             RenderOp::DeleteOverlayPlacements => {
-                vp.tiles.delete_overlay_placements()?;
+                vp.display.delete_overlay_placements()?;
             }
         }
     }

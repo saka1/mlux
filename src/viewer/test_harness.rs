@@ -83,7 +83,7 @@ impl TestHarness {
                 vp_w,
                 vp_h,
             },
-            tiles: DisplayState::new(4),
+            display: DisplayState::new(4),
             flash: None,
             dirty: false,
             last_search: None,
