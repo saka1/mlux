@@ -1,6 +1,6 @@
 //! Terminal layout geometry, scroll state, and viewport math.
 
-use crate::tile::VisualLine;
+use crate::visual_line::VisualLine;
 
 // ---------------------------------------------------------------------------
 // Layout / ScrollState

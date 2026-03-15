@@ -9,4 +9,5 @@ pub mod theme;
 pub mod tile;
 pub mod url;
 pub mod viewer;
+pub mod visual_line;
 pub mod watch;

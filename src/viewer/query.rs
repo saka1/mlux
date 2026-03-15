@@ -7,7 +7,7 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 use crate::pipeline::ContentIndex;
-use crate::tile::{self, VisualLine};
+use crate::visual_line::{self, VisualLine};
 
 /// A URL extracted from Markdown source, with its link text.
 #[derive(Debug, Clone)]
@@ -56,9 +56,11 @@ impl<'a> DocumentQuery<'a> {
     pub fn find_visual_line_by_line(&self, md_line: usize) -> Option<usize> {
         self.visual_lines.iter().position(|vl| {
             vl.md_block_range.as_ref().is_some_and(|r| {
-                let s = tile::byte_offset_to_line(self.markdown, r.start);
-                let e =
-                    tile::byte_offset_to_line(self.markdown, r.end.saturating_sub(1).max(r.start));
+                let s = visual_line::byte_offset_to_line(self.markdown, r.start);
+                let e = visual_line::byte_offset_to_line(
+                    self.markdown,
+                    r.end.saturating_sub(1).max(r.start),
+                );
                 md_line >= s && md_line <= e
             })
         })
@@ -74,7 +76,7 @@ impl<'a> DocumentQuery<'a> {
         }
         let vl = &self.visual_lines[vl_idx];
         if let Some(offset) = vl.md_offset {
-            let line = tile::byte_offset_to_line(self.markdown, offset);
+            let line = visual_line::byte_offset_to_line(self.markdown, offset);
             self.markdown
                 .lines()
                 .nth(line - 1)
@@ -128,15 +130,16 @@ impl<'a> DocumentQuery<'a> {
         let Some(ref r) = vl.md_block_range else {
             return Vec::new();
         };
-        let start = tile::byte_offset_to_line(self.markdown, r.start);
-        let end = tile::byte_offset_to_line(self.markdown, r.end.saturating_sub(1).max(r.start));
+        let start = visual_line::byte_offset_to_line(self.markdown, r.start);
+        let end =
+            visual_line::byte_offset_to_line(self.markdown, r.end.saturating_sub(1).max(r.start));
 
         extract_urls_from_lines(self.markdown, start, end)
     }
 
-    /// Delegate to `tile::byte_offset_to_line`.
+    /// Delegate to `visual_line::byte_offset_to_line`.
     pub fn byte_offset_to_line(&self, offset: usize) -> usize {
-        tile::byte_offset_to_line(self.markdown, offset)
+        visual_line::byte_offset_to_line(self.markdown, offset)
     }
 }
 
@@ -210,7 +213,7 @@ pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec
 #[cfg(test)]
 pub(super) mod test_helpers {
     use crate::pipeline::ContentIndex;
-    use crate::tile::VisualLine;
+    use crate::visual_line::VisualLine;
 
     /// Empty `ContentIndex` (no mappings).
     pub fn empty_ci() -> ContentIndex {

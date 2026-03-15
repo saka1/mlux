@@ -8,7 +8,8 @@ use typst::layout::PagedDocument;
 
 use super::content_index::{BoundIndex, ContentIndex};
 use super::world::{FontCache, MluxWorld};
-use crate::tile::{ContentMapping, TiledDocument, VisualLine, extract_visual_lines_with_map};
+use crate::tile::{ContentMapping, TiledDocument};
+use crate::visual_line::{VisualLine, extract_visual_lines_with_map};
 
 /// Parameters for [`build_tiled_document`].
 pub struct BuildParams<'a> {
