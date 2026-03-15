@@ -559,23 +559,6 @@ impl DocumentMeta {
         self.total_height_px.saturating_sub(vp_h)
     }
 
-    /// Snap a global_y to the nearest visual line boundary.
-    pub fn snap_to_line(&self, global_y: u32) -> u32 {
-        if self.visual_lines.is_empty() {
-            return global_y;
-        }
-        let mut best = self.visual_lines[0].y_px;
-        let mut best_dist = (global_y as i64 - best as i64).unsigned_abs();
-        for vl in &self.visual_lines {
-            let dist = (global_y as i64 - vl.y_px as i64).unsigned_abs();
-            if dist < best_dist {
-                best = vl.y_px;
-                best_dist = dist;
-            }
-        }
-        best
-    }
-
     /// Actual pixel height of a specific tile (last tile may be shorter).
     fn tile_actual_height_px(&self, idx: usize) -> u32 {
         if idx + 1 < self.tile_count {
@@ -682,41 +665,6 @@ impl TiledDocument {
         })
     }
 
-    /// Number of tiles.
-    pub fn tile_count(&self) -> usize {
-        self.tiles.len()
-    }
-
-    /// Document width in pixels.
-    pub fn width_px(&self) -> u32 {
-        self.width_px
-    }
-
-    /// Sidebar width in pixels.
-    pub fn sidebar_width_px(&self) -> u32 {
-        self.sidebar_width_px
-    }
-
-    /// Height of one standard tile in pixels.
-    pub fn tile_height_px(&self) -> u32 {
-        self.tile_height_px
-    }
-
-    /// Total document height in pixels.
-    pub fn total_height_px(&self) -> u32 {
-        self.total_height_px
-    }
-
-    /// Page height in typst points (for sidebar generation).
-    pub fn page_height_pt(&self) -> f64 {
-        self.page_height_pt
-    }
-
-    /// Actual pixel height of a specific tile (last tile may be shorter).
-    fn tile_actual_height_px(&self, idx: usize) -> u32 {
-        pt_to_px(self.tiles[idx].size().y.to_pt(), self.ppi)
-    }
-
     /// Render a single content tile to PNG bytes.
     ///
     /// This is a pure function -- no internal caching.
@@ -741,72 +689,6 @@ impl TiledDocument {
         assert!(idx < tiles.len(), "{label} tile index out of bounds");
         trace!("rendering {label} tile {idx}");
         crate::pipeline::render_frame_to_png(&tiles[idx], fill, self.ppi)
-    }
-
-    /// Determine which tile(s) are visible at a given scroll offset.
-    pub fn visible_tiles(&self, global_y: u32, vp_h: u32) -> VisibleTiles {
-        let top_tile = (global_y / self.tile_height_px) as usize;
-        let top_tile = top_tile.min(self.tiles.len().saturating_sub(1));
-        let src_y_in_tile = global_y - (top_tile as u32 * self.tile_height_px);
-        let top_actual_h = self.tile_actual_height_px(top_tile);
-        let remaining_in_top = top_actual_h.saturating_sub(src_y_in_tile);
-
-        if remaining_in_top >= vp_h || top_tile + 1 >= self.tiles.len() {
-            // Viewport fits in one tile (or no more tiles)
-            let src_h = vp_h.min(remaining_in_top);
-            debug!(
-                "display: single tile {}, src_y={}, src_h={}, vp_h={}",
-                top_tile, src_y_in_tile, src_h, vp_h
-            );
-            VisibleTiles::Single {
-                idx: top_tile,
-                src_y: src_y_in_tile,
-                src_h,
-            }
-        } else {
-            // Viewport straddles two tiles
-            let top_src_h = remaining_in_top;
-            let bot_idx = top_tile + 1;
-            let bot_src_h = (vp_h - top_src_h).min(self.tile_actual_height_px(bot_idx));
-            debug!(
-                "display: split tiles [{}, {}], top_src_y={}, top_h={}, bot_h={}, vp_h={}",
-                top_tile, bot_idx, src_y_in_tile, top_src_h, bot_src_h, vp_h
-            );
-            VisibleTiles::Split {
-                top_idx: top_tile,
-                top_src_y: src_y_in_tile,
-                top_src_h,
-                bot_idx,
-                bot_src_h,
-            }
-        }
-    }
-
-    /// Maximum scroll offset.
-    pub fn max_scroll(&self, vp_h: u32) -> u32 {
-        self.total_height_px.saturating_sub(vp_h)
-    }
-
-    /// Snap a global_y to the nearest visual line boundary.
-    pub fn snap_to_line(&self, global_y: u32) -> u32 {
-        if self.visual_lines.is_empty() {
-            return global_y;
-        }
-        let mut best = self.visual_lines[0].y_px;
-        let mut best_dist = (global_y as i64 - best as i64).unsigned_abs();
-        for vl in &self.visual_lines {
-            let dist = (global_y as i64 - vl.y_px as i64).unsigned_abs();
-            if dist < best_dist {
-                best = vl.y_px;
-                best_dist = dist;
-            }
-        }
-        best
-    }
-
-    /// Access visual lines.
-    pub fn visual_lines(&self) -> &[VisualLine] {
-        &self.visual_lines
     }
 
     /// Compute content hashes for all tile pairs.
