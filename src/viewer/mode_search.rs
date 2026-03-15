@@ -311,6 +311,9 @@ pub(super) fn handle(
             vec![Effect::RedrawSearch]
         }
         SearchAction::Backspace => {
+            if ss.query.is_empty() {
+                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
+            }
             ss.query.pop();
             update_grep(ss, doc);
             vec![Effect::RedrawSearch]
@@ -517,6 +520,22 @@ mod tests {
         let effects = handle(SearchAction::Backspace, &mut ss, &doc, 20, 1000);
         assert_eq!(ss.query, "h");
         assert!(matches!(effects[0], Effect::RedrawSearch));
+    }
+
+    #[test]
+    fn handle_backspace_on_empty_exits_search() {
+        let md = "hello";
+        let vl = make_visual_lines(md);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vl, &ci, 0);
+        let mut ss = SearchState::new();
+        let effects = handle(SearchAction::Backspace, &mut ss, &doc, 20, 1000);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
     }
 
     #[test]
