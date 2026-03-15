@@ -11,8 +11,8 @@ use std::io::{self, Write, stdout};
 use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 
+use super::display_state::DisplayState;
 use super::layout::{Layout, ScrollState};
-use super::tiles::LoadedTiles;
 use crate::tile::VisibleTiles;
 
 const CHUNK_SIZE: usize = 4096;
@@ -140,10 +140,10 @@ fn split_rows(top_src_h: u32, cell_h: u16, image_rows: u16) -> (u16, u16) {
 /// `get_id` selects which image ID to use from a `TileImageIds`.
 pub(super) fn place_tiles(
     visible: &VisibleTiles,
-    loaded: &LoadedTiles,
+    loaded: &DisplayState,
     layout: &Layout,
     params: &PlaceParams,
-    get_id: fn(&super::tiles::TileImageIds) -> u32,
+    get_id: fn(&super::display_state::TileImageIds) -> u32,
 ) -> io::Result<()> {
     let mut out = stdout();
     let w = params.img_width;
@@ -203,7 +203,7 @@ pub(super) fn place_tiles(
 /// Place content tile(s) based on visible_tiles result.
 pub(super) fn place_content_tiles(
     visible: &VisibleTiles,
-    loaded: &LoadedTiles,
+    loaded: &DisplayState,
     layout: &Layout,
     scroll: &ScrollState,
 ) -> io::Result<()> {
@@ -223,7 +223,7 @@ pub(super) fn place_content_tiles(
 /// Place sidebar tile(s) based on the same visible_tiles as content.
 pub(super) fn place_sidebar_tiles(
     visible: &VisibleTiles,
-    loaded: &LoadedTiles,
+    loaded: &DisplayState,
     sidebar_width_px: u32,
     layout: &Layout,
 ) -> io::Result<()> {
@@ -247,7 +247,7 @@ pub(super) fn place_sidebar_tiles(
 /// and optionally a second placement on the next row for overflow coverage.
 pub(super) fn place_overlay_rects(
     visible: &VisibleTiles,
-    loaded: &LoadedTiles,
+    loaded: &DisplayState,
     layout: &Layout,
 ) -> io::Result<()> {
     let imgs = match loaded.highlight_images() {
@@ -341,7 +341,7 @@ struct TileRegion {
 fn place_rects_in_region(
     out: &mut impl Write,
     rects: &[crate::highlight::HighlightRect],
-    imgs: &super::tiles::HighlightImages,
+    imgs: &super::display_state::HighlightImages,
     rgn: &TileRegion,
 ) -> io::Result<()> {
     use crate::highlight::{

@@ -5,7 +5,7 @@
 //!   - `ViewContext`: read-only environment for effect application (layout, document, nav)
 //!   - `Session`: persistent state across document rebuilds (config, file mgmt, nav history)
 //!
-//! Layout geometry lives in `layout.rs`, tile cache in `tiles.rs`.
+//! Layout geometry lives in `layout.rs`, display state in `display_state.rs`.
 //! See `docs/2026-03-07-design-viewer-state.md` for the full design rationale.
 
 use crossterm::terminal as crossterm_terminal;
@@ -16,6 +16,7 @@ use crate::config::{self, CliOverrides, Config};
 use crate::input::InputSource;
 use crate::watch::FileWatcher;
 
+use super::display_state::DisplayState;
 use super::layout::{self, Layout, ScrollState};
 use super::mode_command::CommandState;
 use super::mode_search::{self, LastSearch, SearchState};
@@ -23,7 +24,6 @@ use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
 use super::query::DocumentQuery;
 use super::terminal;
-use super::tiles::LoadedTiles;
 
 /// Why the inner event loop exited back to the outer rebuild loop.
 pub(super) enum ExitReason {
@@ -103,7 +103,7 @@ pub(super) struct JumpEntry {
 pub(super) struct Viewport {
     pub mode: ViewerMode,
     pub scroll: ScrollState,
-    pub tiles: LoadedTiles,
+    pub tiles: DisplayState,
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,

@@ -8,13 +8,13 @@ use crate::input::InputSource;
 use crate::pipeline::{BuildParams, FontCache, build_tiled_document};
 use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
 
+use super::display_state::DisplayState;
 use super::effect::{Effect, RenderOp, ViewContext, ViewerMode, Viewport};
 use super::input::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
 };
 use super::layout::{self, Layout, ScrollState};
 use super::query::DocumentQuery;
-use super::tiles::LoadedTiles;
 
 const CELL_W: u16 = 10;
 const CELL_H: u16 = 20;
@@ -83,7 +83,7 @@ impl TestHarness {
                 vp_w,
                 vp_h,
             },
-            tiles: LoadedTiles::new(4),
+            tiles: DisplayState::new(4),
             flash: None,
             dirty: false,
             last_search: None,

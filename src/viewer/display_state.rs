@@ -1,4 +1,4 @@
-//! Kitty image tile cache, redraw orchestration, and prefetch.
+//! Terminal display state: Kitty image cache, redraw orchestration, and prefetch.
 
 use log::debug;
 use std::collections::{HashMap, HashSet};
@@ -65,7 +65,7 @@ impl HighlightImages {
 }
 
 /// Track which tile PNGs are loaded in the terminal, keyed by tile index.
-pub(super) struct LoadedTiles {
+pub(super) struct DisplayState {
     /// tile_index → Kitty image IDs (content + sidebar)
     pub map: HashMap<usize, TileImageIds>,
     next_id: u32,
@@ -85,7 +85,7 @@ pub(super) struct LoadAction {
     pub evict: Vec<(usize, TileImageIds)>,
 }
 
-impl LoadedTiles {
+impl DisplayState {
     pub(super) fn new(evict_distance: usize) -> Self {
         Self {
             map: HashMap::new(),
@@ -311,7 +311,7 @@ pub(super) struct PrefetchChannels<'a> {
 pub(super) fn redraw(
     meta: &DocumentMeta,
     cache: &mut TiledDocumentCache,
-    loaded: &mut LoadedTiles,
+    loaded: &mut DisplayState,
     layout: &Layout,
     scroll: &ScrollState,
     filename: &str,
@@ -387,7 +387,7 @@ pub(super) fn send_prefetch(
 /// `place_overlay_rects`.
 pub(super) fn update_overlays(
     meta: &DocumentMeta,
-    loaded: &mut LoadedTiles,
+    loaded: &mut DisplayState,
     scroll: &ScrollState,
     spec: &HighlightSpec,
     req_tx: &mpsc::Sender<WorkerRequest>,
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn plan_load_allocates_ids() {
-        let mut loaded = LoadedTiles::new(3);
+        let mut loaded = DisplayState::new(3);
         let action = loaded.plan_load(0).unwrap();
         assert_eq!(action.idx, 0);
         assert_eq!(action.content_id, 100);
@@ -447,14 +447,14 @@ mod tests {
 
     #[test]
     fn plan_load_already_loaded_returns_none() {
-        let mut loaded = LoadedTiles::new(3);
+        let mut loaded = DisplayState::new(3);
         loaded.plan_load(0); // load tile 0
         assert!(loaded.plan_load(0).is_none());
     }
 
     #[test]
     fn plan_load_evicts_distant_tiles() {
-        let mut loaded = LoadedTiles::new(2); // evict_distance = 2
+        let mut loaded = DisplayState::new(2); // evict_distance = 2
         loaded.plan_load(0);
         loaded.plan_load(1);
         loaded.plan_load(2);
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn plan_load_increments_ids() {
-        let mut loaded = LoadedTiles::new(3);
+        let mut loaded = DisplayState::new(3);
         let a1 = loaded.plan_load(0).unwrap();
         let a2 = loaded.plan_load(1).unwrap();
         assert_eq!(a1.content_id, 100);
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn clear_overlay_state_empties_rects() {
-        let mut loaded = LoadedTiles::new(3);
+        let mut loaded = DisplayState::new(3);
         loaded.set_overlay_rects(0, vec![]);
         assert!(loaded.has_overlay(0));
         loaded.clear_overlay_state();

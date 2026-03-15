@@ -17,6 +17,7 @@
 //!   causing phantom scrolling. `q=2` suppresses both OK and error responses.
 //!   Since the viewer never reads Kitty responses, this is always safe.
 
+mod display_state;
 mod effect;
 mod input;
 mod layout;
@@ -27,7 +28,6 @@ mod mode_toc;
 mod mode_url;
 pub mod query;
 mod terminal;
-mod tiles;
 
 #[cfg(test)]
 mod test_harness;
@@ -50,13 +50,13 @@ use crate::pipeline::FontCache;
 use crate::tile::{TilePairHash, TilePngs, TiledDocumentCache, merge_tile_cache};
 use crate::watch::FileWatcher;
 
+use display_state::{DisplayState, PrefetchChannels};
 use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
 use input::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
 use query::DocumentQuery;
-use tiles::{LoadedTiles, PrefetchChannels};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
 const FAST_THRESHOLD: Duration = Duration::from_millis(100);
@@ -295,14 +295,14 @@ pub fn run(
                 vp_w,
                 vp_h,
             },
-            tiles: LoadedTiles::new(session.config.viewer.evict_distance),
+            tiles: DisplayState::new(session.config.viewer.evict_distance),
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
         };
 
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
-            let (req_tx, req_rx) = mpsc::channel::<tiles::WorkerRequest>();
+            let (req_tx, req_rx) = mpsc::channel::<display_state::WorkerRequest>();
             let (res_tx, res_rx) = mpsc::channel::<(usize, TilePngs)>();
             let (rect_tx, rect_rx) =
                 mpsc::channel::<(usize, Vec<crate::highlight::HighlightRect>)>();
@@ -315,7 +315,7 @@ pub fn run(
                 debug!("prefetch worker: started");
                 while let Ok(req) = req_rx.recv() {
                     match req {
-                        tiles::WorkerRequest::RenderTile(idx) => {
+                        display_state::WorkerRequest::RenderTile(idx) => {
                             debug!("prefetch worker: rendering tile {idx}");
                             let render_start = Instant::now();
                             match renderer.render_tile_pair(idx) {
@@ -328,7 +328,7 @@ pub fn run(
                                 }
                             }
                         }
-                        tiles::WorkerRequest::FindRects { idx, spec } => {
+                        display_state::WorkerRequest::FindRects { idx, spec } => {
                             debug!("prefetch worker: finding rects for tile {idx}");
                             match renderer.find_highlight_rects(idx, &spec) {
                                 Ok(rects) => {
@@ -358,7 +358,7 @@ pub fn run(
             let mut acc = InputAccumulator::new();
 
             // Initial redraw + prefetch
-            tiles::redraw(
+            display_state::redraw(
                 &meta,
                 &mut cache,
                 &mut vp.tiles,
@@ -376,11 +376,24 @@ pub fn run(
             // Generate overlay for visible tiles if search is active
             if let Some(ls) = &vp.last_search {
                 let spec = ls.highlight_spec();
-                tiles::update_overlays(&meta, &mut vp.tiles, &vp.scroll, &spec, &req_tx, &rect_rx)?;
+                display_state::update_overlays(
+                    &meta,
+                    &mut vp.tiles,
+                    &vp.scroll,
+                    &spec,
+                    &req_tx,
+                    &rect_rx,
+                )?;
                 let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
                 terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
             }
-            tiles::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.scroll.y_offset);
+            display_state::send_prefetch(
+                &req_tx,
+                &meta,
+                &cache,
+                &mut in_flight,
+                vp.scroll.y_offset,
+            );
 
             // Inner event loop
             let mut last_render = Instant::now();
@@ -536,7 +549,7 @@ pub fn run(
                         in_flight.remove(&idx);
                         cache.insert(idx, pngs);
                     }
-                    tiles::redraw(
+                    display_state::redraw(
                         &meta,
                         &mut cache,
                         &mut vp.tiles,
@@ -554,7 +567,7 @@ pub fn run(
                     // Generate overlay for visible tiles if search is active
                     if let Some(ls) = &vp.last_search {
                         let spec = ls.highlight_spec();
-                        tiles::update_overlays(
+                        display_state::update_overlays(
                             &meta,
                             &mut vp.tiles,
                             &vp.scroll,
@@ -568,7 +581,7 @@ pub fn run(
                         let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
                         terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
                     }
-                    tiles::send_prefetch(
+                    display_state::send_prefetch(
                         &req_tx,
                         &meta,
                         &cache,
