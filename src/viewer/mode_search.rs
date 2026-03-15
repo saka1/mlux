@@ -54,14 +54,17 @@ impl SearchState {
 pub(super) struct LastSearch {
     pub matches: Vec<SearchMatch>,
     pub current_idx: usize,
-    /// Cached highlight spec (computed once on creation).
-    pub cached_spec: crate::highlight::HighlightSpec,
+    /// All target_ranges (union of all matches).
+    target_ranges: Vec<std::ops::Range<usize>>,
+    /// Per-match main.typ byte ranges, indexed by match position in the
+    /// Markdown source. Used to populate `active_ranges` for the current match.
+    per_match_ranges: Vec<Vec<std::ops::Range<usize>>>,
 }
 
 impl LastSearch {
     /// Create from a completed SearchState, using the selected match as current.
     ///
-    /// Computes and caches the `HighlightSpec` once.
+    /// Computes per-match ranges and caches the combined target_ranges.
     pub(super) fn from_search_state(
         ss: &SearchState,
         markdown: &str,
@@ -69,7 +72,7 @@ impl LastSearch {
         content_offset: usize,
     ) -> Self {
         let case_insensitive = ss.query.chars().all(|c| !c.is_uppercase());
-        let cached_spec = build_highlight_spec(
+        let (target_ranges, per_match_ranges) = build_highlight_ranges(
             &ss.query,
             case_insensitive,
             markdown,
@@ -79,13 +82,22 @@ impl LastSearch {
         Self {
             matches: ss.matches.clone(),
             current_idx: ss.selected,
-            cached_spec,
+            target_ranges,
+            per_match_ranges,
         }
     }
 
-    /// Get the cached highlight spec.
-    pub(super) fn highlight_spec(&self) -> &crate::highlight::HighlightSpec {
-        &self.cached_spec
+    /// Build a highlight spec with `active_ranges` set to the current match.
+    pub(super) fn highlight_spec(&self) -> crate::highlight::HighlightSpec {
+        let active_ranges = self
+            .per_match_ranges
+            .get(self.current_idx)
+            .cloned()
+            .unwrap_or_default();
+        crate::highlight::HighlightSpec {
+            target_ranges: self.target_ranges.clone(),
+            active_ranges,
+        }
     }
 
     /// Advance to the next match. Wraps around.
@@ -114,24 +126,39 @@ impl LastSearch {
     }
 }
 
-/// Build a [`HighlightSpec`] by running a regex on Markdown and converting
+/// Build highlight ranges by running a regex on Markdown and converting
 /// matches to main.typ byte ranges via ContentIndex.
-fn build_highlight_spec(
+///
+/// Returns `(all_ranges, per_match_ranges)` where `all_ranges` is the union
+/// of all matches and `per_match_ranges[i]` is the ranges for the i-th match.
+fn build_highlight_ranges(
     query: &str,
     case_insensitive: bool,
     markdown: &str,
     content_index: &crate::pipeline::ContentIndex,
     content_offset: usize,
-) -> crate::highlight::HighlightSpec {
+) -> (
+    Vec<std::ops::Range<usize>>,
+    Vec<Vec<std::ops::Range<usize>>>,
+) {
     let re = RegexBuilder::new(query)
         .case_insensitive(case_insensitive)
         .build();
     let md_ranges: Vec<std::ops::Range<usize>> = match re {
         Ok(re) => re.find_iter(markdown).map(|m| m.start()..m.end()).collect(),
-        Err(_) => Vec::new(),
+        Err(_) => return (Vec::new(), Vec::new()),
     };
+
+    // Compute per-match main.typ ranges
+    let per_match_ranges: Vec<Vec<std::ops::Range<usize>>> = md_ranges
+        .iter()
+        .map(|r| content_index.md_to_main_ranges(std::slice::from_ref(r), markdown, content_offset))
+        .collect();
+
+    // Combined target_ranges (all matches merged)
     let target_ranges = content_index.md_to_main_ranges(&md_ranges, markdown, content_offset);
-    crate::highlight::HighlightSpec { target_ranges }
+
+    (target_ranges, per_match_ranges)
 }
 
 /// Find the visual line index corresponding to a 1-based Markdown line number.

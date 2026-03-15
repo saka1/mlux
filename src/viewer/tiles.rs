@@ -30,7 +30,7 @@ pub(super) struct TileImageIds {
 
 /// KGP image IDs for all highlight images (full-width PNG + partial patterns).
 pub(super) struct HighlightImages {
-    /// 2048×24 PNG for precise width cropping.
+    /// 2048×24 yellow PNG for precise width cropping (non-active matches).
     pub full_id: u32,
     /// 1×24 RGBA: top 75% yellow.
     pub p75_id: u32,
@@ -38,12 +38,29 @@ pub(super) struct HighlightImages {
     pub p50_id: u32,
     /// 1×24 RGBA: top 25% yellow.
     pub p25_id: u32,
+    /// 2048×24 orange PNG for the active match.
+    pub active_full_id: u32,
+    /// 1×24 RGBA: top 75% orange (active match).
+    pub active_p75_id: u32,
+    /// 1×24 RGBA: top 50% orange (active match).
+    pub active_p50_id: u32,
+    /// 1×24 RGBA: top 25% orange (active match).
+    pub active_p25_id: u32,
 }
 
 impl HighlightImages {
     /// All image IDs for bulk operations (placement deletion, etc.).
-    fn all_ids(&self) -> [u32; 4] {
-        [self.full_id, self.p75_id, self.p50_id, self.p25_id]
+    fn all_ids(&self) -> [u32; 8] {
+        [
+            self.full_id,
+            self.p75_id,
+            self.p50_id,
+            self.p25_id,
+            self.active_full_id,
+            self.active_p75_id,
+            self.active_p50_id,
+            self.active_p25_id,
+        ]
     }
 }
 
@@ -173,9 +190,11 @@ impl LoadedTiles {
             return Ok(imgs);
         }
         let base = self.next_id;
-        self.next_id += 4;
+        self.next_id += 8;
 
         use crate::highlight::{PATTERN_HEIGHT, PATTERN_WIDTH};
+
+        // Yellow (non-active) images
         terminal::send_image(crate::highlight::HIGHLIGHT_PNG, base)?;
         for (i, pattern) in [
             &crate::highlight::PATTERN_P75,
@@ -188,11 +207,28 @@ impl LoadedTiles {
             terminal::send_raw_image(*pattern, PATTERN_WIDTH, PATTERN_HEIGHT, base + 1 + i as u32)?;
         }
 
+        // Orange (active) images
+        terminal::send_image(crate::highlight::HIGHLIGHT_ACTIVE_PNG, base + 4)?;
+        for (i, pattern) in [
+            &crate::highlight::PATTERN_ACTIVE_P75,
+            &crate::highlight::PATTERN_ACTIVE_P50,
+            &crate::highlight::PATTERN_ACTIVE_P25,
+        ]
+        .iter()
+        .enumerate()
+        {
+            terminal::send_raw_image(*pattern, PATTERN_WIDTH, PATTERN_HEIGHT, base + 5 + i as u32)?;
+        }
+
         self.highlight_images = Some(HighlightImages {
             full_id: base,
             p75_id: base + 1,
             p50_id: base + 2,
             p25_id: base + 3,
+            active_full_id: base + 4,
+            active_p75_id: base + 5,
+            active_p50_id: base + 6,
+            active_p25_id: base + 7,
         });
         Ok(self.highlight_images.as_ref().unwrap())
     }

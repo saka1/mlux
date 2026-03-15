@@ -349,13 +349,33 @@ fn place_rects_in_region(
         select_overflow_pattern,
     };
 
-    let full_id = imgs.full_id;
-
     for r in rects {
         // Clip to visible region of tile
         if r.y_px + r.h_px <= rgn.src_y || r.y_px >= rgn.src_y + rgn.src_h {
             continue;
         }
+
+        // Select image IDs based on active state
+        let full_id = if r.is_active {
+            imgs.active_full_id
+        } else {
+            imgs.full_id
+        };
+        let p75_id = if r.is_active {
+            imgs.active_p75_id
+        } else {
+            imgs.p75_id
+        };
+        let p50_id = if r.is_active {
+            imgs.active_p50_id
+        } else {
+            imgs.p50_id
+        };
+        let p25_id = if r.is_active {
+            imgs.active_p25_id
+        } else {
+            imgs.p25_id
+        };
 
         // Row + Y offset from top edge (not midpoint)
         let screen_y_px = r.y_px.saturating_sub(rgn.src_y);
@@ -378,8 +398,8 @@ fn place_rects_in_region(
 
         debug!(
             "hl: col={col} row={row} X={x_off} Y={y_off} c={cols} \
-             src={}x{} want={}x{}",
-            src_w, src_h, r.w_px, r.h_px,
+             src={}x{} want={}x{} active={}",
+            src_w, src_h, r.w_px, r.h_px, r.is_active,
         );
 
         // 1st placement: FULL image with Y sub-cell offset
@@ -399,9 +419,9 @@ fn place_rects_in_region(
 
                 let (ov_id, ov_w, ov_h) = match pattern {
                     PartialPattern::Full => (full_id, src_w, HIGHLIGHT_PNG_HEIGHT),
-                    PartialPattern::P75 => (imgs.p75_id, PATTERN_WIDTH, PATTERN_HEIGHT),
-                    PartialPattern::P50 => (imgs.p50_id, PATTERN_WIDTH, PATTERN_HEIGHT),
-                    PartialPattern::P25 => (imgs.p25_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                    PartialPattern::P75 => (p75_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                    PartialPattern::P50 => (p50_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                    PartialPattern::P25 => (p25_id, PATTERN_WIDTH, PATTERN_HEIGHT),
                 };
 
                 debug!(

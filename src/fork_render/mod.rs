@@ -315,6 +315,7 @@ mod tests {
             idx: 7,
             spec: HighlightSpec {
                 target_ranges: vec![10..20, 30..40],
+                active_ranges: vec![10..20],
             },
         };
         let encoded3 = bincode::serde::encode_to_vec(&req3, bincode::config::standard()).unwrap();
