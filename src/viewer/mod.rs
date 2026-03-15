@@ -25,9 +25,12 @@ mod mode_normal;
 mod mode_search;
 mod mode_toc;
 mod mode_url;
-mod query;
+pub mod query;
 mod terminal;
 mod tiles;
+
+#[cfg(test)]
+mod test_harness;
 
 pub use terminal::{TerminalTheme, detect_terminal_theme};
 

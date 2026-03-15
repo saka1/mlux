@@ -73,7 +73,7 @@ pub(super) enum Effect {
 ///
 /// `Viewport::apply()` pushes these instead of performing I/O directly.
 /// The event loop drains them via `execute_render_ops()`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) enum RenderOp {
     DrawStatusBar,
     DrawModeScreen,
