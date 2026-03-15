@@ -500,9 +500,12 @@ pub fn run(
                                 doc: &doc,
                             };
                             for effect in effects {
-                                if let Some(reason) = vp.apply(effect, &ctx)? {
+                                let mut render_ops = Vec::new();
+                                if let Some(reason) = vp.apply(effect, &ctx, &mut render_ops)? {
+                                    effect::execute_render_ops(&render_ops, &vp, &ctx)?;
                                     return Ok(reason);
                                 }
+                                effect::execute_render_ops(&render_ops, &vp, &ctx)?;
                             }
                         }
 

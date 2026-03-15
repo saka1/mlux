@@ -18,8 +18,8 @@ use crate::watch::FileWatcher;
 
 use super::layout::{self, Layout, ScrollState};
 use super::mode_command::CommandState;
-use super::mode_search::{LastSearch, SearchState};
-use super::mode_toc::TocState;
+use super::mode_search::{self, LastSearch, SearchState};
+use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
 use super::query::DocumentQuery;
 use super::terminal;
@@ -408,6 +408,68 @@ impl Session {
         }
         Ok(false)
     }
+}
+
+/// Execute terminal I/O operations deferred from apply().
+pub(super) fn execute_render_ops(
+    ops: &[RenderOp],
+    vp: &Viewport,
+    ctx: &ViewContext,
+) -> anyhow::Result<()> {
+    for op in ops {
+        match op {
+            RenderOp::DrawStatusBar => {
+                terminal::draw_status_bar(
+                    ctx.layout,
+                    &vp.scroll,
+                    ctx.filename,
+                    ctx.acc_value,
+                    vp.flash.as_deref(),
+                )?;
+            }
+            RenderOp::DrawModeScreen => match &vp.mode {
+                ViewerMode::Search(ss) => {
+                    mode_search::draw_search_screen(
+                        ctx.layout,
+                        &ss.query,
+                        &ss.matches,
+                        ss.selected,
+                        ss.scroll_offset,
+                        ss.pattern_valid,
+                    )?;
+                }
+                ViewerMode::Command(cs) => {
+                    terminal::draw_command_bar(ctx.layout, &cs.input)?;
+                }
+                ViewerMode::UrlPicker(up) => {
+                    mode_url::draw_url_screen(ctx.layout, up)?;
+                }
+                ViewerMode::Toc(ts) => {
+                    mode_toc::draw_toc_screen(ctx.layout, ts)?;
+                }
+                ViewerMode::Normal => {}
+            },
+            RenderOp::ClearScreen => {
+                terminal::clear_screen()?;
+            }
+            RenderOp::DeleteAllImages => {
+                terminal::delete_all_images()?;
+            }
+            RenderOp::CopyToClipboard(text) => {
+                let _ = terminal::send_osc52(text);
+            }
+            RenderOp::OpenExternal(url) => {
+                let _ = open::that_in_background(url);
+            }
+            RenderOp::DeletePlacements => {
+                vp.tiles.delete_placements()?;
+            }
+            RenderOp::DeleteOverlayPlacements => {
+                vp.tiles.delete_overlay_placements()?;
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

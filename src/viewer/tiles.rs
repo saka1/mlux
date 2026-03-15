@@ -259,12 +259,6 @@ impl LoadedTiles {
         Ok(())
     }
 
-    /// Clear overlay state, keeping base tiles intact.
-    pub(super) fn clear_overlays(&mut self) -> io::Result<()> {
-        self.clear_overlay_state();
-        self.delete_overlay_placements()
-    }
-
     /// Delete all tile placements (content + sidebar + highlight overlay).
     pub(super) fn delete_placements(&self) -> io::Result<()> {
         use std::io::Write;
