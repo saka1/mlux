@@ -9,8 +9,9 @@ use std::io::{self, Write, stdout};
 
 use super::input::UrlAction;
 use super::layout::Layout;
+use super::query::DocumentQuery;
 use super::{Effect, ViewerMode};
-use crate::tile::{UrlEntry, VisualLine, extract_urls_from_lines};
+use crate::tile::{UrlEntry, extract_urls_from_lines};
 
 /// A single entry in the URL picker list.
 pub(super) struct UrlPickerEntry {
@@ -41,15 +42,12 @@ impl UrlPickerState {
 ///
 /// Iterates over all visual lines, extracts URLs from each line's Markdown
 /// source range, and tags each entry with its 1-based visual line number.
-pub(super) fn collect_all_url_entries(
-    md_source: &str,
-    visual_lines: &[VisualLine],
-) -> Vec<UrlPickerEntry> {
+pub(super) fn collect_all_url_entries(doc: &DocumentQuery) -> Vec<UrlPickerEntry> {
     let mut entries = Vec::new();
     // Track which md_block_ranges we've already processed to avoid duplicates.
     let mut seen_ranges: Vec<(usize, usize)> = Vec::new();
 
-    for (vl_idx, vl) in visual_lines.iter().enumerate() {
+    for (vl_idx, vl) in doc.visual_lines.iter().enumerate() {
         let Some(ref r) = vl.md_block_range else {
             continue;
         };
@@ -59,9 +57,9 @@ pub(super) fn collect_all_url_entries(
         }
         seen_ranges.push((r.start, r.end));
 
-        let start = crate::tile::byte_offset_to_line(md_source, r.start);
-        let end = crate::tile::byte_offset_to_line(md_source, r.end.saturating_sub(1).max(r.start));
-        let url_entries = extract_urls_from_lines(md_source, start, end);
+        let start = doc.byte_offset_to_line(r.start);
+        let end = doc.byte_offset_to_line(r.end.saturating_sub(1).max(r.start));
+        let url_entries = extract_urls_from_lines(doc.markdown, start, end);
         let line_num = vl_idx + 1; // 1-based
         for UrlEntry { url, text } in url_entries {
             entries.push(UrlPickerEntry {
@@ -190,31 +188,8 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
+    use super::super::query::test_helpers::*;
     use super::*;
-    use crate::tile::VisualLine;
-
-    fn make_vl(md: &str, line_range: Option<(usize, usize)>) -> VisualLine {
-        let md_block_range = line_range.map(|(start_line, end_line)| {
-            let start_byte: usize = md
-                .split('\n')
-                .take(start_line - 1)
-                .map(|l| l.len() + 1)
-                .sum();
-            let end_byte: usize = md
-                .split('\n')
-                .take(end_line)
-                .map(|l| l.len() + 1)
-                .sum::<usize>()
-                .min(md.len());
-            start_byte..end_byte
-        });
-        VisualLine {
-            y_pt: 0.0,
-            y_px: 0,
-            md_block_range,
-            md_offset: None,
-        }
-    }
 
     #[test]
     fn test_collect_all_url_entries_basic() {
@@ -225,7 +200,9 @@ mod tests {
             make_vl(md, Some((2, 2))),
             make_vl(md, Some((3, 3))),
         ];
-        let entries = collect_all_url_entries(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_all_url_entries(&doc);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].url, "https://rust.invalid/");
         assert_eq!(entries[0].text, "Rust");
@@ -238,7 +215,9 @@ mod tests {
     fn test_collect_all_url_entries_empty() {
         let md = "No links here.\n";
         let vls = vec![make_vl(md, Some((1, 1)))];
-        let entries = collect_all_url_entries(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_all_url_entries(&doc);
         assert!(entries.is_empty());
     }
 
@@ -247,7 +226,9 @@ mod tests {
         let md = "See [A](https://a.invalid/) text.\n";
         // Two visual lines with the same md_block_range (can happen with multiline rendering)
         let vls = vec![make_vl(md, Some((1, 1))), make_vl(md, Some((1, 1)))];
-        let entries = collect_all_url_entries(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_all_url_entries(&doc);
         assert_eq!(entries.len(), 1);
     }
 

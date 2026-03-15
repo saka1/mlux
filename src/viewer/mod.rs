@@ -25,6 +25,7 @@ mod mode_normal;
 mod mode_search;
 mod mode_toc;
 mod mode_url;
+mod query;
 mod terminal;
 mod tiles;
 
@@ -51,6 +52,7 @@ use input::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
+use query::DocumentQuery;
 use tiles::{LoadedTiles, PrefetchChannels};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
@@ -416,6 +418,12 @@ pub fn run(
                     match ev {
                         Event::Key(key_event) => {
                             let max_y = meta.max_scroll(vp.scroll.vp_h);
+                            let doc = DocumentQuery::new(
+                                &markdown,
+                                &meta.visual_lines,
+                                &meta.content_index,
+                                meta.content_offset,
+                            );
 
                             let effects = match &mut vp.mode {
                                 ViewerMode::Normal => {
@@ -426,14 +434,13 @@ pub fn run(
                                         Some(action) => {
                                             let mut ctx = mode_normal::NormalCtx {
                                                 scroll: &vp.scroll,
-                                                visual_lines: &meta.visual_lines,
+                                                doc: &doc,
                                                 max_scroll: max_y,
                                                 scroll_step: session.config.viewer.scroll_step
                                                     * session.layout.cell_h as u32,
                                                 half_page: (session.layout.image_rows as u32 / 2)
                                                     .max(1)
                                                     * session.layout.cell_h as u32,
-                                                markdown: &markdown,
                                                 last_search: &mut vp.last_search,
                                             };
                                             mode_normal::handle(action, &mut ctx)
@@ -452,16 +459,7 @@ pub fn run(
                                     Some(a) => {
                                         let visible_count =
                                             (session.layout.status_row - 1) as usize;
-                                        mode_search::handle(
-                                            a,
-                                            ss,
-                                            &markdown,
-                                            &meta.visual_lines,
-                                            visible_count,
-                                            max_y,
-                                            &meta.content_index,
-                                            meta.content_offset,
-                                        )
+                                        mode_search::handle(a, ss, &doc, visible_count, max_y)
                                     }
                                     None => vec![],
                                 },
@@ -476,7 +474,7 @@ pub fn run(
                                         mode_toc::handle(
                                             a,
                                             ts,
-                                            &meta.visual_lines,
+                                            doc.visual_lines,
                                             visible_count,
                                             max_y,
                                         )
@@ -499,8 +497,7 @@ pub fn run(
                                 input: &session.input,
                                 filename: &session.filename,
                                 jump_stack: &session.jump_stack,
-                                markdown: &markdown,
-                                visual_lines: &meta.visual_lines,
+                                doc: &doc,
                             };
                             for effect in effects {
                                 if let Some(reason) = vp.apply(effect, &ctx)? {

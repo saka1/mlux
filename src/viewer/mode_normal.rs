@@ -9,16 +9,15 @@ use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};
 use super::mode_toc::{TocState, collect_headings};
 use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
+use super::query::DocumentQuery;
 use super::{Effect, ViewerMode};
-use crate::tile::{VisualLine, extract_urls, yank_exact, yank_lines};
 
 pub(super) struct NormalCtx<'a> {
     pub scroll: &'a ScrollState,
-    pub visual_lines: &'a [VisualLine],
+    pub doc: &'a DocumentQuery<'a>,
     pub max_scroll: u32,
     pub scroll_step: u32,
     pub half_page: u32,
-    pub markdown: &'a str,
     pub last_search: &'a mut Option<LastSearch>,
 }
 
@@ -75,7 +74,7 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
             vec![Effect::ScrollTo(ctx.max_scroll)]
         }
         Action::JumpToLine(n) => {
-            let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, n);
+            let y = visual_line_offset(ctx.doc.visual_lines, ctx.max_scroll, n);
             debug!("jump to line {n}: y_offset {} → {}", ctx.scroll.y_offset, y);
             vec![Effect::ScrollTo(y)]
         }
@@ -104,9 +103,12 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
                 Effect::RedrawStatusBar,
             ]
         }
-        Action::YankExact(n) => yank_and_flash(ctx, n, yank_exact, |n, lc| {
-            format!("Yanked L{n} ({lc} line{})", if lc > 1 { "s" } else { "" })
-        }),
+        Action::YankExact(n) => yank_and_flash(
+            ctx,
+            n,
+            |doc, idx| doc.yank_exact(idx),
+            |n, lc| format!("Yanked L{n} ({lc} line{})", if lc > 1 { "s" } else { "" }),
+        ),
 
         Action::YankBlockPrompt => {
             vec![
@@ -117,7 +119,7 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         Action::YankBlock(n) => yank_and_flash(
             ctx,
             n,
-            |md, vls, idx| yank_lines(md, vls, idx, idx),
+            |doc, idx| doc.yank_lines(idx, idx),
             |n, lc| format!("Yanked L{n} block ({lc} lines)"),
         ),
 
@@ -132,7 +134,7 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         Action::GoBack => vec![Effect::GoBack],
 
         Action::EnterToc => {
-            let entries = collect_headings(ctx.markdown, ctx.visual_lines);
+            let entries = collect_headings(ctx.doc);
             if entries.is_empty() {
                 vec![
                     Effect::Flash("No headings in document".into()),
@@ -147,7 +149,7 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         }
 
         Action::EnterUrlPicker => {
-            let entries = collect_all_url_entries(ctx.markdown, ctx.visual_lines);
+            let entries = collect_all_url_entries(ctx.doc);
             if entries.is_empty() {
                 vec![
                     Effect::Flash("No URLs in document".into()),
@@ -183,7 +185,7 @@ fn navigate_search(ctx: &mut NormalCtx, direction: SearchDirection) -> Vec<Effec
         return vec![];
     };
     let line_num = (vl_idx + 1) as u32;
-    let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, line_num);
+    let y = visual_line_offset(ctx.doc.visual_lines, ctx.max_scroll, line_num);
     let flash = format!("match {}/{}", ls.current_idx + 1, ls.matches.len());
     vec![
         Effect::InvalidateOverlays,
@@ -199,20 +201,20 @@ fn navigate_search(ctx: &mut NormalCtx, direction: SearchDirection) -> Vec<Effec
 fn yank_and_flash(
     ctx: &NormalCtx,
     line_num: u32,
-    extract: impl FnOnce(&str, &[VisualLine], usize) -> String,
+    extract: impl FnOnce(&DocumentQuery, usize) -> String,
     format_msg: impl FnOnce(u32, usize) -> String,
 ) -> Vec<Effect> {
     let vl_idx = (line_num as usize).saturating_sub(1);
-    if vl_idx >= ctx.visual_lines.len() {
+    if vl_idx >= ctx.doc.visual_lines.len() {
         return vec![
             Effect::Flash(format!(
                 "Line {line_num} out of range (max {})",
-                ctx.visual_lines.len()
+                ctx.doc.visual_lines.len()
             )),
             Effect::RedrawStatusBar,
         ];
     }
-    let text = extract(ctx.markdown, ctx.visual_lines, vl_idx);
+    let text = extract(ctx.doc, vl_idx);
     if text.is_empty() {
         return vec![
             Effect::Flash(format!("L{line_num}: no source mapping")),
@@ -234,22 +236,22 @@ fn yank_and_flash(
 /// with only the URLs from that line.
 fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
     let vl_idx = (line_num as usize).saturating_sub(1);
-    if vl_idx >= ctx.visual_lines.len() {
+    if vl_idx >= ctx.doc.visual_lines.len() {
         return vec![
             Effect::Flash(format!(
                 "Line {line_num} out of range (max {})",
-                ctx.visual_lines.len()
+                ctx.doc.visual_lines.len()
             )),
             Effect::RedrawStatusBar,
         ];
     }
-    if ctx.visual_lines[vl_idx].md_block_range.is_none() {
+    if ctx.doc.visual_lines[vl_idx].md_block_range.is_none() {
         return vec![
             Effect::Flash(format!("L{line_num}: no source mapping")),
             Effect::RedrawStatusBar,
         ];
     }
-    let urls = extract_urls(ctx.markdown, ctx.visual_lines, vl_idx);
+    let urls = ctx.doc.extract_urls(vl_idx);
     if urls.is_empty() {
         return vec![
             Effect::Flash(format!("L{line_num}: no URL found")),
@@ -282,7 +284,9 @@ fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::query::test_helpers::empty_ci;
     use super::*;
+    use crate::tile::VisualLine;
 
     fn make_vl(y_px: u32) -> VisualLine {
         VisualLine {
@@ -295,17 +299,15 @@ mod tests {
 
     fn make_ctx<'a>(
         scroll: &'a ScrollState,
-        visual_lines: &'a [VisualLine],
-        markdown: &'a str,
+        doc: &'a DocumentQuery<'a>,
         last_search: &'a mut Option<LastSearch>,
     ) -> NormalCtx<'a> {
         NormalCtx {
             scroll,
-            visual_lines,
+            doc,
             max_scroll: 1000,
             scroll_step: 30,
             half_page: 200,
-            markdown,
             last_search,
         }
     }
@@ -323,8 +325,10 @@ mod tests {
     fn scroll_down_clamps_to_max() {
         let state = make_state(990);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         ctx.max_scroll = 1000;
         let effects = handle(Action::ScrollDown(1), &mut ctx);
         assert!(matches!(effects[0], Effect::ScrollTo(y) if y == 1000));
@@ -334,8 +338,10 @@ mod tests {
     fn scroll_up_clamps_to_zero() {
         let state = make_state(10);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::ScrollUp(1), &mut ctx);
         assert!(matches!(effects[0], Effect::ScrollTo(0)));
     }
@@ -344,8 +350,10 @@ mod tests {
     fn half_page_down() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::HalfPageDown(1), &mut ctx);
         assert!(matches!(effects[0], Effect::ScrollTo(200)));
     }
@@ -354,8 +362,10 @@ mod tests {
     fn half_page_up() {
         let state = make_state(500);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::HalfPageUp(2), &mut ctx);
         assert!(matches!(effects[0], Effect::ScrollTo(100)));
     }
@@ -364,8 +374,10 @@ mod tests {
     fn jump_to_top() {
         let state = make_state(500);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::JumpToTop, &mut ctx);
         assert!(matches!(effects[0], Effect::ScrollTo(0)));
     }
@@ -374,8 +386,10 @@ mod tests {
     fn jump_to_bottom() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::JumpToBottom, &mut ctx);
         assert!(matches!(effects[0], Effect::ScrollTo(1000)));
     }
@@ -384,8 +398,10 @@ mod tests {
     fn quit_returns_exit() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::Quit, &mut ctx);
         assert!(matches!(effects[0], Effect::Exit(ExitReason::Quit)));
     }
@@ -394,8 +410,10 @@ mod tests {
     fn enter_search_deletes_placements_and_sets_mode() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::EnterSearch, &mut ctx);
         assert_eq!(effects.len(), 2);
         assert!(matches!(effects[0], Effect::DeletePlacements));
@@ -406,8 +424,10 @@ mod tests {
     fn yank_out_of_range_flashes_error() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("hello", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "hello", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::YankExact(99), &mut ctx);
         assert!(matches!(&effects[0], Effect::Flash(msg) if msg.contains("out of range")));
     }
@@ -416,8 +436,10 @@ mod tests {
     fn open_url_no_source_mapping_flashes_error() {
         let state = make_state(0);
         let vls = vec![make_vl(0)]; // no md_line_range
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("hello", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "hello", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::OpenUrl(1), &mut ctx);
         assert!(matches!(&effects[0], Effect::Flash(msg) if msg.contains("no source mapping")));
     }
@@ -426,8 +448,10 @@ mod tests {
     fn search_next_without_results_flashes() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::SearchNextMatch, &mut ctx);
         assert!(matches!(&effects[0], Effect::Flash(msg) if msg.contains("No search results")));
     }
@@ -436,8 +460,10 @@ mod tests {
     fn go_back_returns_effect() {
         let state = make_state(0);
         let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
-        let mut ctx = make_ctx(&state, &vls, "", &mut ls);
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::GoBack, &mut ctx);
         assert!(matches!(effects[0], Effect::GoBack));
     }

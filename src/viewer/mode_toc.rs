@@ -10,8 +10,9 @@ use std::io::{self, Write, stdout};
 use super::effect::ExitReason;
 use super::input::TocAction;
 use super::layout::{Layout, visual_line_offset};
+use super::query::DocumentQuery;
 use super::{Effect, ViewerMode};
-use crate::tile::{VisualLine, byte_offset_to_line};
+use crate::tile::VisualLine;
 
 /// A single heading entry in the TOC.
 pub(super) struct TocEntry {
@@ -42,11 +43,11 @@ impl TocState {
 ///
 /// Parses ATX headings (`# heading`) by scanning lines directly.
 /// Lines inside fenced code blocks are ignored.
-pub(super) fn collect_headings(markdown: &str, visual_lines: &[VisualLine]) -> Vec<TocEntry> {
+pub(super) fn collect_headings(doc: &DocumentQuery) -> Vec<TocEntry> {
     let mut entries = Vec::new();
     let mut in_code_block = false;
 
-    for (line_idx, line) in markdown.lines().enumerate() {
+    for (line_idx, line) in doc.markdown.lines().enumerate() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code_block = !in_code_block;
@@ -71,7 +72,7 @@ pub(super) fn collect_headings(markdown: &str, visual_lines: &[VisualLine]) -> V
         }
 
         let md_line = line_idx + 1; // 1-based
-        if let Some(vl_idx) = find_visual_line(visual_lines, markdown, md_line) {
+        if let Some(vl_idx) = doc.find_visual_line_by_line(md_line) {
             entries.push(TocEntry {
                 level: hashes as u8,
                 text,
@@ -81,17 +82,6 @@ pub(super) fn collect_headings(markdown: &str, visual_lines: &[VisualLine]) -> V
         }
     }
     entries
-}
-
-/// Find the visual line index that contains the given 1-based markdown line.
-fn find_visual_line(visual_lines: &[VisualLine], md_source: &str, md_line: usize) -> Option<usize> {
-    visual_lines.iter().position(|vl| {
-        vl.md_block_range.as_ref().is_some_and(|r| {
-            let s = byte_offset_to_line(md_source, r.start);
-            let e = byte_offset_to_line(md_source, r.end.saturating_sub(1).max(r.start));
-            md_line >= s && md_line <= e
-        })
-    })
 }
 
 /// Draw the TOC overlay screen.
@@ -210,30 +200,8 @@ pub(super) fn handle(
 
 #[cfg(test)]
 mod tests {
+    use super::super::query::test_helpers::*;
     use super::*;
-
-    fn make_vl(md: &str, line_range: Option<(usize, usize)>) -> VisualLine {
-        let md_block_range = line_range.map(|(start_line, end_line)| {
-            let start_byte: usize = md
-                .split('\n')
-                .take(start_line - 1)
-                .map(|l| l.len() + 1)
-                .sum();
-            let end_byte: usize = md
-                .split('\n')
-                .take(end_line)
-                .map(|l| l.len() + 1)
-                .sum::<usize>()
-                .min(md.len());
-            start_byte..end_byte
-        });
-        VisualLine {
-            y_pt: 0.0,
-            y_px: 0,
-            md_block_range,
-            md_offset: None,
-        }
-    }
 
     #[test]
     fn collect_headings_basic() {
@@ -244,7 +212,9 @@ mod tests {
             make_vl(md, Some((5, 5))),
             make_vl(md, Some((7, 7))),
         ];
-        let entries = collect_headings(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_headings(&doc);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].level, 1);
         assert_eq!(entries[0].text, "Title");
@@ -258,7 +228,9 @@ mod tests {
     fn collect_headings_empty_document() {
         let md = "No headings here.\nJust text.\n";
         let vls = vec![make_vl(md, Some((1, 1))), make_vl(md, Some((2, 2)))];
-        let entries = collect_headings(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_headings(&doc);
         assert!(entries.is_empty());
     }
 
@@ -270,7 +242,9 @@ mod tests {
             make_vl(md, Some((3, 5))),
             make_vl(md, Some((7, 7))),
         ];
-        let entries = collect_headings(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_headings(&doc);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].text, "Real heading");
         assert_eq!(entries[1].text, "Also real");
@@ -280,7 +254,9 @@ mod tests {
     fn collect_headings_all_levels() {
         let md = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n####### Not a heading\n";
         let vls: Vec<_> = (1..=7).map(|i| make_vl(md, Some((i, i)))).collect();
-        let entries = collect_headings(md, &vls);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vls, &ci, 0);
+        let entries = collect_headings(&doc);
         assert_eq!(entries.len(), 6);
         for (i, entry) in entries.iter().enumerate() {
             assert_eq!(entry.level, (i + 1) as u8);

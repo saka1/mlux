@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{self, CliOverrides, Config};
 use crate::input::InputSource;
-use crate::tile::VisualLine;
 use crate::watch::FileWatcher;
 
 use super::layout::{self, Layout, ScrollState};
@@ -22,6 +21,7 @@ use super::mode_command::CommandState;
 use super::mode_search::{self, LastSearch, SearchState};
 use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
+use super::query::DocumentQuery;
 use super::terminal;
 use super::tiles::LoadedTiles;
 
@@ -103,8 +103,7 @@ pub(super) struct ViewContext<'a> {
     pub input: &'a InputSource,
     pub filename: &'a str,
     pub jump_stack: &'a [JumpEntry],
-    pub markdown: &'a str,
-    pub visual_lines: &'a [VisualLine],
+    pub doc: &'a DocumentQuery<'a>,
 }
 
 impl Viewport {
@@ -228,7 +227,7 @@ impl Viewport {
                 self.dirty = true;
             }
             Effect::EnterUrlPickerAll => {
-                let entries = mode_url::collect_all_url_entries(ctx.markdown, ctx.visual_lines);
+                let entries = mode_url::collect_all_url_entries(ctx.doc);
                 if entries.is_empty() {
                     // Return to normal with flash; need full
                     // redraw if coming from command mode.
