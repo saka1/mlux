@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use log::info;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use serde::{Deserialize, Serialize};
 
+use super::content_index::{ContentIndex, SpanKind, TextSpan};
 use super::markup_util::{
     escape_typst, escape_typst_string_literal, typst_image, typst_image_placeholder,
 };
@@ -24,7 +26,7 @@ fn latex_to_typst_math(latex: &str) -> String {
 }
 
 /// Markdown source line → Typst output byte range mapping for a single block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockMapping {
     /// Byte range within the Typst output (content_text).
     pub typst_byte_range: Range<usize>,
@@ -120,12 +122,11 @@ pub fn extract_image_paths(markdown: &str) -> Vec<String> {
 /// When `Some`, images in the set produce `#image()` calls; others produce a
 /// placeholder block. When `None`, all images produce placeholders.
 ///
-/// Returns the Typst markup string and a `SourceMap` that maps Typst byte
-/// ranges back to the original Markdown byte ranges (block-level granularity).
+/// Returns `(typst_markup, SourceMap, ContentIndex)`.
 pub fn markdown_to_typst(
     markdown: &str,
     available_images: Option<&HashSet<String>>,
-) -> (String, SourceMap) {
+) -> (String, SourceMap, ContentIndex) {
     let start = Instant::now();
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -151,6 +152,11 @@ pub fn markdown_to_typst(
     let mut block_starts: Vec<(usize, Range<usize>)> = Vec::new();
     // Depth counter for block-level nesting (only record at depth 0)
     let mut block_depth: usize = 0;
+
+    // ContentIndex collectors
+    let mut text_spans: Vec<TextSpan> = Vec::new();
+    // Deferred code spans: (md_range, buf_start..buf_end) within code_block_buf
+    let mut code_spans_pending: Vec<(Range<usize>, Range<usize>)> = Vec::new();
 
     for (event, md_range) in parser.into_offset_iter() {
         match event {
@@ -416,9 +422,20 @@ pub fn markdown_to_typst(
                     let key = crate::diagram::diagram_key(&code_block_buf);
                     let is_available = available_images.is_some_and(|set| set.contains(&key));
                     if is_available {
-                        push_to_target(&mut output, &mut cell_buf, &typst_image(&key));
-                    } else {
-                        // Fallback: render as regular code block
+                        if cell_buf.is_none() {
+                            let typst_start = output.len();
+                            output.push_str(&typst_image(&key));
+                            let typst_end = output.len();
+                            text_spans.push(TextSpan {
+                                typst_range: typst_start..typst_end,
+                                md_range,
+                                kind: SpanKind::Opaque,
+                            });
+                        } else {
+                            push_to_target(&mut output, &mut cell_buf, &typst_image(&key));
+                        }
+                    } else if cell_buf.is_some() {
+                        // Mermaid fallback inside table cell
                         let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
                         let fence: String = "`".repeat(fence_len);
                         push_to_target(&mut output, &mut cell_buf, &fence);
@@ -430,9 +447,32 @@ pub fn markdown_to_typst(
                         }
                         push_to_target(&mut output, &mut cell_buf, &fence);
                         push_to_target(&mut output, &mut cell_buf, "\n");
+                        code_spans_pending.clear();
+                    } else {
+                        // Mermaid fallback: render as regular code block with span recording
+                        let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
+                        let fence: String = "`".repeat(fence_len);
+                        output.push_str(&fence);
+                        output.push_str("mermaid");
+                        output.push('\n');
+                        let content_start = output.len();
+                        output.push_str(&code_block_buf);
+                        if !code_block_buf.ends_with('\n') {
+                            output.push('\n');
+                        }
+                        for (pending_md_range, buf_range) in code_spans_pending.drain(..) {
+                            text_spans.push(TextSpan {
+                                typst_range: (content_start + buf_range.start)
+                                    ..(content_start + buf_range.end),
+                                md_range: pending_md_range,
+                                kind: SpanKind::Code,
+                            });
+                        }
+                        output.push_str(&fence);
+                        output.push('\n');
                     }
-                } else {
-                    // Use a fence longer than any backtick run in the content
+                } else if cell_buf.is_some() {
+                    // Inside a table cell: use push_to_target, no TextSpan recording
                     let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
                     let fence: String = "`".repeat(fence_len);
                     push_to_target(&mut output, &mut cell_buf, &fence);
@@ -444,6 +484,30 @@ pub fn markdown_to_typst(
                     }
                     push_to_target(&mut output, &mut cell_buf, &fence);
                     push_to_target(&mut output, &mut cell_buf, "\n");
+                    code_spans_pending.clear();
+                } else {
+                    // Use a fence longer than any backtick run in the content
+                    let fence_len = max_backtick_run(&code_block_buf).max(2) + 1;
+                    let fence: String = "`".repeat(fence_len);
+                    output.push_str(&fence);
+                    output.push_str(&code_block_lang);
+                    output.push('\n');
+                    let content_start = output.len();
+                    output.push_str(&code_block_buf);
+                    if !code_block_buf.ends_with('\n') {
+                        output.push('\n');
+                    }
+                    // Finalize pending code spans
+                    for (pending_md_range, buf_range) in code_spans_pending.drain(..) {
+                        text_spans.push(TextSpan {
+                            typst_range: (content_start + buf_range.start)
+                                ..(content_start + buf_range.end),
+                            md_range: pending_md_range,
+                            kind: SpanKind::Code,
+                        });
+                    }
+                    output.push_str(&fence);
+                    output.push('\n');
                 }
                 code_block_buf.clear();
                 code_block_lang.clear();
@@ -540,7 +604,20 @@ pub fn markdown_to_typst(
             Event::End(TagEnd::Image) => match stack.pop() {
                 Some(Container::Image { path }) => {
                     let is_available = available_images.is_some_and(|set| set.contains(&path));
-                    if is_available {
+                    if cell_buf.is_none() {
+                        let typst_start = output.len();
+                        if is_available {
+                            output.push_str(&typst_image(&path));
+                        } else {
+                            output.push_str(&typst_image_placeholder(&path));
+                        }
+                        let typst_end = output.len();
+                        text_spans.push(TextSpan {
+                            typst_range: typst_start..typst_end,
+                            md_range,
+                            kind: SpanKind::Opaque,
+                        });
+                    } else if is_available {
                         push_to_target(&mut output, &mut cell_buf, &typst_image(&path));
                     } else {
                         push_to_target(&mut output, &mut cell_buf, &typst_image_placeholder(&path));
@@ -560,13 +637,24 @@ pub fn markdown_to_typst(
                 if in_code_block {
                     // Insert a space on blank lines so Typst generates a TextItem
                     // (needed for visual line extraction in the sidebar).
+                    let buf_start = code_block_buf.len();
                     let text = fill_blank_lines(&text);
                     code_block_buf.push_str(&text);
+                    let buf_end = code_block_buf.len();
+                    code_spans_pending.push((md_range, buf_start..buf_end));
                 } else if cell_buf.is_some() {
+                    // Table cells: only BlockSpan coverage, no TextSpan
                     let escaped = escape_typst(&text);
                     cell_buf.as_mut().unwrap().push_str(&escaped);
                 } else {
+                    let typst_start = output.len();
                     output.push_str(&escape_typst(&text));
+                    let typst_end = output.len();
+                    text_spans.push(TextSpan {
+                        typst_range: typst_start..typst_end,
+                        md_range,
+                        kind: SpanKind::Plain,
+                    });
                 }
             }
             Event::Code(code) => {
@@ -578,7 +666,18 @@ pub fn markdown_to_typst(
                 } else {
                     format!("`{code}`")
                 };
-                push_to_target(&mut output, &mut cell_buf, &s);
+                if cell_buf.is_none() {
+                    let typst_start = output.len();
+                    output.push_str(&s);
+                    let typst_end = output.len();
+                    text_spans.push(TextSpan {
+                        typst_range: typst_start..typst_end,
+                        md_range,
+                        kind: SpanKind::Code,
+                    });
+                } else {
+                    push_to_target(&mut output, &mut cell_buf, &s);
+                }
             }
             Event::SoftBreak => {
                 if in_code_block {
@@ -586,6 +685,7 @@ pub fn markdown_to_typst(
                 } else if cell_buf.is_some() {
                     cell_buf.as_mut().unwrap().push('\n');
                 } else {
+                    let typst_start = output.len();
                     output.push('\n');
                     let in_item = stack.iter().any(|c| matches!(c, Container::Item));
                     if in_item {
@@ -598,10 +698,27 @@ pub fn markdown_to_typst(
                             output.push(' ');
                         }
                     }
+                    let typst_end = output.len();
+                    text_spans.push(TextSpan {
+                        typst_range: typst_start..typst_end,
+                        md_range,
+                        kind: SpanKind::Break,
+                    });
                 }
             }
             Event::HardBreak => {
-                push_to_target(&mut output, &mut cell_buf, "\\ \n");
+                if cell_buf.is_none() {
+                    let typst_start = output.len();
+                    output.push_str("\\ \n");
+                    let typst_end = output.len();
+                    text_spans.push(TextSpan {
+                        typst_range: typst_start..typst_end,
+                        md_range,
+                        kind: SpanKind::Break,
+                    });
+                } else {
+                    push_to_target(&mut output, &mut cell_buf, "\\ \n");
+                }
             }
             Event::Rule => {
                 let rule_start = output.len();
@@ -624,11 +741,22 @@ pub fn markdown_to_typst(
             Event::InlineMath(latex) => {
                 let typst_math = latex_to_typst_math(&latex);
                 let s = format!("${typst_math}$");
-                push_to_target(&mut output, &mut cell_buf, &s);
+                if cell_buf.is_none() {
+                    let typst_start = output.len();
+                    output.push_str(&s);
+                    let typst_end = output.len();
+                    text_spans.push(TextSpan {
+                        typst_range: typst_start..typst_end,
+                        md_range,
+                        kind: SpanKind::Math,
+                    });
+                } else {
+                    push_to_target(&mut output, &mut cell_buf, &s);
+                }
             }
             Event::DisplayMath(latex) => {
                 if block_depth == 0 {
-                    block_starts.push((output.len(), md_range));
+                    block_starts.push((output.len(), md_range.clone()));
                 }
                 if !output.is_empty() && !output.ends_with('\n') {
                     output.push('\n');
@@ -637,7 +765,14 @@ pub fn markdown_to_typst(
                     output.push('\n');
                 }
                 let typst_math = latex_to_typst_math(&latex);
+                let math_typst_start = output.len();
                 output.push_str(&format!("$ {typst_math} $\n"));
+                let math_typst_end = output.len();
+                text_spans.push(TextSpan {
+                    typst_range: math_typst_start..math_typst_end,
+                    md_range,
+                    kind: SpanKind::Math,
+                });
                 if block_depth == 0
                     && let Some((typst_start, md_range_start)) = block_starts.pop()
                 {
@@ -651,10 +786,23 @@ pub fn markdown_to_typst(
                 let snippets = super::markup_html::render_html_imgs(&html, available_images);
                 if !snippets.is_empty() {
                     if block_depth == 0 {
-                        block_starts.push((output.len(), md_range));
+                        block_starts.push((output.len(), md_range.clone()));
                     }
-                    for s in &snippets {
-                        push_to_target(&mut output, &mut cell_buf, s);
+                    if cell_buf.is_none() {
+                        let typst_start = output.len();
+                        for s in &snippets {
+                            output.push_str(s);
+                        }
+                        let typst_end = output.len();
+                        text_spans.push(TextSpan {
+                            typst_range: typst_start..typst_end,
+                            md_range,
+                            kind: SpanKind::Opaque,
+                        });
+                    } else {
+                        for s in &snippets {
+                            push_to_target(&mut output, &mut cell_buf, s);
+                        }
                     }
                     if block_depth == 0
                         && let Some((typst_start, md_range_start)) = block_starts.pop()
@@ -677,13 +825,14 @@ pub fn markdown_to_typst(
     let source_map = SourceMap {
         blocks: source_map_blocks,
     };
+    let content_index = ContentIndex::new(text_spans, source_map.blocks.clone());
     info!(
         "convert: completed in {:.1}ms (input: {} bytes, output: {} bytes)",
         start.elapsed().as_secs_f64() * 1000.0,
         markdown.len(),
         output.len()
     );
-    (output, source_map)
+    (output, source_map, content_index)
 }
 
 /// Push string to the cell buffer if active, otherwise to the main output.
@@ -765,7 +914,8 @@ mod tests {
     use super::*;
 
     fn md_to_typst(s: &str) -> String {
-        markdown_to_typst(s, None).0
+        let (output, _, _) = markdown_to_typst(s, None);
+        output
     }
 
     #[test]
@@ -1072,7 +1222,7 @@ mod tests {
         // crash-823d13a0: list item containing --- emitted a Rule source mapping
         // that overlapped with the enclosing List block mapping.
         let md = "+\t---\t\t";
-        let (typst, map) = markdown_to_typst(md, None);
+        let (typst, map, _ci) = markdown_to_typst(md, None);
         for pair in map.blocks.windows(2) {
             assert!(
                 pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
@@ -1358,7 +1508,7 @@ mod tests {
     #[test]
     fn test_display_math_source_map() {
         let md = "before\n\n$$\nx^2\n$$\n\nafter";
-        let (_typst, map) = markdown_to_typst(md, None);
+        let (_typst, map, _ci) = markdown_to_typst(md, None);
         // Display math should produce a source map block
         assert!(
             map.blocks.len() >= 2,

@@ -314,8 +314,7 @@ mod tests {
         let req3 = Request::FindHighlightRects {
             idx: 7,
             spec: HighlightSpec {
-                pattern: "hello".into(),
-                case_insensitive: true,
+                target_ranges: vec![10..20, 30..40],
             },
         };
         let encoded3 = bincode::serde::encode_to_vec(&req3, bincode::config::standard()).unwrap();
@@ -324,8 +323,9 @@ mod tests {
         match decoded3 {
             Request::FindHighlightRects { idx, spec } => {
                 assert_eq!(idx, 7);
-                assert_eq!(spec.pattern, "hello");
-                assert!(spec.case_insensitive);
+                assert_eq!(spec.target_ranges.len(), 2);
+                assert_eq!(spec.target_ranges[0], 10..20);
+                assert_eq!(spec.target_ranges[1], 30..40);
             }
             _ => panic!("wrong variant"),
         }

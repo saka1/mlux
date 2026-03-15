@@ -6,9 +6,12 @@ use anyhow::{Result, bail};
 use log::info;
 use typst::layout::PagedDocument;
 
+use super::content_index::ContentIndex;
 use super::markup::SourceMap;
 use super::world::{FontCache, MluxWorld};
-use crate::tile::{SourceMappingParams, TiledDocument, VisualLine, extract_visual_lines_with_map};
+use crate::tile::{
+    ContentMapping, SourceMappingParams, TiledDocument, VisualLine, extract_visual_lines_with_map,
+};
 
 /// Parameters for [`build_tiled_document`].
 pub struct BuildParams<'a> {
@@ -30,6 +33,7 @@ struct CompiledContent<'f> {
     world: MluxWorld<'f>,
     document: PagedDocument,
     source_map: SourceMap,
+    content_index: ContentIndex,
 }
 
 /// Shared build steps: image loading, diagram rendering, markdown→typst,
@@ -52,7 +56,7 @@ fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> 
 
     // 3. Markdown -> Typst
     let loaded_set = image_files.key_set();
-    let (content_text, source_map) =
+    let (content_text, source_map, content_index) =
         super::markup::markdown_to_typst(params.markdown, Some(&loaded_set));
 
     // 4. Compile content document
@@ -70,6 +74,7 @@ fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> 
         world,
         document,
         source_map,
+        content_index,
     })
 }
 
@@ -105,6 +110,7 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
         world: content_world,
         document,
         source_map,
+        content_index,
     } = compile_content(params)?;
 
     // 5. Extract visual lines with source mapping
@@ -138,6 +144,11 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
         visual_lines,
         params.tile_height_pt,
         params.ppi,
+        ContentMapping {
+            source: content_world.main_source().clone(),
+            content_index,
+            content_offset: content_world.content_offset(),
+        },
     )?;
     info!(
         "build_tiled_document completed in {:.1}ms",

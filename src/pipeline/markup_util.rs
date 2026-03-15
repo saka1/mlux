@@ -1,15 +1,19 @@
+/// Whether a character has special meaning in Typst markup and needs escaping.
+pub(super) fn is_typst_escapable(ch: char) -> bool {
+    matches!(
+        ch,
+        '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' | '[' | ']'
+    )
+}
+
 /// Escape characters that have special meaning in Typst markup.
 pub(super) fn escape_typst(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
-        match ch {
-            '#' | '*' | '_' | '`' | '<' | '>' | '@' | '$' | '\\' | '/' | '~' | '(' | ')' | '['
-            | ']' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            _ => escaped.push(ch),
+        if is_typst_escapable(ch) {
+            escaped.push('\\');
         }
+        escaped.push(ch);
     }
     escaped
 }

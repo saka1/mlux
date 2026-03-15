@@ -8,7 +8,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    let (typst, source_map) = markdown_to_typst(markdown, None);
+    let (typst, source_map, _content_index) = markdown_to_typst(markdown, None);
 
     // SourceMap ranges must be within bounds.
     for block in &source_map.blocks {

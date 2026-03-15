@@ -2,7 +2,8 @@ use std::fs;
 
 use mlux::image::LoadedImages;
 use mlux::pipeline::{
-    FontCache, MluxWorld, compile_document, markdown_to_typst, render_frame_to_png,
+    ContentIndex, FontCache, MluxWorld, SpanKind, compile_document, markdown_to_typst,
+    render_frame_to_png,
 };
 use mlux::tile::{
     SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
@@ -127,7 +128,7 @@ const WIDTH_PT: f64 = 400.0;
 fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
-    let (content, source_map) = markdown_to_typst(md, None);
+    let (content, source_map, _content_index) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -798,7 +799,7 @@ fn test_image_renders() {
     );
 
     let loaded_set = image_files.key_set();
-    let (content, _source_map) = markdown_to_typst(&markdown, Some(&loaded_set));
+    let (content, _source_map, _content_index) = markdown_to_typst(&markdown, Some(&loaded_set));
 
     // Verify #image() is in the generated Typst
     assert!(
@@ -855,7 +856,7 @@ fn test_mermaid_diagram_renders() {
     let loaded_set = image_files.key_set();
 
     // Convert markdown to typst — mermaid block should become #image()
-    let (content, _source_map) = markdown_to_typst(md, Some(&loaded_set));
+    let (content, _source_map, _content_index) = markdown_to_typst(md, Some(&loaded_set));
     assert!(
         content.contains("#image(\"_diagram_"),
         "mermaid block should produce #image() call, got: {content}"
@@ -921,7 +922,7 @@ fn test_mermaid_fixture_renders() {
     }
     let loaded_set = image_files.key_set();
 
-    let (content, _source_map) = markdown_to_typst(&markdown, Some(&loaded_set));
+    let (content, _source_map, _content_index) = markdown_to_typst(&markdown, Some(&loaded_set));
 
     // All mermaid blocks should become #image() calls
     assert!(
@@ -968,7 +969,7 @@ fn test_mermaid_fallback_without_render() {
     let md = "```mermaid\ngraph LR\n  A --> B\n```\n";
 
     // Without rendering diagrams, mermaid blocks should fall back to code fence
-    let (content, _source_map) = markdown_to_typst(md, None);
+    let (content, _source_map, _content_index) = markdown_to_typst(md, None);
     assert!(
         content.contains("```mermaid"),
         "without available images, mermaid should render as code fence, got: {content}"
@@ -1158,4 +1159,415 @@ fn test_code_block_unrecognized_lang_lines_are_individual() {
         "2-line console code block should produce 2 visual lines with md_line_exact, got {}",
         code_vls.len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// ContentIndex integration tests
+// ---------------------------------------------------------------------------
+
+/// Verify that every TextSpan's typst_range and md_range point to valid slices.
+fn assert_spans_in_bounds(md: &str, typst: &str, ci: &ContentIndex) {
+    for (i, span) in ci.text_spans().iter().enumerate() {
+        assert!(
+            span.typst_range.end <= typst.len(),
+            "span {i} typst_range {:?} out of bounds (typst len={})",
+            span.typst_range,
+            typst.len()
+        );
+        assert!(
+            span.md_range.end <= md.len(),
+            "span {i} md_range {:?} out of bounds (md len={})",
+            span.md_range,
+            md.len()
+        );
+        assert!(
+            span.typst_range.start <= span.typst_range.end,
+            "span {i} typst_range inverted: {:?}",
+            span.typst_range,
+        );
+        assert!(
+            span.md_range.start <= span.md_range.end,
+            "span {i} md_range inverted: {:?}",
+            span.md_range,
+        );
+    }
+}
+
+/// Verify TextSpans are sorted by typst_range.start and non-overlapping.
+fn assert_spans_sorted_no_overlap(ci: &ContentIndex) {
+    let spans = ci.text_spans();
+    for pair in spans.windows(2) {
+        assert!(
+            pair[0].typst_range.end <= pair[1].typst_range.start,
+            "overlapping or unsorted typst_ranges: {:?} and {:?}",
+            pair[0].typst_range,
+            pair[1].typst_range,
+        );
+    }
+}
+
+#[test]
+fn test_content_index_plain_text() {
+    let md = "Hello world";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let plains: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Plain)
+        .collect();
+    assert_eq!(plains.len(), 1);
+    assert_eq!(&md[plains[0].md_range.clone()], "Hello world");
+    assert_eq!(&typst[plains[0].typst_range.clone()], "Hello world");
+}
+
+#[test]
+fn test_content_index_plain_with_escape() {
+    let md = "#hello $world";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+
+    // Each Text event from pulldown-cmark produces a Plain span.
+    // The escaped Typst text should have backslashes.
+    let plains: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Plain)
+        .collect();
+    assert!(!plains.is_empty());
+    for span in &plains {
+        let typst_text = &typst[span.typst_range.clone()];
+        let md_text = &md[span.md_range.clone()];
+        // Typst text should be the escaped version of md_text
+        assert!(
+            typst_text.len() >= md_text.len(),
+            "escaped text should be at least as long: typst={typst_text:?} md={md_text:?}"
+        );
+    }
+}
+
+#[test]
+fn test_content_index_inline_code() {
+    let md = "Use `Result<T>` type";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let codes: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Code)
+        .collect();
+    assert_eq!(codes.len(), 1, "should have 1 Code span for inline code");
+    // The md_range should cover the backtick-delimited content from pulldown-cmark
+    // pulldown-cmark's Code event md_range covers `Result<T>` including backticks
+    let md_text = &md[codes[0].md_range.clone()];
+    assert!(
+        md_text.contains("Result<T>"),
+        "Code span md_range should contain the code content, got: {md_text:?}"
+    );
+}
+
+#[test]
+fn test_content_index_code_block() {
+    let md = "```rust\nfn main() {}\nlet x = 1;\n```\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let codes: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Code)
+        .collect();
+    assert!(!codes.is_empty(), "code block should produce Code spans");
+    // Each Text event inside the code block becomes a Code span.
+    // The typst content should be the code text (1:1 mapping).
+    for span in &codes {
+        let typst_text = &typst[span.typst_range.clone()];
+        let md_text = &md[span.md_range.clone()];
+        assert_eq!(
+            typst_text.len(),
+            md_text.len(),
+            "Code span should have 1:1 byte mapping: typst={typst_text:?} md={md_text:?}"
+        );
+    }
+}
+
+#[test]
+fn test_content_index_inline_math() {
+    let md = "The formula $E=mc^2$ is famous.";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let maths: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Math)
+        .collect();
+    assert_eq!(maths.len(), 1, "should have 1 Math span for inline math");
+    // The typst text should contain $ delimiters
+    let typst_text = &typst[maths[0].typst_range.clone()];
+    assert!(
+        typst_text.starts_with('$') && typst_text.ends_with('$'),
+        "Math typst_range should be a $...$ expression, got: {typst_text:?}"
+    );
+}
+
+#[test]
+fn test_content_index_display_math() {
+    let md = "$$\nE = mc^2\n$$\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let maths: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Math)
+        .collect();
+    assert_eq!(maths.len(), 1, "should have 1 Math span for display math");
+    let typst_text = &typst[maths[0].typst_range.clone()];
+    assert!(
+        typst_text.contains('$'),
+        "display math typst_range should contain $, got: {typst_text:?}"
+    );
+}
+
+#[test]
+fn test_content_index_soft_break() {
+    let md = "line1\nline2\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let breaks: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Break)
+        .collect();
+    assert_eq!(breaks.len(), 1, "should have 1 Break span for soft break");
+}
+
+#[test]
+fn test_content_index_hard_break() {
+    let md = "line1  \nline2\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let breaks: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Break)
+        .collect();
+    assert_eq!(breaks.len(), 1, "should have 1 Break span for hard break");
+    let typst_text = &typst[breaks[0].typst_range.clone()];
+    assert!(
+        typst_text.contains("\\ "),
+        "hard break typst text should contain '\\\\ ', got: {typst_text:?}"
+    );
+}
+
+#[test]
+fn test_content_index_image_opaque() {
+    let md = "![alt](photo.png)\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let opaques: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Opaque)
+        .collect();
+    assert_eq!(opaques.len(), 1, "image should produce 1 Opaque span");
+    let typst_text = &typst[opaques[0].typst_range.clone()];
+    assert!(
+        typst_text.contains("image-placeholder") || typst_text.contains("#image"),
+        "Opaque typst_range should be an image call, got: {typst_text:?}"
+    );
+}
+
+#[test]
+fn test_content_index_mixed_document() {
+    let md = "# Title\n\nHello *world* and `code`.\n\n$$\nx^2\n$$\n\n```rust\nfn f() {}\n```\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    // Should have a mix of kinds
+    let kinds: Vec<SpanKind> = ci.text_spans().iter().map(|s| s.kind).collect();
+    assert!(kinds.contains(&SpanKind::Plain), "should have Plain spans");
+    assert!(kinds.contains(&SpanKind::Code), "should have Code spans");
+    assert!(kinds.contains(&SpanKind::Math), "should have Math spans");
+}
+
+#[test]
+fn test_content_index_japanese_text() {
+    let md = "日本語のテスト。句読点「、」も正しく処理される。\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let plains: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Plain)
+        .collect();
+    assert!(
+        !plains.is_empty(),
+        "Japanese text should produce Plain spans"
+    );
+    // Japanese text has no escapable chars, so typst == md
+    let md_text = &md[plains[0].md_range.clone()];
+    let typst_text = &typst[plains[0].typst_range.clone()];
+    assert_eq!(
+        md_text, typst_text,
+        "Japanese text should be identical in md and typst"
+    );
+}
+
+#[test]
+fn test_content_index_table_no_text_spans() {
+    // Table content goes through cell_buf; TextSpans should NOT be recorded.
+    let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let (typst, _, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    // Table cells should not produce Plain/Code text spans
+    // (they're covered by BlockSpan only)
+    let spans = ci.text_spans();
+    for span in spans {
+        let md_text = &md[span.md_range.clone()];
+        assert!(
+            !["A", "B", "1", "2"].contains(&md_text),
+            "table cell content should not appear as TextSpan, found: {md_text:?}"
+        );
+    }
+}
+
+#[test]
+fn test_content_index_block_spans_match_source_map() {
+    let md = "# Heading\n\nParagraph one.\n\nParagraph two.\n";
+    let (typst, source_map, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+
+    // block_spans() shares the same BlockMapping type as SourceMap
+    assert_eq!(
+        ci.block_spans().len(),
+        source_map.blocks.len(),
+        "block_spans count should match source_map blocks count"
+    );
+    for (i, (bs, bm)) in ci
+        .block_spans()
+        .iter()
+        .zip(source_map.blocks.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            bs.typst_byte_range, bm.typst_byte_range,
+            "block {i} typst_byte_range mismatch"
+        );
+        assert_eq!(
+            bs.md_byte_range, bm.md_byte_range,
+            "block {i} md_byte_range mismatch"
+        );
+    }
+}
+
+/// End-to-end: compile a document, run md_to_main_ranges, and verify the
+/// resulting ranges fall within the Source text.
+#[test]
+fn test_content_index_md_to_main_ranges_e2e() {
+    let md = "Hello world. Search for hello in this document.\n";
+    let (content, _, ci) = markdown_to_typst(md, None);
+    let font_cache = FontCache::new();
+    let theme = load_theme();
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        WIDTH_PT,
+        &font_cache,
+        LoadedImages::default(),
+    );
+    let source_text = world.main_source().text();
+    let content_offset = world.content_offset();
+
+    // Find "hello" (case-insensitive) matches in markdown
+    let re = regex::RegexBuilder::new("hello")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    let md_ranges: Vec<std::ops::Range<usize>> =
+        re.find_iter(md).map(|m| m.start()..m.end()).collect();
+    assert_eq!(md_ranges.len(), 2, "should find 2 matches for 'hello'");
+
+    let main_ranges = ci.md_to_main_ranges(&md_ranges, md, content_offset);
+    assert!(
+        !main_ranges.is_empty(),
+        "md_to_main_ranges should produce non-empty result"
+    );
+    // All ranges should be within the source text
+    for r in &main_ranges {
+        assert!(
+            r.end <= source_text.len(),
+            "main range {:?} out of bounds (source len={})",
+            r,
+            source_text.len()
+        );
+        // The source text at these ranges should contain the matched text
+        // (possibly escaped, but for "hello" no escaping needed)
+        let slice = &source_text[r.clone()];
+        assert!(
+            slice.to_lowercase().contains("hello"),
+            "main.typ range should contain 'hello', got: {slice:?}"
+        );
+    }
+}
+
+/// End-to-end: search for text that spans across escape characters.
+#[test]
+fn test_content_index_md_to_main_ranges_with_escapes() {
+    let md = "Price is $100 today.\n";
+    let (content, _, ci) = markdown_to_typst(md, None);
+    let font_cache = FontCache::new();
+    let theme = load_theme();
+    let world = MluxWorld::new(
+        theme,
+        mlux::theme::data_files("catppuccin"),
+        &content,
+        WIDTH_PT,
+        &font_cache,
+        LoadedImages::default(),
+    );
+    let source_text = world.main_source().text();
+    let content_offset = world.content_offset();
+
+    // Search for "$100" in markdown
+    let md_ranges = vec![9..13]; // "$100"
+    let main_ranges = ci.md_to_main_ranges(&md_ranges, md, content_offset);
+    assert!(
+        !main_ranges.is_empty(),
+        "should find main.typ range for '$100'"
+    );
+    for r in &main_ranges {
+        assert!(
+            r.end <= source_text.len(),
+            "main range {:?} out of bounds (source len={})",
+            r,
+            source_text.len()
+        );
+        let slice = &source_text[r.clone()];
+        // In typst, $ is escaped to \$, so the slice should contain \$100
+        assert!(
+            slice.contains("\\$100") || slice.contains("$100"),
+            "should contain escaped or literal '$100', got: {slice:?}"
+        );
+    }
 }

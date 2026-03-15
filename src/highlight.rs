@@ -1,24 +1,26 @@
-//! Word-level search highlighting via KGP overlay.
+//! Span-based search highlighting via KGP overlay.
 //!
-//! Walks the Typst Frame tree to find TextItems matching a regex pattern,
-//! computes pixel rectangles for matching glyphs. A static 2048×24
-//! semi-transparent yellow PNG ([`HIGHLIGHT_PNG`]) is uploaded once. Its height
-//! matches 12pt text at 144 PPI so KGP can place it with `r=1` and minimal
-//! scaling. Source-rectangle `w` crops the width to the exact highlight span.
+//! The caller provides pre-computed `target_ranges` (main.typ byte ranges)
+//! from `ContentIndex::md_to_main_ranges()`. This module walks the Frame tree,
+//! resolves each glyph's position in main.typ via `Source::range()` +
+//! `rendered_to_source_byte()`, and generates pixel rectangles for matching glyphs.
 
+use std::ops::Range;
 use std::time::Instant;
 
 use log::debug;
-use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use typst::layout::{Frame, FrameItem, Point};
+use typst::syntax::Source;
 use typst::text::TextItem;
+
+use crate::pipeline::rendered_to_source_byte;
 
 /// Specification for what to highlight, sent via IPC to the fork child.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HighlightSpec {
-    pub pattern: String,
-    pub case_insensitive: bool,
+    /// Pre-computed byte ranges within main.typ to highlight (sorted).
+    pub target_ranges: Vec<Range<usize>>,
 }
 
 /// A pixel-coordinate rectangle to draw as a highlight overlay.
@@ -30,77 +32,87 @@ pub struct HighlightRect {
     pub h_px: u32,
 }
 
-/// Find all highlight rectangles for text matching `spec` within a tile frame.
-///
-/// Walks the Frame tree recursively, regex-matches against each `TextItem.text`,
-/// and maps matched byte ranges to glyph pixel positions.
-pub fn find_highlight_rects(frame: &Frame, spec: &HighlightSpec, ppi: f32) -> Vec<HighlightRect> {
-    if spec.pattern.is_empty() {
+/// Find all highlight rectangles for glyphs whose source positions fall within
+/// `spec.target_ranges`, within a single tile frame.
+pub fn find_highlight_rects(
+    frame: &Frame,
+    spec: &HighlightSpec,
+    ppi: f32,
+    source: &Source,
+) -> Vec<HighlightRect> {
+    if spec.target_ranges.is_empty() {
         return Vec::new();
     }
 
     let start = Instant::now();
 
-    let re = match RegexBuilder::new(&spec.pattern)
-        .case_insensitive(spec.case_insensitive)
-        .build()
-    {
-        Ok(re) => re,
-        Err(_) => return Vec::new(),
-    };
-
     let pixel_per_pt = ppi / 72.0;
     let mut rects = Vec::new();
-    walk_frame(frame, Point::zero(), &re, pixel_per_pt, &mut rects);
+    walk_frame_by_span(
+        frame,
+        Point::zero(),
+        &spec.target_ranges,
+        pixel_per_pt,
+        source,
+        &mut rects,
+    );
 
     debug!(
-        "highlight: find_highlight_rects completed in {:.1}ms ({} rects, pattern={:?})",
+        "highlight: find_highlight_rects completed in {:.1}ms ({} rects, {} target_ranges)",
         start.elapsed().as_secs_f64() * 1000.0,
         rects.len(),
-        spec.pattern,
+        spec.target_ranges.len(),
     );
 
     rects
 }
 
-/// Recursively walk the frame tree collecting highlight rectangles.
-fn walk_frame(
+/// Recursively walk the frame tree, resolving glyph spans to main.typ positions.
+fn walk_frame_by_span(
     frame: &Frame,
     offset: Point,
-    re: &regex::Regex,
+    target_ranges: &[Range<usize>],
     pixel_per_pt: f32,
+    source: &Source,
     rects: &mut Vec<HighlightRect>,
 ) {
     for (pos, item) in frame.items() {
         let abs = Point::new(offset.x + pos.x, offset.y + pos.y);
         match item {
             FrameItem::Text(text) => {
-                collect_text_rects(text, abs, re, pixel_per_pt, rects);
+                collect_span_rects(text, abs, target_ranges, pixel_per_pt, source, rects);
             }
             FrameItem::Group(group) => {
-                walk_frame(&group.frame, abs, re, pixel_per_pt, rects);
+                walk_frame_by_span(
+                    &group.frame,
+                    abs,
+                    target_ranges,
+                    pixel_per_pt,
+                    source,
+                    rects,
+                );
             }
             _ => {}
         }
     }
 }
 
-/// For a single TextItem, find regex matches and compute glyph pixel rects.
-fn collect_text_rects(
+/// For a single TextItem, check each glyph against target_ranges and collect
+/// matching glyph runs as pixel rectangles.
+fn collect_span_rects(
     text: &TextItem,
     abs_pos: Point,
-    re: &regex::Regex,
+    target_ranges: &[Range<usize>],
     pixel_per_pt: f32,
+    source: &Source,
     rects: &mut Vec<HighlightRect>,
 ) {
-    let text_str: &str = &text.text;
-    if text_str.is_empty() {
+    let glyphs = &text.glyphs;
+    if glyphs.is_empty() {
         return;
     }
 
     // Precompute cumulative x positions for each glyph (in pt).
-    // glyph_x_starts[i] = x offset of glyph i relative to TextItem start.
-    let glyphs = &text.glyphs;
     let mut glyph_x_starts: Vec<f64> = Vec::with_capacity(glyphs.len());
     let mut cursor = 0.0_f64;
     for g in glyphs.iter() {
@@ -110,71 +122,99 @@ fn collect_text_rects(
 
     let text_height_pt = text.size.to_pt();
 
-    for m in re.find_iter(text_str) {
-        let match_start = m.start();
-        let match_end = m.end();
+    // Glyph run accumulator: collects consecutive matching glyphs into a
+    // single highlight rectangle.
+    let mut run = GlyphRun::new();
 
-        // Find glyphs whose byte range overlaps the match.
-        let mut min_x_pt = f64::MAX;
-        let mut max_x_pt = f64::MIN;
-        let mut found = false;
+    // Cache the last resolved (Span → node_range) to avoid redundant
+    // Source tree walks for consecutive glyphs sharing the same Span.
+    let mut cached_span: Option<(typst::syntax::Span, Option<Range<usize>>)> = None;
 
-        for (i, g) in glyphs.iter().enumerate() {
-            let g_start = g.range.start as usize;
-            let g_end = g.range.end as usize;
+    for (i, g) in glyphs.iter().enumerate() {
+        // Resolve this glyph's absolute position in main.typ, with caching
+        let node_range = if cached_span.as_ref().is_some_and(|(s, _)| *s == g.span.0) {
+            cached_span.as_ref().unwrap().1.clone()
+        } else {
+            let nr = source.range(g.span.0);
+            cached_span = Some((g.span.0, nr.clone()));
+            nr
+        };
 
-            // Check overlap: glyph range [g_start, g_end) ∩ match range [match_start, match_end)
-            if g_start < match_end && g_end > match_start {
-                let x = glyph_x_starts[i];
-                let w = g.x_advance.at(text.size).to_pt();
-                min_x_pt = min_x_pt.min(x);
-                max_x_pt = max_x_pt.max(x + w);
-                found = true;
-            }
-        }
-
-        if !found {
-            continue;
-        }
-
-        let abs_x_pt = abs_pos.x.to_pt() + min_x_pt;
-        // TextItem y position is at the baseline; shift up by ~80% of font size for top.
-        let baseline_y_pt = abs_pos.y.to_pt();
-        let abs_y_pt = baseline_y_pt - text_height_pt * 0.8;
-        let width_pt = max_x_pt - min_x_pt;
-
-        // Skip text whose top is above this tile's origin — it belongs to the
-        // previous tile and would otherwise appear as a ghost rect at y=0.
-        if abs_y_pt < 0.0 {
-            continue;
-        }
-
-        let x_px = (abs_x_pt * pixel_per_pt as f64).round() as u32;
-        let y_px = (abs_y_pt * pixel_per_pt as f64).round() as u32;
-        let w_px = (width_pt * pixel_per_pt as f64).round().max(1.0) as u32;
-        let h_px = (text_height_pt * pixel_per_pt as f64).round().max(1.0) as u32;
-
-        debug!(
-            "highlight rect: matched {:?} at baseline_y={:.2}pt abs_y={:.2}pt \
-             abs_x={:.2}pt w={:.2}pt h={:.2}pt -> px({}, {}, {}, {})",
-            &text_str[m.start()..m.end()],
-            baseline_y_pt,
-            abs_y_pt,
-            abs_x_pt,
-            width_pt,
-            text_height_pt,
-            x_px,
-            y_px,
-            w_px,
-            h_px,
-        );
-
-        rects.push(HighlightRect {
-            x_px,
-            y_px,
-            w_px,
-            h_px,
+        let main_pos = node_range.map(|nr| {
+            let node_text = &source.text()[nr.clone()];
+            let source_byte = rendered_to_source_byte(node_text, g.span.1 as usize);
+            nr.start + source_byte
         });
+
+        let is_match = main_pos.is_some_and(|pos| {
+            let idx = target_ranges.partition_point(|r| r.end <= pos);
+            idx < target_ranges.len() && target_ranges[idx].start <= pos
+        });
+
+        if is_match {
+            let x = glyph_x_starts[i];
+            let w = g.x_advance.at(text.size).to_pt();
+            run.extend(x, x + w);
+        } else {
+            run.flush(abs_pos, text_height_pt, pixel_per_pt, rects);
+        }
+    }
+    run.flush(abs_pos, text_height_pt, pixel_per_pt, rects);
+}
+
+/// Accumulator for consecutive matching glyphs within a TextItem.
+///
+/// Tracks the x-extent of the current run and flushes it as a
+/// `HighlightRect` when a non-matching glyph is encountered.
+struct GlyphRun {
+    start_x: Option<f64>,
+    end_x: f64,
+}
+
+impl GlyphRun {
+    fn new() -> Self {
+        Self {
+            start_x: None,
+            end_x: 0.0,
+        }
+    }
+
+    fn extend(&mut self, x: f64, x_end: f64) {
+        if self.start_x.is_none() {
+            self.start_x = Some(x);
+        }
+        self.end_x = x_end;
+    }
+
+    fn flush(
+        &mut self,
+        abs_pos: Point,
+        text_height_pt: f64,
+        pixel_per_pt: f32,
+        rects: &mut Vec<HighlightRect>,
+    ) {
+        if let Some(start_x) = self.start_x.take() {
+            let abs_x_pt = abs_pos.x.to_pt() + start_x;
+            let baseline_y_pt = abs_pos.y.to_pt();
+            let abs_y_pt = baseline_y_pt - text_height_pt * 0.8;
+            let width_pt = self.end_x - start_x;
+
+            if abs_y_pt < 0.0 {
+                return;
+            }
+
+            let x_px = (abs_x_pt * pixel_per_pt as f64).round() as u32;
+            let y_px = (abs_y_pt * pixel_per_pt as f64).round() as u32;
+            let w_px = (width_pt * pixel_per_pt as f64).round().max(1.0) as u32;
+            let h_px = (text_height_pt * pixel_per_pt as f64).round().max(1.0) as u32;
+
+            rects.push(HighlightRect {
+                x_px,
+                y_px,
+                w_px,
+                h_px,
+            });
+        }
     }
 }
 
@@ -257,24 +297,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_pattern_returns_no_rects() {
+    fn empty_target_ranges_returns_no_rects() {
         let frame = Frame::hard(typst::layout::Size::zero());
         let spec = HighlightSpec {
-            pattern: String::new(),
-            case_insensitive: false,
+            target_ranges: vec![],
         };
-        let rects = find_highlight_rects(&frame, &spec, 144.0);
-        assert!(rects.is_empty());
-    }
-
-    #[test]
-    fn invalid_regex_returns_no_rects() {
-        let frame = Frame::hard(typst::layout::Size::zero());
-        let spec = HighlightSpec {
-            pattern: "[".to_string(),
-            case_insensitive: false,
-        };
-        let rects = find_highlight_rects(&frame, &spec, 144.0);
+        let source = Source::detached("");
+        let rects = find_highlight_rects(&frame, &spec, 144.0, &source);
         assert!(rects.is_empty());
     }
 
