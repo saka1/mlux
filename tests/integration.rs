@@ -5,9 +5,18 @@ use mlux::pipeline::{
     BoundIndex, ContentIndex, FontCache, MluxWorld, SpanKind, compile_document, markdown_to_typst,
     render_frame_to_png,
 };
-use mlux::tile::{
-    byte_offset_to_line, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
-};
+use mlux::tile::{VisualLine, byte_offset_to_line, extract_visual_lines_with_map, split_frame};
+use mlux::viewer::query::DocumentQuery;
+
+fn yank_exact(md: &str, vlines: &[VisualLine], idx: usize) -> String {
+    let ci = ContentIndex::new(vec![], vec![]);
+    DocumentQuery::new(md, vlines, &ci, 0).yank_exact(idx)
+}
+
+fn yank_lines(md: &str, vlines: &[VisualLine], start: usize, end: usize) -> String {
+    let ci = ContentIndex::new(vec![], vec![]);
+    DocumentQuery::new(md, vlines, &ci, 0).yank_lines(start, end)
+}
 
 fn load_theme() -> &'static str {
     mlux::theme::get("catppuccin").expect("built-in theme should exist")

@@ -9,9 +9,8 @@ use std::io::{self, Write, stdout};
 
 use super::input::UrlAction;
 use super::layout::Layout;
-use super::query::DocumentQuery;
+use super::query::{DocumentQuery, UrlEntry, extract_urls_from_lines};
 use super::{Effect, ViewerMode};
-use crate::tile::{UrlEntry, extract_urls_from_lines};
 
 /// A single entry in the URL picker list.
 pub(super) struct UrlPickerEntry {
