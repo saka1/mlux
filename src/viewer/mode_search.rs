@@ -264,8 +264,15 @@ pub(super) fn draw_search_screen(
         let m = &matches[match_idx];
         let is_selected = match_idx == selected;
 
-        // Format: "  {line_num}: {context}" with match highlight
-        let line_prefix = format!("  {:>4}: ", m.md_line);
+        // Alt+N shortcut label: "[N] " for items 1-9, "    " otherwise
+        let label = if i < 9 {
+            format!("[{}] ", i + 1)
+        } else {
+            "    ".to_string()
+        };
+
+        // Format: "{label}  {line_num}: {context}" with match highlight
+        let line_prefix = format!("{label}  {:>4}: ", m.md_line);
         let prefix_len = line_prefix.len();
 
         // Truncate context to fit, respecting UTF-8 boundaries
@@ -307,7 +314,7 @@ pub(super) fn draw_search_screen(
         " invalid pattern | Esc:cancel".to_string()
     } else {
         format!(
-            " {} matches | Enter:jump  Esc:cancel  ↑↓:select",
+            " {} matches | Enter:jump  Esc:cancel  ↑↓:select  Alt+1-9:jump",
             matches.len()
         )
     };
@@ -361,6 +368,24 @@ pub(super) fn handle(
                 }
             }
             vec![Effect::RedrawSearch]
+        }
+        SearchAction::SelectIndex(n) => {
+            let target = ss.scroll_offset + n;
+            if target >= ss.matches.len() {
+                return vec![Effect::RedrawSearch];
+            }
+            ss.selected = target;
+            let vl_idx = ss.matches[ss.selected].visual_line_idx;
+            let last = LastSearch::from_search_state(ss, markdown, content_index, content_offset);
+            let line_num = (vl_idx + 1) as u32;
+            let y = visual_line_offset(visual_lines, max_scroll, line_num);
+            let flash = format!("match {}/{}", ss.selected + 1, ss.matches.len());
+            vec![
+                Effect::SetLastSearch(last),
+                Effect::ScrollTo(y),
+                Effect::Flash(flash),
+                Effect::SetMode(ViewerMode::Normal),
+            ]
         }
         SearchAction::Confirm => {
             if ss.matches.is_empty() {

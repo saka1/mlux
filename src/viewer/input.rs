@@ -200,6 +200,7 @@ pub(super) enum SearchAction {
     Backspace,
     SelectNext,
     SelectPrev,
+    SelectIndex(usize),
     Confirm,
     Cancel,
 }
@@ -295,6 +296,9 @@ pub(super) fn map_search_key(key: KeyEvent) -> Option<SearchAction> {
         (KeyCode::Backspace, _) => Some(SearchAction::Backspace),
         (KeyCode::Down, _) => Some(SearchAction::SelectNext),
         (KeyCode::Up, _) => Some(SearchAction::SelectPrev),
+        (KeyCode::Char(c @ '1'..='9'), KeyModifiers::ALT) => {
+            Some(SearchAction::SelectIndex((c as u8 - b'1') as usize))
+        }
         (KeyCode::Char(c), _) => Some(SearchAction::Type(c)),
         _ => None,
     }
@@ -520,6 +524,26 @@ mod tests {
     fn test_search_unknown_returns_none() {
         let a = map_search_key(simple_key(KeyCode::Tab));
         assert!(a.is_none());
+    }
+
+    #[test]
+    fn test_search_alt_digit_selects_index() {
+        let e = key(KeyCode::Char('1'), KeyModifiers::ALT);
+        assert!(matches!(
+            map_search_key(e),
+            Some(SearchAction::SelectIndex(0))
+        ));
+        let e = key(KeyCode::Char('9'), KeyModifiers::ALT);
+        assert!(matches!(
+            map_search_key(e),
+            Some(SearchAction::SelectIndex(8))
+        ));
+    }
+
+    #[test]
+    fn test_search_alt_digit_not_plain_digit() {
+        let e = key(KeyCode::Char('1'), KeyModifiers::NONE);
+        assert!(matches!(map_search_key(e), Some(SearchAction::Type('1'))));
     }
 
     // --- TOC mode ---
