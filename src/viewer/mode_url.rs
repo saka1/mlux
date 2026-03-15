@@ -46,19 +46,21 @@ pub(super) fn collect_all_url_entries(
     visual_lines: &[VisualLine],
 ) -> Vec<UrlPickerEntry> {
     let mut entries = Vec::new();
-    // Track which md_line_ranges we've already processed to avoid duplicates.
+    // Track which md_block_ranges we've already processed to avoid duplicates.
     let mut seen_ranges: Vec<(usize, usize)> = Vec::new();
 
     for (vl_idx, vl) in visual_lines.iter().enumerate() {
-        let Some((start, end)) = vl.md_line_range else {
+        let Some(ref r) = vl.md_block_range else {
             continue;
         };
         // Skip if we've already extracted URLs from this exact range.
-        if seen_ranges.contains(&(start, end)) {
+        if seen_ranges.contains(&(r.start, r.end)) {
             continue;
         }
-        seen_ranges.push((start, end));
+        seen_ranges.push((r.start, r.end));
 
+        let start = crate::tile::byte_offset_to_line(md_source, r.start);
+        let end = crate::tile::byte_offset_to_line(md_source, r.end.saturating_sub(1).max(r.start));
         let url_entries = extract_urls_from_lines(md_source, start, end);
         let line_num = vl_idx + 1; // 1-based
         for UrlEntry { url, text } in url_entries {
@@ -191,12 +193,26 @@ mod tests {
     use super::*;
     use crate::tile::VisualLine;
 
-    fn make_vl(md_line_range: Option<(usize, usize)>) -> VisualLine {
+    fn make_vl(md: &str, line_range: Option<(usize, usize)>) -> VisualLine {
+        let md_block_range = line_range.map(|(start_line, end_line)| {
+            let start_byte: usize = md
+                .split('\n')
+                .take(start_line - 1)
+                .map(|l| l.len() + 1)
+                .sum();
+            let end_byte: usize = md
+                .split('\n')
+                .take(end_line)
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                .min(md.len());
+            start_byte..end_byte
+        });
         VisualLine {
             y_pt: 0.0,
             y_px: 0,
-            md_line_range,
-            md_line_exact: None,
+            md_block_range,
+            md_offset: None,
         }
     }
 
@@ -205,9 +221,9 @@ mod tests {
         let md =
             "See [Rust](https://rust.invalid/) here.\nPlain line.\n[Docs](https://docs.invalid/)\n";
         let vls = vec![
-            make_vl(Some((1, 1))),
-            make_vl(Some((2, 2))),
-            make_vl(Some((3, 3))),
+            make_vl(md, Some((1, 1))),
+            make_vl(md, Some((2, 2))),
+            make_vl(md, Some((3, 3))),
         ];
         let entries = collect_all_url_entries(md, &vls);
         assert_eq!(entries.len(), 2);
@@ -221,7 +237,7 @@ mod tests {
     #[test]
     fn test_collect_all_url_entries_empty() {
         let md = "No links here.\n";
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl(md, Some((1, 1)))];
         let entries = collect_all_url_entries(md, &vls);
         assert!(entries.is_empty());
     }
@@ -229,8 +245,8 @@ mod tests {
     #[test]
     fn test_collect_deduplicates_same_range() {
         let md = "See [A](https://a.invalid/) text.\n";
-        // Two visual lines with the same md_line_range (can happen with multiline rendering)
-        let vls = vec![make_vl(Some((1, 1))), make_vl(Some((1, 1)))];
+        // Two visual lines with the same md_block_range (can happen with multiline rendering)
+        let vls = vec![make_vl(md, Some((1, 1))), make_vl(md, Some((1, 1)))];
         let entries = collect_all_url_entries(md, &vls);
         assert_eq!(entries.len(), 1);
     }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Range;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -11,7 +12,7 @@ use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::{Source, Span};
 use typst::visualize::{Geometry, Paint};
 
-use crate::pipeline::{ContentIndex, SourceMap};
+use crate::pipeline::{BoundIndex, ContentIndex};
 
 /// Compute pixel size matching typst_render's formula exactly.
 ///
@@ -28,46 +29,32 @@ fn pt_to_px(pt: f64, ppi: f32) -> u32 {
 pub struct VisualLine {
     pub y_pt: f64, // Absolute Y coordinate of the text baseline (pt)
     pub y_px: u32, // Pixel Y coordinate (after ppi conversion)
-    /// Markdown source line range (1-based, inclusive). None for theme-derived text.
-    pub md_line_range: Option<(usize, usize)>,
-    /// Precise 1-based MD line (y yank). Set for code blocks and any block where
-    /// Typst/MD newline counts match (lists, paragraphs, headings). None when
-    /// line-level resolution is unsafe (tables, nested blockquotes).
-    pub md_line_exact: Option<usize>,
-}
-
-/// Result of resolving a Span to Markdown line information.
-struct MdLineInfo {
-    range: (usize, usize),
-    exact: Option<usize>,
+    /// Byte range of the Markdown block this visual line belongs to.
+    /// None for theme-derived text (e.g., list markers from set rules).
+    pub md_block_range: Option<Range<usize>>,
+    /// Precise Markdown byte offset of the text at this visual line's position.
+    /// Always Some when md_block_range is Some.
+    pub md_offset: Option<usize>,
 }
 
 /// Extract visual line positions from the frame tree (without source mapping).
 ///
 /// Compatibility wrapper — delegates to `extract_visual_lines_with_map` with
-/// no source mapping, producing `md_line_range = None` for all lines.
+/// no source mapping, producing `md_block_range = None` for all lines.
 pub fn extract_visual_lines(document: &PagedDocument, ppi: f32) -> Vec<VisualLine> {
     extract_visual_lines_with_map(document, ppi, None)
-}
-
-/// Parameters for source mapping during visual line extraction.
-pub struct SourceMappingParams<'a> {
-    pub source: &'a Source,
-    pub content_offset: usize,
-    pub source_map: &'a SourceMap,
-    pub md_source: &'a str,
 }
 
 /// Extract visual line positions from the frame tree, optionally with source mapping.
 ///
 /// Walks all TextItem nodes, collects their absolute Y coordinates and (optionally)
 /// representative Span from the first glyph. Deduplicates with tolerance, then
-/// resolves each line's Span through the source mapping chain to get the
-/// corresponding Markdown source line range.
+/// resolves each line's Span through the `BoundIndex` to get the corresponding
+/// Markdown byte position and block range.
 pub fn extract_visual_lines_with_map(
     document: &PagedDocument,
     ppi: f32,
-    mapping: Option<&SourceMappingParams>,
+    mapping: Option<&BoundIndex<'_>>,
 ) -> Vec<VisualLine> {
     let start = Instant::now();
     if document.pages.is_empty() {
@@ -113,17 +100,17 @@ pub fn extract_visual_lines_with_map(
             // same visual line. The order of spans depends on frame tree traversal
             // and is not guaranteed, so we try all candidates rather than relying
             // on position.
-            let info = mapping.and_then(|m| {
+            let pos = mapping.and_then(|bi| {
                 spans
                     .iter()
                     .filter(|s| !s.is_detached())
-                    .find_map(|&s| resolve_md_line_range(s, m))
+                    .find_map(|&s| bi.resolve_span(s))
             });
             VisualLine {
                 y_pt,
                 y_px: pt_to_px(y_pt, ppi),
-                md_line_range: info.as_ref().map(|i| i.range),
-                md_line_exact: info.as_ref().and_then(|i| i.exact),
+                md_block_range: pos.as_ref().map(|p| p.block_range.clone()),
+                md_offset: pos.as_ref().map(|p| p.offset),
             }
         })
         .collect();
@@ -133,8 +120,8 @@ pub fn extract_visual_lines_with_map(
         start.elapsed().as_secs_f64() * 1000.0,
         lines.len()
     );
-    if let Some(m) = mapping {
-        let mapped = lines.iter().filter(|l| l.md_line_range.is_some()).count();
+    if let Some(bi) = mapping {
+        let mapped = lines.iter().filter(|l| l.md_block_range.is_some()).count();
         debug!(
             "extract_visual_lines: {} lines ({} mapped, {} unmapped)",
             lines.len(),
@@ -142,9 +129,11 @@ pub fn extract_visual_lines_with_map(
             lines.len() - mapped
         );
         for (i, vl) in lines.iter().enumerate() {
-            if let Some((s, e)) = vl.md_line_range {
-                let preview: String = m
-                    .md_source
+            if let Some(ref r) = vl.md_block_range {
+                let s = byte_offset_to_line(bi.md_source(), r.start);
+                let e = byte_offset_to_line(bi.md_source(), r.end.saturating_sub(1).max(r.start));
+                let preview: String = bi
+                    .md_source()
                     .lines()
                     .nth(s - 1)
                     .unwrap_or("")
@@ -161,127 +150,8 @@ pub fn extract_visual_lines_with_map(
     lines
 }
 
-/// Resolve a Span to a Markdown line range via the source mapping chain.
-///
-/// Chain: Span → Source::range() → subtract content_offset → SourceMap lookup → md line range
-///
-/// Also computes `exact`: the precise 1-based MD line corresponding to this
-/// span position within the block. For code blocks, uses a fence-aware offset
-/// (+1 to skip opening fence). For other blocks, uses newline counting when
-/// Typst and MD blocks have matching newline counts (safety check). Blocks that
-/// fail the check (tables, nested blockquotes) get `exact = None`.
-fn resolve_md_line_range(span: Span, params: &SourceMappingParams) -> Option<MdLineInfo> {
-    if span.is_detached() {
-        trace!("  span detached, skipping");
-        return None;
-    }
-
-    // Resolve Span to byte range in main.typ
-    let main_range = params.source.range(span)?;
-
-    // Convert to content_text offset
-    if main_range.start < params.content_offset {
-        trace!(
-            "  span in prefix (main_range={:?}, content_offset={})",
-            main_range, params.content_offset
-        );
-        return None; // Within theme/prefix, not content
-    }
-    let content_offset = main_range.start - params.content_offset;
-
-    // Look up in SourceMap
-    let block = params.source_map.find_by_typst_offset(content_offset)?;
-
-    // Convert md_byte_range to line numbers (1-based)
-    let start_line = byte_offset_to_line(params.md_source, block.md_byte_range.start);
-    let end_line = byte_offset_to_line(
-        params.md_source,
-        block
-            .md_byte_range
-            .end
-            .saturating_sub(1)
-            .max(block.md_byte_range.start),
-    );
-
-    // Compute exact line within the block using newline counting.
-    //
-    // For code blocks (fenced with "```"): skip the opening fence line (+1)
-    // and clamp to exclude the closing fence.
-    //
-    // For other blocks: use the same newline counting, but only when the Typst
-    // and MD block texts have matching newline counts (1:1 line correspondence).
-    // This works for lists, paragraphs, headings. Tables and nested blockquotes
-    // have different line structures and safely fall back to None.
-    // See docs/2026-02-28-design-line-exact.md for detailed analysis.
-    let md_block_text = &params.md_source[block.md_byte_range.clone()];
-    let typst_local_offset = content_offset - block.typst_byte_range.start;
-    let typst_block_text = params.source.text().get(
-        (block.typst_byte_range.start + params.content_offset)
-            ..(block.typst_byte_range.end + params.content_offset),
-    );
-
-    let exact = if let Some(typst_text) = typst_block_text {
-        let is_code_block = md_block_text.starts_with("```");
-        let clamped = typst_local_offset.min(typst_text.len());
-        let newlines_before = typst_text[..clamped]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count();
-
-        if is_code_block {
-            // start_line is the "```" fence line; content starts at start_line + 1
-            let exact_line = start_line + 1 + newlines_before;
-            // Clamp to not exceed end_line - 1 (closing fence)
-            let exact_line = exact_line
-                .min(end_line.saturating_sub(1))
-                .max(start_line + 1);
-            trace!(
-                "  code block exact: typst_local_off={}, newlines={}, exact_line={}",
-                typst_local_offset, newlines_before, exact_line
-            );
-            Some(exact_line)
-        } else {
-            // Safety check: only compute exact when line structure is preserved.
-            let md_newlines = md_block_text.bytes().filter(|&b| b == b'\n').count();
-            let typst_newlines = typst_text.bytes().filter(|&b| b == b'\n').count();
-            if md_newlines == typst_newlines {
-                let exact_line = (start_line + newlines_before).clamp(start_line, end_line);
-                trace!(
-                    "  generic exact: typst_local_off={}, newlines={}, exact_line={} (md_nl={}, typst_nl={})",
-                    typst_local_offset, newlines_before, exact_line, md_newlines, typst_newlines
-                );
-                Some(exact_line)
-            } else {
-                trace!(
-                    "  newline mismatch: md_nl={}, typst_nl={} — skipping exact",
-                    md_newlines, typst_newlines
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    trace!(
-        "  span resolved: main={:?} → content_off={} → typst_block={:?} → md_block={:?} → lines {}-{} exact={:?}",
-        main_range,
-        content_offset,
-        block.typst_byte_range,
-        block.md_byte_range,
-        start_line,
-        end_line,
-        exact
-    );
-
-    Some(MdLineInfo {
-        range: (start_line, end_line),
-        exact,
-    })
-}
-
 /// Convert a byte offset within a string to a 1-based line number.
-fn byte_offset_to_line(source: &str, offset: usize) -> usize {
+pub fn byte_offset_to_line(source: &str, offset: usize) -> usize {
     let offset = offset.min(source.len());
     source[..offset].bytes().filter(|&b| b == b'\n').count() + 1
 }
@@ -480,8 +350,8 @@ fn flush_pending_texts(pending: &mut Vec<(f64, Span)>, out: &mut Vec<(f64, Vec<S
 
 /// Extract Markdown source lines corresponding to a range of visual lines.
 ///
-/// Collects `md_line_range` from each visual line in `[start_vl..=end_vl]`,
-/// takes the union of all ranges, and returns the corresponding Markdown lines.
+/// Collects `md_block_range` from each visual line in `[start_vl..=end_vl]`,
+/// takes the union of all byte ranges, and returns the corresponding Markdown text.
 pub fn yank_lines(
     md_source: &str,
     visual_lines: &[VisualLine],
@@ -493,15 +363,15 @@ pub fn yank_lines(
         return String::new();
     }
 
-    // Collect all md_line_range values from the selected visual lines
-    let mut min_line = usize::MAX;
-    let mut max_line = 0usize;
+    // Collect union of md_block_range byte offsets from the selected visual lines
+    let mut min_offset = usize::MAX;
+    let mut max_offset = 0usize;
     let mut found = false;
 
     for vl in &visual_lines[start_vl..=end_vl] {
-        if let Some((start, end)) = vl.md_line_range {
-            min_line = min_line.min(start);
-            max_line = max_line.max(end);
+        if let Some(ref r) = vl.md_block_range {
+            min_offset = min_offset.min(r.start);
+            max_offset = max_offset.max(r.end);
             found = true;
         }
     }
@@ -510,38 +380,27 @@ pub fn yank_lines(
         return String::new();
     }
 
-    // Extract lines min_line..=max_line (1-based) from md_source
-    let lines: Vec<&str> = md_source.lines().collect();
-    let start_idx = min_line.saturating_sub(1); // Convert to 0-based
-    let end_idx = max_line.min(lines.len()); // 1-based end → exclusive 0-based
-
-    if start_idx >= lines.len() {
-        return String::new();
-    }
-
-    lines[start_idx..end_idx].join("\n")
+    let min_offset = min_offset.min(md_source.len());
+    let max_offset = max_offset.min(md_source.len());
+    md_source[min_offset..max_offset]
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 /// Extract the precise Markdown source line for a visual line.
 ///
-/// Returns the single line indicated by `md_line_exact` when available
-/// (code blocks, lists, paragraphs, headings — any block where Typst/MD
-/// line structure is 1:1). Falls back to block-level yank via `yank_lines`
-/// for blocks where per-line resolution is unsafe (tables, nested blockquotes).
+/// Uses `md_offset` to locate the exact line within the block.
+/// Falls back to block-level yank when no mapping is available.
 pub fn yank_exact(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> String {
     if vl_idx >= visual_lines.len() {
         return String::new();
     }
     let vl = &visual_lines[vl_idx];
-    if let Some(exact_line) = vl.md_line_exact {
-        // Return the single exact line (1-based)
-        md_source
-            .lines()
-            .nth(exact_line - 1)
-            .unwrap_or("")
-            .to_string()
+    if let Some(offset) = vl.md_offset {
+        let line = byte_offset_to_line(md_source, offset);
+        md_source.lines().nth(line - 1).unwrap_or("").to_string()
     } else {
-        // Fallback to block yank
+        // Fallback to block yank (theme-derived lines)
         yank_lines(md_source, visual_lines, vl_idx, vl_idx)
     }
 }
@@ -555,16 +414,18 @@ pub struct UrlEntry {
 
 /// Extract URLs from the Markdown source lines corresponding to a visual line.
 ///
-/// Uses `md_line_range` to find the relevant Markdown source lines, then parses
+/// Uses `md_block_range` to find the relevant Markdown source lines, then parses
 /// them with pulldown-cmark to extract link destination URLs and link text.
 pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> Vec<UrlEntry> {
     if vl_idx >= visual_lines.len() {
         return Vec::new();
     }
     let vl = &visual_lines[vl_idx];
-    let Some((start, end)) = vl.md_line_range else {
+    let Some(ref r) = vl.md_block_range else {
         return Vec::new();
     };
+    let start = byte_offset_to_line(md_source, r.start);
+    let end = byte_offset_to_line(md_source, r.end.saturating_sub(1).max(r.start));
 
     extract_urls_from_lines(md_source, start, end)
 }
@@ -1354,19 +1215,33 @@ mod tests {
         assert_eq!(new.len(), 0);
     }
 
-    fn make_vl(md_line_range: Option<(usize, usize)>) -> VisualLine {
+    fn make_vl(md: &str, line_range: Option<(usize, usize)>) -> VisualLine {
+        let md_block_range = line_range.map(|(start_line, end_line)| {
+            let start_byte: usize = md
+                .split('\n')
+                .take(start_line - 1)
+                .map(|l| l.len() + 1)
+                .sum();
+            let end_byte: usize = md
+                .split('\n')
+                .take(end_line)
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                .min(md.len());
+            start_byte..end_byte
+        });
         VisualLine {
             y_pt: 0.0,
             y_px: 0,
-            md_line_range,
-            md_line_exact: None,
+            md_block_range,
+            md_offset: None,
         }
     }
 
     #[test]
     fn test_extract_urls_single_link() {
         let md = "Check [Rust](https://rust.invalid/) for details.\n";
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl(md, Some((1, 1)))];
         let urls = extract_urls(md, &vls, 0);
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].url, "https://rust.invalid/");
@@ -1376,7 +1251,7 @@ mod tests {
     #[test]
     fn test_extract_urls_multiple_links() {
         let md = "See [A](https://a.invalid/) and [B](https://b.invalid/).\n";
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl(md, Some((1, 1)))];
         let urls = extract_urls(md, &vls, 0);
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].url, "https://a.invalid/");
@@ -1388,7 +1263,7 @@ mod tests {
     #[test]
     fn test_extract_urls_no_links() {
         let md = "Just plain text, no links here.\n";
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl(md, Some((1, 1)))];
         let urls = extract_urls(md, &vls, 0);
         assert!(urls.is_empty());
     }
@@ -1396,7 +1271,7 @@ mod tests {
     #[test]
     fn test_extract_urls_no_source_mapping() {
         let md = "Has [link](https://example.invalid/) but no mapping.\n";
-        let vls = vec![make_vl(None)];
+        let vls = vec![make_vl(md, None)];
         let urls = extract_urls(md, &vls, 0);
         assert!(urls.is_empty());
     }
@@ -1404,7 +1279,7 @@ mod tests {
     #[test]
     fn test_extract_urls_out_of_bounds() {
         let md = "Some text\n";
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl(md, Some((1, 1)))];
         let urls = extract_urls(md, &vls, 5);
         assert!(urls.is_empty());
     }
@@ -1412,7 +1287,7 @@ mod tests {
     #[test]
     fn test_extract_urls_multiline_block() {
         let md = "Line 1\n[link1](https://one.invalid/)\n[link2](https://two.invalid/)\nLine 4\n";
-        let vls = vec![make_vl(Some((2, 3)))];
+        let vls = vec![make_vl(md, Some((2, 3)))];
         let urls = extract_urls(md, &vls, 0);
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].url, "https://one.invalid/");

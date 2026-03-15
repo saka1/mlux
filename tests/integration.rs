@@ -2,11 +2,11 @@ use std::fs;
 
 use mlux::image::LoadedImages;
 use mlux::pipeline::{
-    ContentIndex, FontCache, MluxWorld, SpanKind, compile_document, markdown_to_typst,
+    BoundIndex, ContentIndex, FontCache, MluxWorld, SpanKind, compile_document, markdown_to_typst,
     render_frame_to_png,
 };
 use mlux::tile::{
-    SourceMappingParams, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
+    byte_offset_to_line, extract_visual_lines_with_map, split_frame, yank_exact, yank_lines,
 };
 
 fn load_theme() -> &'static str {
@@ -124,11 +124,11 @@ const WIDTH_PT: f64 = 400.0;
 
 /// Run the full source mapping pipeline for a given Markdown string.
 ///
-/// Returns (visual_lines, md_source) for use in yank_lines.
+/// Returns visual_lines with byte-based source mapping via BoundIndex.
 fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
-    let (content, source_map, _content_index) = markdown_to_typst(md, None);
+    let (content, content_index) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
     let world = MluxWorld::new(
         theme,
@@ -140,13 +140,13 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::tile::VisualLine> {
     );
     let document = compile_document(&world).expect("compilation should succeed");
 
-    let params = SourceMappingParams {
-        source: world.main_source(),
-        content_offset: world.content_offset(),
-        source_map: &source_map,
-        md_source: md,
-    };
-    extract_visual_lines_with_map(&document, PPI, Some(&params))
+    let bound_index = BoundIndex::new(
+        &content_index,
+        world.main_source(),
+        world.content_offset(),
+        md,
+    );
+    extract_visual_lines_with_map(&document, PPI, Some(&bound_index))
 }
 
 #[test]
@@ -198,7 +198,9 @@ fn test_source_map_code_block() {
     let code_vl = vlines
         .iter()
         .position(|vl| {
-            vl.md_line_range.is_some_and(|(s, _)| s >= 3) // code block starts at line 3
+            vl.md_block_range
+                .as_ref()
+                .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3) // code block starts at line 3
         })
         .expect("should find a visual line for the code block");
     let yanked = yank_lines(md, &vlines, code_vl, code_vl);
@@ -293,14 +295,14 @@ fn test_source_map_full_document() {
     let yanked_first = yank_lines(&md, &vlines, 0, 0);
     assert_eq!(yanked_first, "# Rustにおけるエラーハンドリング");
 
-    // Every visual line with md_line_range should produce valid yank output
+    // Every visual line with md_block_range should produce valid yank output
     for (i, vl) in vlines.iter().enumerate() {
-        if vl.md_line_range.is_some() {
+        if vl.md_block_range.is_some() {
             let yanked = yank_lines(&md, &vlines, i, i);
             assert!(
                 !yanked.is_empty(),
-                "visual line {i} has md_line_range {:?} but yank produced empty string",
-                vl.md_line_range
+                "visual line {i} has md_block_range {:?} but yank produced empty string",
+                vl.md_block_range
             );
         }
     }
@@ -330,11 +332,11 @@ fn test_visual_line_count() {
         vlines.len()
     );
 
-    // Each visual line should have an md_line_range (no theme-only lines expected)
+    // Each visual line should have an md_block_range (no theme-only lines expected)
     for (i, vl) in vlines.iter().enumerate() {
         assert!(
-            vl.md_line_range.is_some(),
-            "visual line {i} should have md_line_range, y_pt={:.1}",
+            vl.md_block_range.is_some(),
+            "visual line {i} should have md_block_range, y_pt={:.1}",
             vl.y_pt
         );
     }
@@ -345,11 +347,15 @@ fn test_yank_exact_code_block_line() {
     let md = "# H\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n";
     let vlines = source_map_pipeline(md);
 
-    // Find visual lines inside the code block (md_line_range starting at line 3+)
+    // Find visual lines inside the code block (md_block_range starting at line 3+)
     let code_vls: Vec<usize> = vlines
         .iter()
         .enumerate()
-        .filter(|(_, vl)| vl.md_line_range.is_some_and(|(s, _)| s >= 3))
+        .filter(|(_, vl)| {
+            vl.md_block_range
+                .as_ref()
+                .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3)
+        })
         .map(|(i, _)| i)
         .collect();
     assert!(
@@ -357,11 +363,11 @@ fn test_yank_exact_code_block_line() {
         "should find visual lines for code block"
     );
 
-    // Each code block visual line should have md_line_exact set
+    // Each code block visual line should have md_offset set
     for &idx in &code_vls {
         assert!(
-            vlines[idx].md_line_exact.is_some(),
-            "code block visual line {idx} should have md_line_exact, got None"
+            vlines[idx].md_offset.is_some(),
+            "code block visual line {idx} should have md_offset, got None"
         );
     }
 
@@ -374,35 +380,39 @@ fn test_yank_exact_code_block_line() {
             exact
         );
         // The exact line should be one of the code block content lines
-        let exact_line = vlines[idx].md_line_exact.unwrap();
-        let expected = md.lines().nth(exact_line - 1).unwrap();
+        let offset = vlines[idx].md_offset.unwrap();
+        let line = byte_offset_to_line(md, offset);
+        let expected = md.lines().nth(line - 1).unwrap();
         assert_eq!(
             exact, expected,
-            "yank_exact vl {idx} should match md line {exact_line}"
+            "yank_exact vl {idx} should match md line {line}"
         );
     }
 }
 
 #[test]
 fn test_yank_exact_single_line_paragraph() {
-    // Paragraphs that follow other blocks have a Typst separator (\n) prepended,
-    // causing a newline mismatch → md_line_exact = None → falls back to yank_lines.
-    // This is correct: the safety check prevents false exactness.
+    // yank_exact uses md_offset to get the precise line; for a single-line paragraph
+    // this should equal yank_lines (same block content).
     let md = "# H\n\nA simple paragraph.\n";
     let vlines = source_map_pipeline(md);
 
     // Find the paragraph visual line (not heading)
     let para_idx = vlines
         .iter()
-        .position(|vl| vl.md_line_range.is_some_and(|(s, _)| s >= 3))
+        .position(|vl| {
+            vl.md_block_range
+                .as_ref()
+                .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3)
+        })
         .expect("should find paragraph visual line");
 
-    // yank_exact should fall back to block yank (same result)
+    // For a single-line paragraph, yank_exact and yank_lines should agree
     let exact = yank_exact(md, &vlines, para_idx);
     let block = yank_lines(md, &vlines, para_idx, para_idx);
     assert_eq!(
         exact, block,
-        "yank_exact should fall back to yank_lines for paragraph after other blocks"
+        "yank_exact and yank_lines should agree for single-line paragraph"
     );
 }
 
@@ -411,11 +421,17 @@ fn test_yank_exact_vs_block_for_code() {
     let md = "# H\n\n```\nline1\nline2\nline3\n```\n";
     let vlines = source_map_pipeline(md);
 
-    // Find a code block visual line (md_line_range starts at line 3+ for the code block)
+    // Find a code block visual line (md_block_range starts at line 3+ for the code block)
     let code_vl = vlines
         .iter()
-        .position(|vl| vl.md_line_exact.is_some() && vl.md_line_range.is_some_and(|(s, _)| s >= 3))
-        .expect("should find a code block visual line with md_line_exact");
+        .position(|vl| {
+            vl.md_offset.is_some()
+                && vl
+                    .md_block_range
+                    .as_ref()
+                    .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3)
+        })
+        .expect("should find a code block visual line with md_offset");
 
     let exact = yank_exact(md, &vlines, code_vl);
     let block = yank_lines(md, &vlines, code_vl, code_vl);
@@ -446,11 +462,11 @@ fn test_yank_exact_list_items() {
     let md = "- Item 1\n- Item 2\n- Item 3\n";
     let vlines = source_map_pipeline(md);
 
-    // Each list item should have md_line_exact set
+    // Each list item should have md_offset set
     let list_vls: Vec<usize> = vlines
         .iter()
         .enumerate()
-        .filter(|(_, vl)| vl.md_line_range.is_some())
+        .filter(|(_, vl)| vl.md_block_range.is_some())
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -461,8 +477,8 @@ fn test_yank_exact_list_items() {
 
     for &idx in &list_vls {
         assert!(
-            vlines[idx].md_line_exact.is_some(),
-            "list item vl {idx} should have md_line_exact"
+            vlines[idx].md_offset.is_some(),
+            "list item vl {idx} should have md_offset"
         );
     }
 
@@ -484,7 +500,7 @@ fn test_yank_exact_ordered_list_items() {
     let list_vls: Vec<usize> = vlines
         .iter()
         .enumerate()
-        .filter(|(_, vl)| vl.md_line_range.is_some())
+        .filter(|(_, vl)| vl.md_block_range.is_some())
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -500,15 +516,21 @@ fn test_yank_exact_ordered_list_items() {
 
 #[test]
 fn test_yank_exact_table_fallback() {
+    // In the new BoundIndex system, md_offset is always Some when md_block_range is Some.
+    // For tables, md_offset falls back to block.md_byte_range.start (first byte of table).
+    // yank_exact returns the first line of the table block.
     let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
     let vlines = source_map_pipeline(md);
 
-    // Tables have mismatched newline counts — should fall back to None
     for (i, vl) in vlines.iter().enumerate() {
-        if vl.md_line_range.is_some() {
+        if vl.md_block_range.is_some() {
+            // md_offset is always set
+            assert!(vl.md_offset.is_some(), "table vl {i} should have md_offset");
+            // yank_exact returns the line at md_offset (first line of table)
+            let exact = yank_exact(md, &vlines, i);
             assert!(
-                vl.md_line_exact.is_none(),
-                "table vl {i} should NOT have md_line_exact (newline mismatch)"
+                !exact.is_empty(),
+                "yank_exact for table vl {i} should be non-empty"
             );
         }
     }
@@ -516,15 +538,24 @@ fn test_yank_exact_table_fallback() {
 
 #[test]
 fn test_yank_exact_blockquote_fallback() {
+    // In the new BoundIndex system, md_offset is always Some when md_block_range is Some.
+    // For blockquotes, md_offset falls back to block.md_byte_range.start.
+    // yank_exact returns the first line of the blockquote block.
     let md = "> Quote line 1\n> Quote line 2\n";
     let vlines = source_map_pipeline(md);
 
-    // Blockquotes have mismatched newline counts — should fall back to None
     for (i, vl) in vlines.iter().enumerate() {
-        if vl.md_line_range.is_some() {
+        if vl.md_block_range.is_some() {
+            // md_offset is always set
             assert!(
-                vl.md_line_exact.is_none(),
-                "blockquote vl {i} should NOT have md_line_exact (newline mismatch)"
+                vl.md_offset.is_some(),
+                "blockquote vl {i} should have md_offset"
+            );
+            // yank_exact returns the line at md_offset
+            let exact = yank_exact(md, &vlines, i);
+            assert!(
+                !exact.is_empty(),
+                "yank_exact for blockquote vl {i} should be non-empty"
             );
         }
     }
@@ -547,8 +578,8 @@ fn test_display_math_single_visual_line() {
         vlines.len()
     );
     assert!(
-        vlines[0].md_line_range.is_some(),
-        "display math visual line should have md_line_range"
+        vlines[0].md_block_range.is_some(),
+        "display math visual line should have md_block_range"
     );
 
     // Formula with sub/superscripts should also be 1 visual line
@@ -602,8 +633,8 @@ fn test_math_showcase_visual_line_count() {
     // Every visual line should have source mapping
     for (i, vl) in vlines.iter().enumerate() {
         assert!(
-            vl.md_line_range.is_some(),
-            "math showcase vl {i} should have md_line_range, y_pt={:.1}",
+            vl.md_block_range.is_some(),
+            "math showcase vl {i} should have md_block_range, y_pt={:.1}",
             vl.y_pt
         );
     }
@@ -614,11 +645,15 @@ fn test_code_block_lines_are_individual() {
     let md = "# H\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n";
     let vlines = source_map_pipeline(md);
 
-    // Filter to code block visual lines (md_line_range starting at line 3+)
+    // Filter to code block visual lines (md_block_range starting at line 3+)
     let code_vls: Vec<usize> = vlines
         .iter()
         .enumerate()
-        .filter(|(_, vl)| vl.md_line_range.is_some_and(|(s, _)| s >= 3))
+        .filter(|(_, vl)| {
+            vl.md_block_range
+                .as_ref()
+                .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3)
+        })
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
@@ -628,11 +663,11 @@ fn test_code_block_lines_are_individual() {
         code_vls.len()
     );
 
-    // Each should have md_line_exact for per-line yank
+    // Each should have md_offset for per-line yank
     for &idx in &code_vls {
         assert!(
-            vlines[idx].md_line_exact.is_some(),
-            "code block visual line {idx} should have md_line_exact"
+            vlines[idx].md_offset.is_some(),
+            "code block visual line {idx} should have md_offset"
         );
     }
 }
@@ -644,7 +679,7 @@ fn test_list_items_are_individual_visual_lines() {
 
     let list_vls: Vec<&mlux::tile::VisualLine> = vlines
         .iter()
-        .filter(|vl| vl.md_line_range.is_some())
+        .filter(|vl| vl.md_block_range.is_some())
         .collect();
     assert_eq!(
         list_vls.len(),
@@ -661,7 +696,7 @@ fn test_table_rows_are_individual_visual_lines() {
 
     let table_vls: Vec<&mlux::tile::VisualLine> = vlines
         .iter()
-        .filter(|vl| vl.md_line_range.is_some())
+        .filter(|vl| vl.md_block_range.is_some())
         .collect();
     // Header + 3 data rows = at least 4 visual lines
     assert!(
@@ -680,7 +715,7 @@ fn test_nested_blockquote_known_limitation() {
 
     let quote_vls: Vec<&mlux::tile::VisualLine> = vlines
         .iter()
-        .filter(|vl| vl.md_line_range.is_some())
+        .filter(|vl| vl.md_block_range.is_some())
         .collect();
     assert_eq!(
         quote_vls.len(),
@@ -700,7 +735,7 @@ fn test_heading_single_visual_line() {
         "single heading should produce 1 visual line, got {}",
         vlines.len()
     );
-    assert!(vlines[0].md_line_range.is_some());
+    assert!(vlines[0].md_block_range.is_some());
 }
 
 #[test]
@@ -799,7 +834,7 @@ fn test_image_renders() {
     );
 
     let loaded_set = image_files.key_set();
-    let (content, _source_map, _content_index) = markdown_to_typst(&markdown, Some(&loaded_set));
+    let (content, _content_index) = markdown_to_typst(&markdown, Some(&loaded_set));
 
     // Verify #image() is in the generated Typst
     assert!(
@@ -856,7 +891,7 @@ fn test_mermaid_diagram_renders() {
     let loaded_set = image_files.key_set();
 
     // Convert markdown to typst — mermaid block should become #image()
-    let (content, _source_map, _content_index) = markdown_to_typst(md, Some(&loaded_set));
+    let (content, _content_index) = markdown_to_typst(md, Some(&loaded_set));
     assert!(
         content.contains("#image(\"_diagram_"),
         "mermaid block should produce #image() call, got: {content}"
@@ -922,7 +957,7 @@ fn test_mermaid_fixture_renders() {
     }
     let loaded_set = image_files.key_set();
 
-    let (content, _source_map, _content_index) = markdown_to_typst(&markdown, Some(&loaded_set));
+    let (content, _content_index) = markdown_to_typst(&markdown, Some(&loaded_set));
 
     // All mermaid blocks should become #image() calls
     assert!(
@@ -969,7 +1004,7 @@ fn test_mermaid_fallback_without_render() {
     let md = "```mermaid\ngraph LR\n  A --> B\n```\n";
 
     // Without rendering diagrams, mermaid blocks should fall back to code fence
-    let (content, _source_map, _content_index) = markdown_to_typst(md, None);
+    let (content, _content_index) = markdown_to_typst(md, None);
     assert!(
         content.contains("```mermaid"),
         "without available images, mermaid should render as code fence, got: {content}"
@@ -1128,14 +1163,18 @@ fn test_code_block_no_lang_lines_are_individual() {
         .iter()
         .enumerate()
         .filter(|(_, vl)| {
-            vl.md_line_exact.is_some() && vl.md_line_range.is_some_and(|(s, _)| s >= 3)
+            vl.md_offset.is_some()
+                && vl
+                    .md_block_range
+                    .as_ref()
+                    .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3)
         })
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
         code_vls.len(),
         3,
-        "3-line no-language code block should produce 3 visual lines with md_line_exact, got {}",
+        "3-line no-language code block should produce 3 visual lines with md_offset, got {}",
         code_vls.len()
     );
 }
@@ -1149,14 +1188,18 @@ fn test_code_block_unrecognized_lang_lines_are_individual() {
         .iter()
         .enumerate()
         .filter(|(_, vl)| {
-            vl.md_line_exact.is_some() && vl.md_line_range.is_some_and(|(s, _)| s >= 3)
+            vl.md_offset.is_some()
+                && vl
+                    .md_block_range
+                    .as_ref()
+                    .is_some_and(|r| byte_offset_to_line(md, r.start) >= 3)
         })
         .map(|(i, _)| i)
         .collect();
     assert_eq!(
         code_vls.len(),
         2,
-        "2-line console code block should produce 2 visual lines with md_line_exact, got {}",
+        "2-line console code block should produce 2 visual lines with md_offset, got {}",
         code_vls.len()
     );
 }
@@ -1209,7 +1252,7 @@ fn assert_spans_sorted_no_overlap(ci: &ContentIndex) {
 #[test]
 fn test_content_index_plain_text() {
     let md = "Hello world";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1226,7 +1269,7 @@ fn test_content_index_plain_text() {
 #[test]
 fn test_content_index_plain_with_escape() {
     let md = "#hello $world";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
 
     // Each Text event from pulldown-cmark produces a Plain span.
@@ -1251,7 +1294,7 @@ fn test_content_index_plain_with_escape() {
 #[test]
 fn test_content_index_inline_code() {
     let md = "Use `Result<T>` type";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1273,7 +1316,7 @@ fn test_content_index_inline_code() {
 #[test]
 fn test_content_index_code_block() {
     let md = "```rust\nfn main() {}\nlet x = 1;\n```\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1299,7 +1342,7 @@ fn test_content_index_code_block() {
 #[test]
 fn test_content_index_inline_math() {
     let md = "The formula $E=mc^2$ is famous.";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1320,7 +1363,7 @@ fn test_content_index_inline_math() {
 #[test]
 fn test_content_index_display_math() {
     let md = "$$\nE = mc^2\n$$\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1340,7 +1383,7 @@ fn test_content_index_display_math() {
 #[test]
 fn test_content_index_soft_break() {
     let md = "line1\nline2\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1355,7 +1398,7 @@ fn test_content_index_soft_break() {
 #[test]
 fn test_content_index_hard_break() {
     let md = "line1  \nline2\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1375,7 +1418,7 @@ fn test_content_index_hard_break() {
 #[test]
 fn test_content_index_image_opaque() {
     let md = "![alt](photo.png)\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1395,7 +1438,7 @@ fn test_content_index_image_opaque() {
 #[test]
 fn test_content_index_mixed_document() {
     let md = "# Title\n\nHello *world* and `code`.\n\n$$\nx^2\n$$\n\n```rust\nfn f() {}\n```\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1409,7 +1452,7 @@ fn test_content_index_mixed_document() {
 #[test]
 fn test_content_index_japanese_text() {
     let md = "日本語のテスト。句読点「、」も正しく処理される。\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1435,7 +1478,7 @@ fn test_content_index_japanese_text() {
 fn test_content_index_table_no_text_spans() {
     // Table content goes through cell_buf; TextSpans should NOT be recorded.
     let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
-    let (typst, _, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
@@ -1452,30 +1495,30 @@ fn test_content_index_table_no_text_spans() {
 }
 
 #[test]
-fn test_content_index_block_spans_match_source_map() {
+fn test_content_index_block_spans_consistent() {
     let md = "# Heading\n\nParagraph one.\n\nParagraph two.\n";
-    let (typst, source_map, ci) = markdown_to_typst(md, None);
+    let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
 
-    // block_spans() shares the same BlockMapping type as SourceMap
-    assert_eq!(
-        ci.block_spans().len(),
-        source_map.blocks.len(),
-        "block_spans count should match source_map blocks count"
-    );
-    for (i, (bs, bm)) in ci
-        .block_spans()
-        .iter()
-        .zip(source_map.blocks.iter())
-        .enumerate()
-    {
-        assert_eq!(
-            bs.typst_byte_range, bm.typst_byte_range,
-            "block {i} typst_byte_range mismatch"
+    let blocks = ci.block_spans();
+    // Should have 3 blocks: heading + 2 paragraphs
+    assert_eq!(blocks.len(), 3, "should have 3 block spans");
+
+    for (i, bs) in blocks.iter().enumerate() {
+        assert!(
+            bs.typst_byte_range.end <= typst.len(),
+            "block {i} typst_byte_range {:?} out of bounds",
+            bs.typst_byte_range
         );
-        assert_eq!(
-            bs.md_byte_range, bm.md_byte_range,
-            "block {i} md_byte_range mismatch"
+        assert!(
+            bs.md_byte_range.end <= md.len(),
+            "block {i} md_byte_range {:?} out of bounds",
+            bs.md_byte_range
+        );
+        let md_text = &md[bs.md_byte_range.clone()];
+        assert!(
+            !md_text.is_empty(),
+            "block {i} should have non-empty md text"
         );
     }
 }
@@ -1485,7 +1528,7 @@ fn test_content_index_block_spans_match_source_map() {
 #[test]
 fn test_content_index_md_to_main_ranges_e2e() {
     let md = "Hello world. Search for hello in this document.\n";
-    let (content, _, ci) = markdown_to_typst(md, None);
+    let (content, ci) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
     let theme = load_theme();
     let world = MluxWorld::new(
@@ -1535,7 +1578,7 @@ fn test_content_index_md_to_main_ranges_e2e() {
 #[test]
 fn test_content_index_md_to_main_ranges_with_escapes() {
     let md = "Price is $100 today.\n";
-    let (content, _, ci) = markdown_to_typst(md, None);
+    let (content, ci) = markdown_to_typst(md, None);
     let font_cache = FontCache::new();
     let theme = load_theme();
     let world = MluxWorld::new(

@@ -11,7 +11,7 @@ use super::effect::ExitReason;
 use super::input::TocAction;
 use super::layout::{Layout, visual_line_offset};
 use super::{Effect, ViewerMode};
-use crate::tile::VisualLine;
+use crate::tile::{VisualLine, byte_offset_to_line};
 
 /// A single heading entry in the TOC.
 pub(super) struct TocEntry {
@@ -71,7 +71,7 @@ pub(super) fn collect_headings(markdown: &str, visual_lines: &[VisualLine]) -> V
         }
 
         let md_line = line_idx + 1; // 1-based
-        if let Some(vl_idx) = find_visual_line(visual_lines, md_line) {
+        if let Some(vl_idx) = find_visual_line(visual_lines, markdown, md_line) {
             entries.push(TocEntry {
                 level: hashes as u8,
                 text,
@@ -84,10 +84,13 @@ pub(super) fn collect_headings(markdown: &str, visual_lines: &[VisualLine]) -> V
 }
 
 /// Find the visual line index that contains the given 1-based markdown line.
-fn find_visual_line(visual_lines: &[VisualLine], md_line: usize) -> Option<usize> {
+fn find_visual_line(visual_lines: &[VisualLine], md_source: &str, md_line: usize) -> Option<usize> {
     visual_lines.iter().position(|vl| {
-        vl.md_line_range
-            .is_some_and(|(s, e)| md_line >= s && md_line <= e)
+        vl.md_block_range.as_ref().is_some_and(|r| {
+            let s = byte_offset_to_line(md_source, r.start);
+            let e = byte_offset_to_line(md_source, r.end.saturating_sub(1).max(r.start));
+            md_line >= s && md_line <= e
+        })
     })
 }
 
@@ -209,12 +212,26 @@ pub(super) fn handle(
 mod tests {
     use super::*;
 
-    fn make_vl(md_line_range: Option<(usize, usize)>) -> VisualLine {
+    fn make_vl(md: &str, line_range: Option<(usize, usize)>) -> VisualLine {
+        let md_block_range = line_range.map(|(start_line, end_line)| {
+            let start_byte: usize = md
+                .split('\n')
+                .take(start_line - 1)
+                .map(|l| l.len() + 1)
+                .sum();
+            let end_byte: usize = md
+                .split('\n')
+                .take(end_line)
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                .min(md.len());
+            start_byte..end_byte
+        });
         VisualLine {
             y_pt: 0.0,
             y_px: 0,
-            md_line_range,
-            md_line_exact: None,
+            md_block_range,
+            md_offset: None,
         }
     }
 
@@ -222,10 +239,10 @@ mod tests {
     fn collect_headings_basic() {
         let md = "# Title\n\nSome text\n\n## Section 1\n\n### Subsection\n";
         let vls = vec![
-            make_vl(Some((1, 1))),
-            make_vl(Some((3, 3))),
-            make_vl(Some((5, 5))),
-            make_vl(Some((7, 7))),
+            make_vl(md, Some((1, 1))),
+            make_vl(md, Some((3, 3))),
+            make_vl(md, Some((5, 5))),
+            make_vl(md, Some((7, 7))),
         ];
         let entries = collect_headings(md, &vls);
         assert_eq!(entries.len(), 3);
@@ -240,7 +257,7 @@ mod tests {
     #[test]
     fn collect_headings_empty_document() {
         let md = "No headings here.\nJust text.\n";
-        let vls = vec![make_vl(Some((1, 1))), make_vl(Some((2, 2)))];
+        let vls = vec![make_vl(md, Some((1, 1))), make_vl(md, Some((2, 2)))];
         let entries = collect_headings(md, &vls);
         assert!(entries.is_empty());
     }
@@ -249,9 +266,9 @@ mod tests {
     fn collect_headings_ignores_code_blocks() {
         let md = "# Real heading\n\n```\n# Not a heading\n```\n\n## Also real\n";
         let vls = vec![
-            make_vl(Some((1, 1))),
-            make_vl(Some((3, 5))),
-            make_vl(Some((7, 7))),
+            make_vl(md, Some((1, 1))),
+            make_vl(md, Some((3, 5))),
+            make_vl(md, Some((7, 7))),
         ];
         let entries = collect_headings(md, &vls);
         assert_eq!(entries.len(), 2);
@@ -262,7 +279,7 @@ mod tests {
     #[test]
     fn collect_headings_all_levels() {
         let md = "# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n####### Not a heading\n";
-        let vls: Vec<_> = (1..=7).map(|i| make_vl(Some((i, i)))).collect();
+        let vls: Vec<_> = (1..=7).map(|i| make_vl(md, Some((i, i)))).collect();
         let entries = collect_headings(md, &vls);
         assert_eq!(entries.len(), 6);
         for (i, entry) in entries.iter().enumerate() {
@@ -288,7 +305,7 @@ mod tests {
         ];
         let mut state = TocState::new(entries);
         assert_eq!(state.selected, 0);
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl("", None)];
         let _ = handle(TocAction::SelectNext, &mut state, &vls, 20, 1000);
         assert_eq!(state.selected, 1);
         // Clamp at end
@@ -314,7 +331,7 @@ mod tests {
         ];
         let mut state = TocState::new(entries);
         state.selected = 1;
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl("", None)];
         let _ = handle(TocAction::SelectPrev, &mut state, &vls, 20, 1000);
         assert_eq!(state.selected, 0);
         // Clamp at 0
@@ -341,10 +358,10 @@ mod tests {
         let mut state = TocState::new(entries);
         state.selected = 1;
         let vls = vec![
-            make_vl(Some((1, 1))),
-            make_vl(Some((2, 2))),
-            make_vl(Some((3, 4))),
-            make_vl(Some((5, 5))),
+            make_vl("", None),
+            make_vl("", None),
+            make_vl("", None),
+            make_vl("", None),
         ];
         let effects = handle(TocAction::Confirm, &mut state, &vls, 20, 1000);
         assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
@@ -364,7 +381,7 @@ mod tests {
             visual_line_idx: 0,
         }];
         let mut state = TocState::new(entries);
-        let vls = vec![make_vl(Some((1, 1)))];
+        let vls = vec![make_vl("", None)];
         let effects = handle(TocAction::Cancel, &mut state, &vls, 20, 1000);
         assert!(
             effects

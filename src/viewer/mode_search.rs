@@ -161,11 +161,12 @@ fn build_highlight_ranges(
     (target_ranges, per_match_ranges)
 }
 
-/// Find the visual line index corresponding to a 1-based Markdown line number.
-fn find_visual_line(visual_lines: &[VisualLine], md_line: usize) -> Option<usize> {
+/// Find the visual line index containing the given Markdown byte offset.
+fn find_visual_line(visual_lines: &[VisualLine], md_byte_offset: usize) -> Option<usize> {
     visual_lines.iter().position(|vl| {
-        vl.md_line_range
-            .is_some_and(|(s, e)| md_line >= s && md_line <= e)
+        vl.md_block_range
+            .as_ref()
+            .is_some_and(|r| r.contains(&md_byte_offset))
     })
 }
 
@@ -192,12 +193,17 @@ pub(super) fn grep_markdown(
     };
 
     let mut matches = Vec::new();
+    let mut line_byte_offset = 0usize;
 
-    for (line_idx, line_text) in markdown.lines().enumerate() {
+    // Split on '\n' rather than using lines() so that line_byte_offset tracks
+    // the exact byte position in the original string (matching md_block_range).
+    // Trailing '\r' (CRLF) is stripped only for regex matching and display.
+    for (line_idx, raw_chunk) in markdown.split('\n').enumerate() {
+        let line_text = raw_chunk.trim_end_matches('\r');
         let md_line = line_idx + 1; // 1-based
 
         if let Some(m) = re.find(line_text)
-            && let Some(vl_idx) = find_visual_line(visual_lines, md_line)
+            && let Some(vl_idx) = find_visual_line(visual_lines, line_byte_offset + m.start())
         {
             matches.push(SearchMatch {
                 md_line,
@@ -207,6 +213,8 @@ pub(super) fn grep_markdown(
                 col_end: m.end(),
             });
         }
+
+        line_byte_offset += raw_chunk.len() + 1; // +1 for the '\n' we split on
     }
 
     (matches, true)
@@ -424,14 +432,20 @@ mod tests {
         crate::pipeline::ContentIndex::new(vec![], vec![])
     }
 
-    /// Helper: build visual_lines where line N maps to md_line_range (N, N).
-    fn make_visual_lines(n: usize) -> Vec<VisualLine> {
-        (1..=n)
-            .map(|i| VisualLine {
-                y_pt: 0.0,
-                y_px: 0,
-                md_line_range: Some((i, i)),
-                md_line_exact: None,
+    /// Helper: build visual_lines from a markdown string, one VL per line.
+    fn make_visual_lines(md: &str) -> Vec<VisualLine> {
+        let mut byte_offset = 0usize;
+        md.lines()
+            .map(|line| {
+                let start = byte_offset;
+                byte_offset += line.len() + 1; // +1 for '\n'
+                let end = byte_offset.min(md.len());
+                VisualLine {
+                    y_pt: 0.0,
+                    y_px: 0,
+                    md_block_range: Some(start..end),
+                    md_offset: None,
+                }
             })
             .collect()
     }
@@ -439,7 +453,7 @@ mod tests {
     #[test]
     fn regex_heading_pattern() {
         let md = "# Title\nsome text\n## Subtitle\nmore text";
-        let vl = make_visual_lines(4);
+        let vl = make_visual_lines(md);
         let (matches, valid) = grep_markdown("^#", md, &vl);
         assert!(valid);
         assert_eq!(matches.len(), 2);
@@ -450,7 +464,7 @@ mod tests {
     #[test]
     fn smartcase_all_lower_is_insensitive() {
         let md = "Hello World\nhello world\nHELLO";
-        let vl = make_visual_lines(3);
+        let vl = make_visual_lines(md);
         let (matches, valid) = grep_markdown("hello", md, &vl);
         assert!(valid);
         assert_eq!(matches.len(), 3);
@@ -459,7 +473,7 @@ mod tests {
     #[test]
     fn smartcase_upper_is_sensitive() {
         let md = "Hello World\nhello world\nHELLO";
-        let vl = make_visual_lines(3);
+        let vl = make_visual_lines(md);
         let (matches, valid) = grep_markdown("Hello", md, &vl);
         assert!(valid);
         assert_eq!(matches.len(), 1);
@@ -469,7 +483,7 @@ mod tests {
     #[test]
     fn invalid_pattern_returns_empty() {
         let md = "some [text] here";
-        let vl = make_visual_lines(1);
+        let vl = make_visual_lines(md);
         let (matches, valid) = grep_markdown("[", md, &vl);
         assert!(!valid);
         assert!(matches.is_empty());
@@ -478,7 +492,7 @@ mod tests {
     #[test]
     fn literal_string_still_works() {
         let md = "foo bar baz\nqux foo quux";
-        let vl = make_visual_lines(2);
+        let vl = make_visual_lines(md);
         let (matches, valid) = grep_markdown("foo", md, &vl);
         assert!(valid);
         assert_eq!(matches.len(), 2);
@@ -492,7 +506,7 @@ mod tests {
     #[test]
     fn empty_query_returns_empty() {
         let md = "anything";
-        let vl = make_visual_lines(1);
+        let vl = make_visual_lines(md);
         let (matches, valid) = grep_markdown("", md, &vl);
         assert!(valid);
         assert!(matches.is_empty());
@@ -503,7 +517,7 @@ mod tests {
     #[test]
     fn handle_type_updates_query_and_redraws() {
         let md = "hello world\nfoo bar";
-        let vl = make_visual_lines(2);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         let effects = handle(
             SearchAction::Type('h'),
@@ -523,7 +537,7 @@ mod tests {
     #[test]
     fn handle_backspace_pops_query() {
         let md = "hello";
-        let vl = make_visual_lines(1);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         ss.query = "he".into();
         let effects = handle(
@@ -543,7 +557,7 @@ mod tests {
     #[test]
     fn handle_select_next_moves_selection() {
         let md = "aaa\naaa\naaa";
-        let vl = make_visual_lines(3);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         // Pre-populate with matches
         handle(
@@ -573,7 +587,7 @@ mod tests {
     #[test]
     fn handle_select_prev_clamps_at_zero() {
         let md = "aaa\naaa";
-        let vl = make_visual_lines(2);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         handle(
             SearchAction::Type('a'),
@@ -602,7 +616,7 @@ mod tests {
     #[test]
     fn handle_confirm_sets_last_search_and_scrolls() {
         let md = "hello world";
-        let vl = make_visual_lines(1);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         handle(
             SearchAction::Type('h'),
@@ -640,7 +654,7 @@ mod tests {
     #[test]
     fn handle_confirm_empty_returns_normal() {
         let md = "hello";
-        let vl = make_visual_lines(1);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         // No matches (empty query)
         let effects = handle(
@@ -664,7 +678,7 @@ mod tests {
     #[test]
     fn handle_cancel_returns_normal() {
         let md = "hello";
-        let vl = make_visual_lines(1);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         let effects = handle(
             SearchAction::Cancel,
@@ -687,7 +701,7 @@ mod tests {
     #[test]
     fn handle_select_next_scrolls_when_past_visible() {
         let md = "a\nb\nc\nd\ne";
-        let vl = make_visual_lines(5);
+        let vl = make_visual_lines(md);
         let mut ss = SearchState::new();
         // Search with visible_count = 2 (only 2 rows visible)
         handle(

@@ -6,12 +6,9 @@ use anyhow::{Result, bail};
 use log::info;
 use typst::layout::PagedDocument;
 
-use super::content_index::ContentIndex;
-use super::markup::SourceMap;
+use super::content_index::{BoundIndex, ContentIndex};
 use super::world::{FontCache, MluxWorld};
-use crate::tile::{
-    ContentMapping, SourceMappingParams, TiledDocument, VisualLine, extract_visual_lines_with_map,
-};
+use crate::tile::{ContentMapping, TiledDocument, VisualLine, extract_visual_lines_with_map};
 
 /// Parameters for [`build_tiled_document`].
 pub struct BuildParams<'a> {
@@ -32,7 +29,6 @@ pub struct BuildParams<'a> {
 struct CompiledContent<'f> {
     world: MluxWorld<'f>,
     document: PagedDocument,
-    source_map: SourceMap,
     content_index: ContentIndex,
 }
 
@@ -56,7 +52,7 @@ fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> 
 
     // 3. Markdown -> Typst
     let loaded_set = image_files.key_set();
-    let (content_text, source_map, content_index) =
+    let (content_text, content_index) =
         super::markup::markdown_to_typst(params.markdown, Some(&loaded_set));
 
     // 4. Compile content document
@@ -73,7 +69,6 @@ fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> 
     Ok(CompiledContent {
         world,
         document,
-        source_map,
         content_index,
     })
 }
@@ -109,18 +104,17 @@ pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
     let CompiledContent {
         world: content_world,
         document,
-        source_map,
         content_index,
     } = compile_content(params)?;
 
     // 5. Extract visual lines with source mapping
-    let mapping_params = SourceMappingParams {
-        source: content_world.main_source(),
-        content_offset: content_world.content_offset(),
-        source_map: &source_map,
-        md_source: params.markdown,
-    };
-    let visual_lines = extract_visual_lines_with_map(&document, params.ppi, Some(&mapping_params));
+    let bound_index = BoundIndex::new(
+        &content_index,
+        content_world.main_source(),
+        content_world.content_offset(),
+        params.markdown,
+    );
+    let visual_lines = extract_visual_lines_with_map(&document, params.ppi, Some(&bound_index));
 
     if document.pages.is_empty() {
         bail!("[BUG] document has no pages");

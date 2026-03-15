@@ -4,9 +4,8 @@ use std::time::Instant;
 
 use log::info;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use serde::{Deserialize, Serialize};
 
-use super::content_index::{ContentIndex, SpanKind, TextSpan};
+use super::content_index::{BlockMapping, ContentIndex, SpanKind, TextSpan};
 use super::markup_util::{
     escape_typst, escape_typst_string_literal, typst_image, typst_image_placeholder,
 };
@@ -22,42 +21,6 @@ fn latex_to_typst_math(latex: &str) -> String {
             // (though likely broken). This avoids silently dropping content.
             latex.to_string()
         }
-    }
-}
-
-/// Markdown source line → Typst output byte range mapping for a single block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlockMapping {
-    /// Byte range within the Typst output (content_text).
-    pub typst_byte_range: Range<usize>,
-    /// Byte range within the original Markdown source.
-    pub md_byte_range: Range<usize>,
-}
-
-/// Mapping from Typst output positions back to Markdown source positions.
-#[derive(Debug, Clone)]
-pub struct SourceMap {
-    /// Block mappings sorted by `typst_byte_range.start` ascending.
-    pub blocks: Vec<BlockMapping>,
-}
-
-impl SourceMap {
-    /// Find the BlockMapping whose typst_byte_range contains `typst_offset`.
-    pub fn find_by_typst_offset(&self, typst_offset: usize) -> Option<&BlockMapping> {
-        // Binary search for the block whose range contains the offset.
-        let idx = self
-            .blocks
-            .binary_search_by(|b| {
-                if typst_offset < b.typst_byte_range.start {
-                    std::cmp::Ordering::Greater
-                } else if typst_offset >= b.typst_byte_range.end {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .ok()?;
-        Some(&self.blocks[idx])
     }
 }
 
@@ -122,11 +85,11 @@ pub fn extract_image_paths(markdown: &str) -> Vec<String> {
 /// When `Some`, images in the set produce `#image()` calls; others produce a
 /// placeholder block. When `None`, all images produce placeholders.
 ///
-/// Returns `(typst_markup, SourceMap, ContentIndex)`.
+/// Returns `(typst_markup, ContentIndex)`.
 pub fn markdown_to_typst(
     markdown: &str,
     available_images: Option<&HashSet<String>>,
-) -> (String, SourceMap, ContentIndex) {
+) -> (String, ContentIndex) {
     let start = Instant::now();
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -822,17 +785,14 @@ pub fn markdown_to_typst(
         output.push('\n');
     }
 
-    let source_map = SourceMap {
-        blocks: source_map_blocks,
-    };
-    let content_index = ContentIndex::new(text_spans, source_map.blocks.clone());
+    let content_index = ContentIndex::new(text_spans, source_map_blocks);
     info!(
         "convert: completed in {:.1}ms (input: {} bytes, output: {} bytes)",
         start.elapsed().as_secs_f64() * 1000.0,
         markdown.len(),
         output.len()
     );
-    (output, source_map, content_index)
+    (output, content_index)
 }
 
 /// Push string to the cell buffer if active, otherwise to the main output.
@@ -914,8 +874,7 @@ mod tests {
     use super::*;
 
     fn md_to_typst(s: &str) -> String {
-        let (output, _, _) = markdown_to_typst(s, None);
-        output
+        markdown_to_typst(s, None).0
     }
 
     #[test]
@@ -1222,8 +1181,9 @@ mod tests {
         // crash-823d13a0: list item containing --- emitted a Rule source mapping
         // that overlapped with the enclosing List block mapping.
         let md = "+\t---\t\t";
-        let (typst, map, _ci) = markdown_to_typst(md, None);
-        for pair in map.blocks.windows(2) {
+        let (typst, ci) = markdown_to_typst(md, None);
+        let blocks = ci.block_spans();
+        for pair in blocks.windows(2) {
             assert!(
                 pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
                 "overlapping typst ranges: {:?} and {:?}",
@@ -1231,7 +1191,7 @@ mod tests {
                 pair[1].typst_byte_range,
             );
         }
-        for block in &map.blocks {
+        for block in blocks {
             assert!(
                 block.typst_byte_range.end <= typst.len(),
                 "typst_byte_range {:?} out of bounds",
@@ -1508,15 +1468,16 @@ mod tests {
     #[test]
     fn test_display_math_source_map() {
         let md = "before\n\n$$\nx^2\n$$\n\nafter";
-        let (_typst, map, _ci) = markdown_to_typst(md, None);
+        let (_typst, ci) = markdown_to_typst(md, None);
+        let blocks = ci.block_spans();
         // Display math should produce a source map block
         assert!(
-            map.blocks.len() >= 2,
+            blocks.len() >= 2,
             "should have at least 2 blocks (paragraph + math), got: {}",
-            map.blocks.len()
+            blocks.len()
         );
         // No overlaps
-        for pair in map.blocks.windows(2) {
+        for pair in blocks.windows(2) {
             assert!(
                 pair[0].typst_byte_range.end <= pair[1].typst_byte_range.start,
                 "overlapping typst ranges: {:?} and {:?}",
