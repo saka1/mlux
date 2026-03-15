@@ -14,6 +14,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::pipeline::{BuildParams, build_tiled_document};
 use crate::tile::{DocumentMeta, TilePngs};
 
@@ -23,16 +24,19 @@ pub use process::ChildProcess;
 #[derive(Serialize, Deserialize)]
 enum Request {
     RenderTile(usize),
+    FindHighlightRects { idx: usize, spec: HighlightSpec },
     Shutdown,
 }
 
 /// Response from child to parent.
 ///
-/// The first message is always `Meta`. Subsequent messages are `Tile` or `Error`.
+/// The first message is always `Meta`. Subsequent messages are `Tile`, `Rects`,
+/// or `Error`.
 #[derive(Serialize, Deserialize)]
 enum Response {
     Meta(DocumentMeta),
     Tile(TilePngs),
+    Rects(Vec<HighlightRect>),
     Error(String),
 }
 
@@ -54,7 +58,7 @@ impl TileRenderer {
         {
             Response::Meta(m) => Ok(m),
             Response::Error(e) => anyhow::bail!("child build error: {e}"),
-            Response::Tile(_) => anyhow::bail!("unexpected Tile response, expected Meta"),
+            _ => anyhow::bail!("unexpected response, expected Meta"),
         }
     }
 
@@ -64,7 +68,24 @@ impl TileRenderer {
         match self.rx.recv()? {
             Response::Tile(pngs) => Ok(pngs),
             Response::Error(e) => anyhow::bail!("{e}"),
-            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
+            _ => anyhow::bail!("unexpected response, expected Tile"),
+        }
+    }
+
+    /// Request highlight rectangles for a tile's content (no rendering).
+    pub fn find_highlight_rects(
+        &mut self,
+        idx: usize,
+        spec: &HighlightSpec,
+    ) -> Result<Vec<HighlightRect>> {
+        self.tx.send(&Request::FindHighlightRects {
+            idx,
+            spec: spec.clone(),
+        })?;
+        match self.rx.recv()? {
+            Response::Rects(rects) => Ok(rects),
+            Response::Error(e) => anyhow::bail!("{e}"),
+            _ => anyhow::bail!("unexpected response, expected Rects"),
         }
     }
 
@@ -176,6 +197,20 @@ pub fn fork_renderer(
                             break;
                         }
                     }
+                    Request::FindHighlightRects { idx, spec } => {
+                        let resp =
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                doc.find_tile_highlight_rects(idx, &spec)
+                            })) {
+                                Ok(rects) => Response::Rects(rects),
+                                Err(_) => Response::Error(format!(
+                                    "find highlight rects tile {idx}: panic"
+                                )),
+                            };
+                        if resp_tx.send(&resp).is_err() {
+                            break;
+                        }
+                    }
                     Request::Shutdown => break,
                 }
             }
@@ -275,6 +310,25 @@ mod tests {
         let (decoded2, _): (Request, _) =
             bincode::serde::decode_from_slice(&encoded2, bincode::config::standard()).unwrap();
         assert!(matches!(decoded2, Request::Shutdown));
+
+        let req3 = Request::FindHighlightRects {
+            idx: 7,
+            spec: HighlightSpec {
+                pattern: "hello".into(),
+                case_insensitive: true,
+            },
+        };
+        let encoded3 = bincode::serde::encode_to_vec(&req3, bincode::config::standard()).unwrap();
+        let (decoded3, _): (Request, _) =
+            bincode::serde::decode_from_slice(&encoded3, bincode::config::standard()).unwrap();
+        match decoded3 {
+            Request::FindHighlightRects { idx, spec } => {
+                assert_eq!(idx, 7);
+                assert_eq!(spec.pattern, "hello");
+                assert!(spec.case_insensitive);
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 
     #[test]

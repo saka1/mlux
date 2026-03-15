@@ -1,6 +1,7 @@
 pub mod config;
 pub mod diagram;
 pub mod fork_render;
+pub mod highlight;
 pub mod image;
 pub mod input;
 pub mod pipeline;

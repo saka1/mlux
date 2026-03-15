@@ -294,34 +294,49 @@ pub fn run(
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
+            invalidate_cache: false,
         };
 
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
-            let (req_tx, req_rx) = mpsc::channel::<usize>();
+            let (req_tx, req_rx) = mpsc::channel::<tiles::WorkerRequest>();
             let (res_tx, res_rx) = mpsc::channel::<(usize, TilePngs)>();
+            let (rect_tx, rect_rx) =
+                mpsc::channel::<(usize, Vec<crate::highlight::HighlightRect>)>();
 
-            // Prefetch worker: FIFO — process each request in order.
+            // Worker thread: handles both tile rendering and highlight rect requests.
             //
-            // We do NOT drain-to-latest: send_prefetch() enqueues multiple
-            // independent requests [current+1, current+2, current-1], so
-            // keeping only the last would skip nearby tiles and force
-            // synchronous rendering on the main thread.
-            //
-            // Results flow back to main via res_tx/res_rx channel.
-            // The main thread drains res_rx.try_recv() into the doc.
+            // Tile results go to res_tx, rect results go to rect_tx.
             let mut renderer = renderer;
             s.spawn(move || {
                 debug!("prefetch worker: started");
-                while let Ok(idx) = req_rx.recv() {
-                    debug!("prefetch worker: rendering tile {idx}");
-                    let render_start = Instant::now();
-                    match renderer.render_tile_pair(idx) {
-                        Ok(pngs) => {
-                            debug!("prefetch worker: tile {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, pngs.content.len(), pngs.sidebar.len());
-                            let _ = res_tx.send((idx, pngs));
+                while let Ok(req) = req_rx.recv() {
+                    match req {
+                        tiles::WorkerRequest::RenderTile(idx) => {
+                            debug!("prefetch worker: rendering tile {idx}");
+                            let render_start = Instant::now();
+                            match renderer.render_tile_pair(idx) {
+                                Ok(pngs) => {
+                                    debug!("prefetch worker: tile {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, pngs.content.len(), pngs.sidebar.len());
+                                    let _ = res_tx.send((idx, pngs));
+                                }
+                                Err(e) => {
+                                    log::error!("prefetch worker: tile {idx} failed: {e}");
+                                }
+                            }
                         }
-                        Err(e) => {
-                            log::error!("prefetch worker: tile {idx} failed: {e}");
+                        tiles::WorkerRequest::FindRects { idx, spec } => {
+                            debug!("prefetch worker: finding rects for tile {idx}");
+                            match renderer.find_highlight_rects(idx, &spec) {
+                                Ok(rects) => {
+                                    let _ = rect_tx.send((idx, rects));
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "prefetch worker: find rects tile {idx} failed: {e}"
+                                    );
+                                    let _ = rect_tx.send((idx, Vec::new()));
+                                }
+                            }
                         }
                     }
                 }
@@ -354,6 +369,13 @@ pub fn run(
                     in_flight: &mut in_flight,
                 },
             )?;
+            // Generate overlay for visible tiles if search is active
+            if let Some(ls) = &vp.last_search {
+                let spec = ls.highlight_spec();
+                tiles::update_overlays(&meta, &mut vp.tiles, &vp.scroll, &spec, &req_tx, &rect_rx)?;
+                let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
+                terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
+            }
             tiles::send_prefetch(&req_tx, &meta, &cache, &mut in_flight, vp.scroll.y_offset);
 
             // Inner event loop
@@ -484,6 +506,12 @@ pub fn run(
                                     return Ok(reason);
                                 }
                             }
+
+                            if vp.invalidate_cache {
+                                cache.clear();
+                                in_flight.clear();
+                                vp.invalidate_cache = false;
+                            }
                         }
 
                         Event::Resize(new_cols, new_rows) => {
@@ -525,6 +553,23 @@ pub fn run(
                             in_flight: &mut in_flight,
                         },
                     )?;
+                    // Generate overlay for visible tiles if search is active
+                    if let Some(ls) = &vp.last_search {
+                        let spec = ls.highlight_spec();
+                        tiles::update_overlays(
+                            &meta,
+                            &mut vp.tiles,
+                            &vp.scroll,
+                            &spec,
+                            &req_tx,
+                            &rect_rx,
+                        )?;
+                        // Place overlay rects that update_overlays just computed.
+                        // redraw() already called place_overlay_rects, but the
+                        // rects were empty at that point (cleared by SetLastSearch).
+                        let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
+                        terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
+                    }
                     tiles::send_prefetch(
                         &req_tx,
                         &meta,

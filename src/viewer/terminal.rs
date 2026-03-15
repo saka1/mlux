@@ -81,6 +81,24 @@ pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
     out.flush()
 }
 
+/// Raw RGBA データを送信（a=t: データ転送のみ、表示なし）。
+///
+/// Small payloads (e.g. 96 bytes for 1×24 RGBA) fit in a single chunk.
+pub(super) fn send_raw_image(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    image_id: u32,
+) -> io::Result<()> {
+    let encoded = BASE64.encode(rgba);
+    let mut out = stdout();
+    write!(
+        out,
+        "\x1b_Ga=t,f=32,s={width},v={height},i={image_id},t=d,q=2;{encoded}\x1b\\"
+    )?;
+    out.flush()
+}
+
 /// 画像データ+配置を削除
 pub(super) fn delete_image(image_id: u32) -> io::Result<()> {
     let mut out = stdout();
@@ -107,6 +125,14 @@ pub(super) struct PlaceParams {
     pub start_col: u16,
     pub num_cols: u16,
     pub img_width: u32,
+}
+
+/// Compute screen row counts for a split tile pair.
+fn split_rows(top_src_h: u32, cell_h: u16, image_rows: u16) -> (u16, u16) {
+    let top = (top_src_h as f64 / cell_h as f64).round() as u16;
+    let top = top.clamp(1, image_rows.saturating_sub(1));
+    let bot = image_rows.saturating_sub(top);
+    (top, bot)
 }
 
 /// Place tile(s) using Kitty Graphics Protocol.
@@ -146,9 +172,7 @@ pub(super) fn place_tiles(
             let top_id = get_id(loaded.map.get(top_idx).unwrap());
             let bot_id = get_id(loaded.map.get(bot_idx).unwrap());
 
-            let top_rows = (*top_src_h as f64 / layout.cell_h as f64).round() as u16;
-            let top_rows = top_rows.clamp(1, layout.image_rows.saturating_sub(1));
-            let bot_rows = layout.image_rows.saturating_sub(top_rows);
+            let (top_rows, bot_rows) = split_rows(*top_src_h, layout.cell_h, layout.image_rows);
 
             let top_display = top_rows as u32 * layout.cell_h as u32;
             let bot_display = bot_rows as u32 * layout.cell_h as u32;
@@ -214,6 +238,185 @@ pub(super) fn place_sidebar_tiles(
         },
         |ids| ids.sidebar_id,
     )
+}
+
+/// Place highlight rectangles using Y sub-cell offset for pixel-precise
+/// vertical alignment, with partial-transparency overflow patterns.
+///
+/// Each rect gets a primary placement at `row = top / ch` with `Y = top % ch`,
+/// and optionally a second placement on the next row for overflow coverage.
+pub(super) fn place_overlay_rects(
+    visible: &VisibleTiles,
+    loaded: &LoadedTiles,
+    layout: &Layout,
+) -> io::Result<()> {
+    let imgs = match loaded.highlight_images() {
+        Some(imgs) => imgs,
+        None => return Ok(()),
+    };
+
+    let cw = layout.cell_w as u32;
+    let ch = layout.cell_h as u32;
+    if cw == 0 || ch == 0 {
+        return Ok(());
+    }
+
+    let mut out = stdout();
+
+    match visible {
+        VisibleTiles::Single { idx, src_y, src_h } => {
+            place_rects_in_region(
+                &mut out,
+                loaded.overlay_rects(*idx),
+                imgs,
+                &TileRegion {
+                    src_y: *src_y,
+                    src_h: *src_h,
+                    screen_row: 0,
+                    max_rows: layout.image_rows,
+                    image_col: layout.image_col,
+                    cw,
+                    ch,
+                },
+            )?;
+        }
+        VisibleTiles::Split {
+            top_idx,
+            top_src_y,
+            top_src_h,
+            bot_idx,
+            bot_src_h,
+        } => {
+            let (top_rows, bot_rows) = split_rows(*top_src_h, layout.cell_h, layout.image_rows);
+
+            place_rects_in_region(
+                &mut out,
+                loaded.overlay_rects(*top_idx),
+                imgs,
+                &TileRegion {
+                    src_y: *top_src_y,
+                    src_h: *top_src_h,
+                    screen_row: 0,
+                    max_rows: top_rows,
+                    image_col: layout.image_col,
+                    cw,
+                    ch,
+                },
+            )?;
+            place_rects_in_region(
+                &mut out,
+                loaded.overlay_rects(*bot_idx),
+                imgs,
+                &TileRegion {
+                    src_y: 0,
+                    src_h: *bot_src_h,
+                    screen_row: top_rows,
+                    max_rows: bot_rows,
+                    image_col: layout.image_col,
+                    cw,
+                    ch,
+                },
+            )?;
+        }
+    }
+    out.flush()
+}
+
+/// Describes a visible region of a tile mapped to screen rows.
+struct TileRegion {
+    src_y: u32,
+    src_h: u32,
+    screen_row: u16,
+    max_rows: u16,
+    image_col: u16,
+    cw: u32,
+    ch: u32,
+}
+
+/// Place highlight rects for a single tile region.
+///
+/// Uses Y sub-cell offset for pixel-precise vertical alignment. When a rect
+/// overflows into the next cell row, a second placement with a partial
+/// transparency pattern covers the overflow.
+fn place_rects_in_region(
+    out: &mut impl Write,
+    rects: &[crate::highlight::HighlightRect],
+    imgs: &super::tiles::HighlightImages,
+    rgn: &TileRegion,
+) -> io::Result<()> {
+    use crate::highlight::{
+        HIGHLIGHT_PNG_HEIGHT, HIGHLIGHT_PNG_WIDTH, PATTERN_HEIGHT, PATTERN_WIDTH, PartialPattern,
+        select_overflow_pattern,
+    };
+
+    let full_id = imgs.full_id;
+
+    for r in rects {
+        // Clip to visible region of tile
+        if r.y_px + r.h_px <= rgn.src_y || r.y_px >= rgn.src_y + rgn.src_h {
+            continue;
+        }
+
+        // Row + Y offset from top edge (not midpoint)
+        let screen_y_px = r.y_px.saturating_sub(rgn.src_y);
+        let row = rgn.screen_row + (screen_y_px / rgn.ch) as u16;
+        let y_off = screen_y_px % rgn.ch;
+        let col = rgn.image_col + (r.x_px / rgn.cw) as u16;
+
+        // Horizontal: sub-cell X offset for pixel-precise start.
+        let x_off = r.x_px % rgn.cw;
+        let cols = (r.w_px + x_off).div_ceil(rgn.cw).max(1) as u16;
+
+        // Source-rect: crop to exact highlight width; use full image height.
+        let src_w = r.w_px.min(HIGHLIGHT_PNG_WIDTH);
+        let src_h = HIGHLIGHT_PNG_HEIGHT;
+
+        // Clamp to available screen space
+        if row >= rgn.screen_row + rgn.max_rows {
+            continue;
+        }
+
+        debug!(
+            "hl: col={col} row={row} X={x_off} Y={y_off} c={cols} \
+             src={}x{} want={}x{}",
+            src_w, src_h, r.w_px, r.h_px,
+        );
+
+        // 1st placement: FULL image with Y sub-cell offset
+        out.queue(cursor::MoveTo(col, row))?;
+        write!(
+            out,
+            "\x1b_Ga=p,i={full_id},w={src_w},h={src_h},X={x_off},Y={y_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+        )?;
+
+        // 2nd placement: overflow into next row (if any)
+        let first_coverage = rgn.ch - y_off;
+        if r.h_px > first_coverage {
+            let next_row = row + 1;
+            if next_row < rgn.screen_row + rgn.max_rows {
+                let overflow = (r.h_px - first_coverage).min(rgn.ch);
+                let pattern = select_overflow_pattern(overflow, rgn.ch);
+
+                let (ov_id, ov_w, ov_h) = match pattern {
+                    PartialPattern::Full => (full_id, src_w, HIGHLIGHT_PNG_HEIGHT),
+                    PartialPattern::P75 => (imgs.p75_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                    PartialPattern::P50 => (imgs.p50_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                    PartialPattern::P25 => (imgs.p25_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                };
+
+                debug!(
+                    "hl overflow: next_row={next_row} overflow={overflow}px pattern={pattern:?}",
+                );
+
+                out.queue(cursor::MoveTo(col, next_row))?;
+                write!(
+                    out,
+                    "\x1b_Ga=p,i={ov_id},w={ov_w},h={ov_h},X={x_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// ステータスバーをターミナル最終行に描画。
