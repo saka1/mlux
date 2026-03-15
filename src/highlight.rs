@@ -21,6 +21,9 @@ use crate::pipeline::rendered_to_source_byte;
 pub struct HighlightSpec {
     /// Pre-computed byte ranges within main.typ to highlight (sorted).
     pub target_ranges: Vec<Range<usize>>,
+    /// Byte ranges for the currently active match (subset of target_ranges).
+    /// Glyphs in these ranges get `is_active = true` on their `HighlightRect`.
+    pub active_ranges: Vec<Range<usize>>,
 }
 
 /// A pixel-coordinate rectangle to draw as a highlight overlay.
@@ -30,6 +33,8 @@ pub struct HighlightRect {
     pub y_px: u32,
     pub w_px: u32,
     pub h_px: u32,
+    /// Whether this rect belongs to the currently active/selected match.
+    pub is_active: bool,
 }
 
 /// Find all highlight rectangles for glyphs whose source positions fall within
@@ -52,6 +57,7 @@ pub fn find_highlight_rects(
         frame,
         Point::zero(),
         &spec.target_ranges,
+        &spec.active_ranges,
         pixel_per_pt,
         source,
         &mut rects,
@@ -72,6 +78,7 @@ fn walk_frame_by_span(
     frame: &Frame,
     offset: Point,
     target_ranges: &[Range<usize>],
+    active_ranges: &[Range<usize>],
     pixel_per_pt: f32,
     source: &Source,
     rects: &mut Vec<HighlightRect>,
@@ -80,13 +87,22 @@ fn walk_frame_by_span(
         let abs = Point::new(offset.x + pos.x, offset.y + pos.y);
         match item {
             FrameItem::Text(text) => {
-                collect_span_rects(text, abs, target_ranges, pixel_per_pt, source, rects);
+                collect_span_rects(
+                    text,
+                    abs,
+                    target_ranges,
+                    active_ranges,
+                    pixel_per_pt,
+                    source,
+                    rects,
+                );
             }
             FrameItem::Group(group) => {
                 walk_frame_by_span(
                     &group.frame,
                     abs,
                     target_ranges,
+                    active_ranges,
                     pixel_per_pt,
                     source,
                     rects,
@@ -103,6 +119,7 @@ fn collect_span_rects(
     text: &TextItem,
     abs_pos: Point,
     target_ranges: &[Range<usize>],
+    active_ranges: &[Range<usize>],
     pixel_per_pt: f32,
     source: &Source,
     rects: &mut Vec<HighlightRect>,
@@ -152,9 +169,20 @@ fn collect_span_rects(
         });
 
         if is_match {
+            let is_active = !active_ranges.is_empty()
+                && main_pos.is_some_and(|pos| {
+                    let idx = active_ranges.partition_point(|r| r.end <= pos);
+                    idx < active_ranges.len() && active_ranges[idx].start <= pos
+                });
+
+            // If active status changes mid-run, flush to split into separate rects.
+            if run.start_x.is_some() && run.is_active != is_active {
+                run.flush(abs_pos, text_height_pt, pixel_per_pt, rects);
+            }
+
             let x = glyph_x_starts[i];
             let w = g.x_advance.at(text.size).to_pt();
-            run.extend(x, x + w);
+            run.extend(x, x + w, is_active);
         } else {
             run.flush(abs_pos, text_height_pt, pixel_per_pt, rects);
         }
@@ -169,6 +197,7 @@ fn collect_span_rects(
 struct GlyphRun {
     start_x: Option<f64>,
     end_x: f64,
+    is_active: bool,
 }
 
 impl GlyphRun {
@@ -176,12 +205,14 @@ impl GlyphRun {
         Self {
             start_x: None,
             end_x: 0.0,
+            is_active: false,
         }
     }
 
-    fn extend(&mut self, x: f64, x_end: f64) {
+    fn extend(&mut self, x: f64, x_end: f64, is_active: bool) {
         if self.start_x.is_none() {
             self.start_x = Some(x);
+            self.is_active = is_active;
         }
         self.end_x = x_end;
     }
@@ -213,6 +244,7 @@ impl GlyphRun {
                 y_px,
                 w_px,
                 h_px,
+                is_active: self.is_active,
             });
         }
     }
@@ -225,6 +257,9 @@ impl GlyphRun {
 /// crops to the exact highlight width; the native height already matches the
 /// text line height, so KGP placement with `r=1` requires minimal scaling.
 pub const HIGHLIGHT_PNG: &[u8] = include_bytes!("../assets/highlight.png");
+
+/// 2048×24 semi-transparent orange PNG (RGBA 255, 140, 0, 120) for the active match.
+pub const HIGHLIGHT_ACTIVE_PNG: &[u8] = include_bytes!("../assets/highlight_active.png");
 
 /// Native width of [`HIGHLIGHT_PNG`] in pixels.
 pub const HIGHLIGHT_PNG_WIDTH: u32 = 2048;
@@ -268,6 +303,31 @@ pub const PATTERN_P50: [u8; 96] = make_pattern(12);
 /// Top 75% yellow (18 of 24 rows filled).
 pub const PATTERN_P75: [u8; 96] = make_pattern(18);
 
+/// Generate a 1×24 raw RGBA pattern with active (orange) color:
+/// top `filled_rows` pixels are (255, 140, 0, 120), remaining transparent.
+const fn make_pattern_active(filled_rows: usize) -> [u8; 96] {
+    let mut buf = [0u8; 96];
+    let mut i = 0;
+    while i < 24 {
+        let off = i * 4;
+        if i < filled_rows {
+            buf[off] = 255; // R
+            buf[off + 1] = 140; // G
+            buf[off + 2] = 0; // B
+            buf[off + 3] = 120; // A
+        }
+        i += 1;
+    }
+    buf
+}
+
+/// Top 25% orange (6 of 24 rows filled) — active match.
+pub const PATTERN_ACTIVE_P25: [u8; 96] = make_pattern_active(6);
+/// Top 50% orange (12 of 24 rows filled) — active match.
+pub const PATTERN_ACTIVE_P50: [u8; 96] = make_pattern_active(12);
+/// Top 75% orange (18 of 24 rows filled) — active match.
+pub const PATTERN_ACTIVE_P75: [u8; 96] = make_pattern_active(18);
+
 /// Which partial pattern to use for overflow placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartialPattern {
@@ -301,6 +361,7 @@ mod tests {
         let frame = Frame::hard(typst::layout::Size::zero());
         let spec = HighlightSpec {
             target_ranges: vec![],
+            active_ranges: vec![],
         };
         let source = Source::detached("");
         let rects = find_highlight_rects(&frame, &spec, 144.0, &source);
@@ -311,8 +372,34 @@ mod tests {
     fn highlight_png_is_valid() {
         assert!(HIGHLIGHT_PNG.len() > 8);
         assert_eq!(&HIGHLIGHT_PNG[1..4], b"PNG");
-        // 256×256 image should be significantly larger than the old 1×1
         assert!(HIGHLIGHT_PNG.len() > 100);
+    }
+
+    #[test]
+    fn highlight_active_png_is_valid() {
+        assert!(HIGHLIGHT_ACTIVE_PNG.len() > 8);
+        assert_eq!(&HIGHLIGHT_ACTIVE_PNG[1..4], b"PNG");
+        assert!(HIGHLIGHT_ACTIVE_PNG.len() > 100);
+    }
+
+    #[test]
+    fn active_pattern_p25_has_6_filled_rows() {
+        for row in 0..6 {
+            let off = row * 4;
+            assert_eq!(
+                PATTERN_ACTIVE_P25[off + 3],
+                120,
+                "row {row} should be opaque"
+            );
+        }
+        for row in 6..24 {
+            let off = row * 4;
+            assert_eq!(
+                PATTERN_ACTIVE_P25[off + 3],
+                0,
+                "row {row} should be transparent"
+            );
+        }
     }
 
     #[test]

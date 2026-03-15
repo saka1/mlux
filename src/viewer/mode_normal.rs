@@ -185,7 +185,11 @@ fn navigate_search(ctx: &mut NormalCtx, direction: SearchDirection) -> Vec<Effec
     let line_num = (vl_idx + 1) as u32;
     let y = visual_line_offset(ctx.visual_lines, ctx.max_scroll, line_num);
     let flash = format!("match {}/{}", ls.current_idx + 1, ls.matches.len());
-    vec![Effect::ScrollTo(y), Effect::Flash(flash)]
+    vec![
+        Effect::InvalidateOverlays,
+        Effect::ScrollTo(y),
+        Effect::Flash(flash),
+    ]
 }
 
 /// Shared yank logic: bounds check, extract text, build effects.

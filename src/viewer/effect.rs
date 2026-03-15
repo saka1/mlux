@@ -62,6 +62,8 @@ pub(super) enum Effect {
     SetMode(ViewerMode),
     SetLastSearch(LastSearch),
     DeletePlacements,
+    /// Clear overlay rects cache so they're recomputed with new active_ranges.
+    InvalidateOverlays,
     EnterUrlPickerAll,
     GoBack,
     Exit(ExitReason),
@@ -220,6 +222,10 @@ impl Viewport {
             }
             Effect::DeletePlacements => {
                 self.tiles.delete_placements()?;
+            }
+            Effect::InvalidateOverlays => {
+                let _ = self.tiles.clear_overlays();
+                self.dirty = true;
             }
             Effect::EnterUrlPickerAll => {
                 let entries = mode_url::collect_all_url_entries(ctx.markdown, ctx.visual_lines);

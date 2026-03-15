@@ -370,7 +370,7 @@ pub fn run(
             )?;
             // Generate overlay for visible tiles if search is active
             if let Some(ls) = &vp.last_search {
-                let spec = ls.highlight_spec().clone();
+                let spec = ls.highlight_spec();
                 tiles::update_overlays(&meta, &mut vp.tiles, &vp.scroll, &spec, &req_tx, &rect_rx)?;
                 let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
                 terminal::place_overlay_rects(&visible, &vp.tiles, &session.layout)?;
@@ -550,7 +550,7 @@ pub fn run(
                     )?;
                     // Generate overlay for visible tiles if search is active
                     if let Some(ls) = &vp.last_search {
-                        let spec = ls.highlight_spec().clone();
+                        let spec = ls.highlight_spec();
                         tiles::update_overlays(
                             &meta,
                             &mut vp.tiles,
