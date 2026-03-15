@@ -69,6 +69,23 @@ pub(super) enum Effect {
     Exit(ExitReason),
 }
 
+/// Terminal I/O operations separated from state mutation.
+///
+/// `Viewport::apply()` pushes these instead of performing I/O directly.
+/// The event loop drains them via `execute_render_ops()`.
+#[derive(Debug)]
+#[allow(dead_code)] // Variants used in Task 2 (apply refactor)
+pub(super) enum RenderOp {
+    DrawStatusBar,
+    DrawModeScreen,
+    ClearScreen,
+    DeleteAllImages,
+    CopyToClipboard(String),
+    OpenExternal(String),
+    DeletePlacements,
+    DeleteOverlayPlacements,
+}
+
 /// Jump stack entry for markdown link navigation.
 pub(super) struct JumpEntry {
     pub path: PathBuf,

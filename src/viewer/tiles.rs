@@ -246,14 +246,23 @@ impl LoadedTiles {
         self.highlight_images = None;
     }
 
-    /// Clear overlay state, keeping base tiles intact.
-    pub(super) fn clear_overlays(&mut self) -> io::Result<()> {
+    /// Clear overlay rect state only (no I/O).
+    pub(super) fn clear_overlay_state(&mut self) {
         self.overlay_rects.clear();
-        // Delete all placements of highlight images (rects are placed per-redraw).
+    }
+
+    /// Delete highlight overlay placements from terminal (I/O only).
+    pub(super) fn delete_overlay_placements(&self) -> io::Result<()> {
         if let Some(imgs) = &self.highlight_images {
             delete_placements_for_ids(&imgs.all_ids())?;
         }
         Ok(())
+    }
+
+    /// Clear overlay state, keeping base tiles intact.
+    pub(super) fn clear_overlays(&mut self) -> io::Result<()> {
+        self.clear_overlay_state();
+        self.delete_overlay_placements()
     }
 
     /// Delete all tile placements (content + sidebar + highlight overlay).
@@ -473,5 +482,14 @@ mod tests {
         assert_eq!(a1.sidebar_id, 101);
         assert_eq!(a2.content_id, 102);
         assert_eq!(a2.sidebar_id, 103);
+    }
+
+    #[test]
+    fn clear_overlay_state_empties_rects() {
+        let mut loaded = LoadedTiles::new(3);
+        loaded.set_overlay_rects(0, vec![]);
+        assert!(loaded.has_overlay(0));
+        loaded.clear_overlay_state();
+        assert!(!loaded.has_overlay(0));
     }
 }
