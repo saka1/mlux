@@ -18,8 +18,8 @@ use crate::watch::FileWatcher;
 
 use super::layout::{self, Layout, ScrollState};
 use super::mode_command::CommandState;
-use super::mode_search::{self, LastSearch, SearchState};
-use super::mode_toc::{self, TocState};
+use super::mode_search::{LastSearch, SearchState};
+use super::mode_toc::TocState;
 use super::mode_url::{self, UrlPickerState};
 use super::query::DocumentQuery;
 use super::terminal;
@@ -74,7 +74,6 @@ pub(super) enum Effect {
 /// `Viewport::apply()` pushes these instead of performing I/O directly.
 /// The event loop drains them via `execute_render_ops()`.
 #[derive(Debug)]
-#[allow(dead_code)] // Variants used in Task 2 (apply refactor)
 pub(super) enum RenderOp {
     DrawStatusBar,
     DrawModeScreen,
@@ -125,10 +124,15 @@ pub(super) struct ViewContext<'a> {
 
 impl Viewport {
     /// Apply a single effect, returning an `ExitReason` if the inner loop should exit.
+    ///
+    /// State mutations happen immediately; terminal I/O is deferred as
+    /// `RenderOp`s pushed to `ops`. The caller drains `ops` via
+    /// `execute_render_ops()` after all effects are processed.
     pub(super) fn apply(
         &mut self,
         effect: Effect,
         ctx: &ViewContext,
+        ops: &mut Vec<RenderOp>,
     ) -> anyhow::Result<Option<ExitReason>> {
         match effect {
             Effect::ScrollTo(y) => {
@@ -150,43 +154,30 @@ impl Viewport {
                 self.flash = Some(msg);
             }
             Effect::RedrawStatusBar => {
-                terminal::draw_status_bar(
-                    ctx.layout,
-                    &self.scroll,
-                    ctx.filename,
-                    ctx.acc_value,
-                    self.flash.as_deref(),
-                )?;
+                ops.push(RenderOp::DrawStatusBar);
             }
             Effect::RedrawSearch => {
-                if let ViewerMode::Search(ss) = &self.mode {
-                    mode_search::draw_search_screen(
-                        ctx.layout,
-                        &ss.query,
-                        &ss.matches,
-                        ss.selected,
-                        ss.scroll_offset,
-                        ss.pattern_valid,
-                    )?;
+                if matches!(self.mode, ViewerMode::Search(_)) {
+                    ops.push(RenderOp::DrawModeScreen);
                 }
             }
             Effect::RedrawCommandBar => {
-                if let ViewerMode::Command(cs) = &self.mode {
-                    terminal::draw_command_bar(ctx.layout, &cs.input)?;
+                if matches!(self.mode, ViewerMode::Command(_)) {
+                    ops.push(RenderOp::DrawModeScreen);
                 }
             }
             Effect::RedrawUrlPicker => {
-                if let ViewerMode::UrlPicker(up) = &self.mode {
-                    mode_url::draw_url_screen(ctx.layout, up)?;
+                if matches!(self.mode, ViewerMode::UrlPicker(_)) {
+                    ops.push(RenderOp::DrawModeScreen);
                 }
             }
             Effect::RedrawToc => {
-                if let ViewerMode::Toc(ts) = &self.mode {
-                    mode_toc::draw_toc_screen(ctx.layout, ts)?;
+                if matches!(self.mode, ViewerMode::Toc(_)) {
+                    ops.push(RenderOp::DrawModeScreen);
                 }
             }
             Effect::Yank(text) => {
-                let _ = terminal::send_osc52(&text);
+                ops.push(RenderOp::CopyToClipboard(text));
             }
             Effect::OpenUrl(url) => {
                 if let InputSource::File(cur) = ctx.input
@@ -195,35 +186,22 @@ impl Viewport {
                 {
                     return Ok(Some(ExitReason::Navigate { path }));
                 }
-                let _ = open::that_in_background(&url);
+                ops.push(RenderOp::OpenExternal(url));
             }
             Effect::SetMode(m) => {
                 match &m {
-                    ViewerMode::Search(ss) => {
-                        mode_search::draw_search_screen(
-                            ctx.layout,
-                            &ss.query,
-                            &ss.matches,
-                            ss.selected,
-                            ss.scroll_offset,
-                            ss.pattern_valid,
-                        )?;
-                    }
-                    ViewerMode::Command(cs) => {
-                        terminal::draw_command_bar(ctx.layout, &cs.input)?;
-                    }
-                    ViewerMode::UrlPicker(up) => {
-                        mode_url::draw_url_screen(ctx.layout, up)?;
-                    }
-                    ViewerMode::Toc(ts) => {
-                        mode_toc::draw_toc_screen(ctx.layout, ts)?;
+                    ViewerMode::Search(_)
+                    | ViewerMode::Command(_)
+                    | ViewerMode::UrlPicker(_)
+                    | ViewerMode::Toc(_) => {
+                        ops.push(RenderOp::DrawModeScreen);
                     }
                     ViewerMode::Normal => {
                         // Clear text from search/command screen and
                         // purge terminal-side image data so that
                         // ensure_loaded() re-uploads from cache.
-                        terminal::clear_screen()?;
-                        terminal::delete_all_images()?;
+                        ops.push(RenderOp::ClearScreen);
+                        ops.push(RenderOp::DeleteAllImages);
                         self.tiles.clear_all();
                         self.dirty = true;
                     }
@@ -232,56 +210,44 @@ impl Viewport {
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
-                // Only clear overlay images; base tile cache stays intact.
-                let _ = self.tiles.clear_overlays();
+                self.tiles.clear_overlay_state();
+                ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
             Effect::DeletePlacements => {
-                self.tiles.delete_placements()?;
+                ops.push(RenderOp::DeletePlacements);
             }
             Effect::InvalidateOverlays => {
-                let _ = self.tiles.clear_overlays();
+                self.tiles.clear_overlay_state();
+                ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
             Effect::EnterUrlPickerAll => {
                 let entries = mode_url::collect_all_url_entries(ctx.doc);
                 if entries.is_empty() {
-                    // Return to normal with flash; need full
-                    // redraw if coming from command mode.
                     self.flash = Some("No URLs in document".into());
                     if !matches!(self.mode, ViewerMode::Normal) {
-                        terminal::clear_screen()?;
-                        terminal::delete_all_images()?;
+                        ops.push(RenderOp::ClearScreen);
+                        ops.push(RenderOp::DeleteAllImages);
                         self.tiles.map.clear();
                         self.mode = ViewerMode::Normal;
                         self.dirty = true;
                     } else {
-                        terminal::draw_status_bar(
-                            ctx.layout,
-                            &self.scroll,
-                            ctx.filename,
-                            ctx.acc_value,
-                            self.flash.as_deref(),
-                        )?;
+                        ops.push(RenderOp::DrawStatusBar);
                     }
                 } else {
-                    self.tiles.delete_placements()?;
-                    terminal::clear_screen()?;
+                    ops.push(RenderOp::DeletePlacements);
+                    ops.push(RenderOp::ClearScreen);
+                    // NO DeleteAllImages — original code doesn't call it here
                     let up = UrlPickerState::new(entries);
-                    mode_url::draw_url_screen(ctx.layout, &up)?;
                     self.mode = ViewerMode::UrlPicker(up);
+                    ops.push(RenderOp::DrawModeScreen);
                 }
             }
             Effect::GoBack => {
                 if ctx.jump_stack.is_empty() {
                     self.flash = Some("No previous file".into());
-                    terminal::draw_status_bar(
-                        ctx.layout,
-                        &self.scroll,
-                        ctx.filename,
-                        ctx.acc_value,
-                        self.flash.as_deref(),
-                    )?;
+                    ops.push(RenderOp::DrawStatusBar);
                 } else {
                     return Ok(Some(ExitReason::GoBack));
                 }
