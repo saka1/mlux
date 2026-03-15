@@ -1122,6 +1122,15 @@ impl TiledDocument {
         let sidebar = self.render_sidebar_tile(idx)?;
         Ok(TilePngs { content, sidebar })
     }
+
+    /// Find highlight rectangles for a tile's content (no rendering).
+    pub fn find_tile_highlight_rects(
+        &self,
+        idx: usize,
+        spec: &crate::highlight::HighlightSpec,
+    ) -> Vec<crate::highlight::HighlightRect> {
+        crate::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi)
+    }
 }
 
 // ---------------------------------------------------------------------------

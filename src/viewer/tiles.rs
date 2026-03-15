@@ -7,7 +7,16 @@ use std::sync::mpsc;
 
 use super::layout::{Layout, ScrollState};
 use super::terminal;
+use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::tile::{DocumentMeta, TilePngs, TiledDocumentCache, VisibleTiles};
+
+/// Request sent to the prefetch worker thread.
+pub(super) enum WorkerRequest {
+    /// Render a base tile (content + sidebar).
+    RenderTile(usize),
+    /// Compute highlight rectangles for a tile.
+    FindRects { idx: usize, spec: HighlightSpec },
+}
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
@@ -19,12 +28,35 @@ pub(super) struct TileImageIds {
     pub sidebar_id: u32,
 }
 
+/// KGP image IDs for all highlight images (full-width PNG + partial patterns).
+pub(super) struct HighlightImages {
+    /// 2048×24 PNG for precise width cropping.
+    pub full_id: u32,
+    /// 1×24 RGBA: top 75% yellow.
+    pub p75_id: u32,
+    /// 1×24 RGBA: top 50% yellow.
+    pub p50_id: u32,
+    /// 1×24 RGBA: top 25% yellow.
+    pub p25_id: u32,
+}
+
+impl HighlightImages {
+    /// All image IDs for bulk operations (placement deletion, etc.).
+    fn all_ids(&self) -> [u32; 4] {
+        [self.full_id, self.p75_id, self.p50_id, self.p25_id]
+    }
+}
+
 /// Track which tile PNGs are loaded in the terminal, keyed by tile index.
 pub(super) struct LoadedTiles {
     /// tile_index → Kitty image IDs (content + sidebar)
     pub map: HashMap<usize, TileImageIds>,
     next_id: u32,
     evict_distance: usize,
+    /// Highlight rectangles per tile, populated by `update_overlays`.
+    overlay_rects: HashMap<usize, Vec<HighlightRect>>,
+    /// KGP image IDs for highlight images (uploaded once).
+    highlight_images: Option<HighlightImages>,
 }
 
 /// Describes the actions needed to load a tile into the terminal.
@@ -42,6 +74,8 @@ impl LoadedTiles {
             map: HashMap::new(),
             next_id: 100, // Reserve 1-99 for future use
             evict_distance,
+            overlay_rects: HashMap::new(),
+            highlight_images: None,
         }
     }
 
@@ -76,7 +110,10 @@ impl LoadedTiles {
             .collect();
         let evict = to_evict
             .into_iter()
-            .filter_map(|k| self.map.remove(&k).map(|ids| (k, ids)))
+            .filter_map(|k| {
+                self.overlay_rects.remove(&k);
+                self.map.remove(&k).map(|ids| (k, ids))
+            })
             .collect();
 
         Some(LoadAction {
@@ -95,14 +132,14 @@ impl LoadedTiles {
         &mut self,
         cache: &mut TiledDocumentCache,
         idx: usize,
-        req_tx: &mpsc::Sender<usize>,
+        req_tx: &mpsc::Sender<WorkerRequest>,
         res_rx: &mpsc::Receiver<(usize, TilePngs)>,
         in_flight: &mut HashSet<usize>,
     ) -> anyhow::Result<()> {
         if let Some(action) = self.plan_load(idx) {
             if !cache.contains(idx) {
                 if in_flight.insert(idx) {
-                    let _ = req_tx.send(idx);
+                    let _ = req_tx.send(WorkerRequest::RenderTile(idx));
                 }
                 while !cache.contains(idx) {
                     let (i, pngs) = res_rx.recv()?;
@@ -115,7 +152,75 @@ impl LoadedTiles {
         Ok(())
     }
 
-    /// Delete all tile placements (content + sidebar, keep image data).
+    /// Store highlight rectangles for a tile.
+    pub(super) fn set_overlay_rects(&mut self, idx: usize, rects: Vec<HighlightRect>) {
+        self.overlay_rects.insert(idx, rects);
+    }
+
+    /// Get highlight rectangles for a tile.
+    pub(super) fn overlay_rects(&self, idx: usize) -> &[HighlightRect] {
+        self.overlay_rects.get(&idx).map_or(&[], |v| v.as_slice())
+    }
+
+    /// Whether this tile already has overlay rects computed.
+    pub(super) fn has_overlay(&self, idx: usize) -> bool {
+        self.overlay_rects.contains_key(&idx)
+    }
+
+    /// Ensure all highlight images (full PNG + partial patterns) are uploaded.
+    pub(super) fn ensure_highlight_images(&mut self) -> io::Result<&HighlightImages> {
+        if let Some(ref imgs) = self.highlight_images {
+            return Ok(imgs);
+        }
+        let base = self.next_id;
+        self.next_id += 4;
+
+        use crate::highlight::{PATTERN_HEIGHT, PATTERN_WIDTH};
+        terminal::send_image(crate::highlight::HIGHLIGHT_PNG, base)?;
+        for (i, pattern) in [
+            &crate::highlight::PATTERN_P75,
+            &crate::highlight::PATTERN_P50,
+            &crate::highlight::PATTERN_P25,
+        ]
+        .iter()
+        .enumerate()
+        {
+            terminal::send_raw_image(*pattern, PATTERN_WIDTH, PATTERN_HEIGHT, base + 1 + i as u32)?;
+        }
+
+        self.highlight_images = Some(HighlightImages {
+            full_id: base,
+            p75_id: base + 1,
+            p50_id: base + 2,
+            p25_id: base + 3,
+        });
+        Ok(self.highlight_images.as_ref().unwrap())
+    }
+
+    /// Get the highlight images (if uploaded).
+    pub(super) fn highlight_images(&self) -> Option<&HighlightImages> {
+        self.highlight_images.as_ref()
+    }
+
+    /// Reset all state after `delete_all_images()`. Both tile map and
+    /// highlight images must be re-uploaded since the terminal no longer
+    /// has any image data.
+    pub(super) fn clear_all(&mut self) {
+        self.map.clear();
+        self.highlight_images = None;
+    }
+
+    /// Clear overlay state, keeping base tiles intact.
+    pub(super) fn clear_overlays(&mut self) -> io::Result<()> {
+        self.overlay_rects.clear();
+        // Delete all placements of highlight images (rects are placed per-redraw).
+        if let Some(imgs) = &self.highlight_images {
+            delete_placements_for_ids(&imgs.all_ids())?;
+        }
+        Ok(())
+    }
+
+    /// Delete all tile placements (content + sidebar + highlight overlay).
     pub(super) fn delete_placements(&self) -> io::Result<()> {
         use std::io::Write;
         let mut out = std::io::stdout();
@@ -123,8 +228,23 @@ impl LoadedTiles {
             write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", ids.content_id)?;
             write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", ids.sidebar_id)?;
         }
+        if let Some(imgs) = &self.highlight_images {
+            for id in imgs.all_ids() {
+                write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
+            }
+        }
         out.flush()
     }
+}
+
+/// Delete placements for a set of image IDs.
+fn delete_placements_for_ids(ids: &[u32]) -> io::Result<()> {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    for &id in ids {
+        write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
+    }
+    out.flush()
 }
 
 /// Execute the I/O for a load action: send images to the terminal and evict distant tiles.
@@ -140,12 +260,12 @@ fn execute_load(action: &LoadAction, pngs: &crate::tile::TilePngs) -> anyhow::Re
 
 /// Prefetch channel handles for requesting and receiving rendered tiles.
 pub(super) struct PrefetchChannels<'a> {
-    pub req_tx: &'a mpsc::Sender<usize>,
+    pub req_tx: &'a mpsc::Sender<WorkerRequest>,
     pub res_rx: &'a mpsc::Receiver<(usize, TilePngs)>,
     pub in_flight: &'a mut HashSet<usize>,
 }
 
-/// Full redraw: content tiles + sidebar + status bar.
+/// Full redraw: content tiles + sidebar + overlay + status bar.
 ///
 /// Ordering: ensure loaded (slow) → delete placements → place new (fast).
 #[allow(clippy::too_many_arguments)]
@@ -178,9 +298,10 @@ pub(super) fn redraw(
     // Phase 2: Delete old placements atomically, then place new ones.
     loaded.delete_placements()?;
 
-    // Phase 3: Place content + sidebar + status bar
+    // Phase 3: Place content + sidebar + overlay + status bar
     terminal::place_content_tiles(&visible, loaded, layout, scroll)?;
     terminal::place_sidebar_tiles(&visible, loaded, meta.sidebar_width_px, layout)?;
+    terminal::place_overlay_rects(&visible, loaded, layout)?;
     terminal::draw_status_bar(layout, scroll, filename, acc_peek, flash)?;
     Ok(())
 }
@@ -203,7 +324,7 @@ pub(super) fn redraw(
 ///
 /// `in_flight` は main thread 専用。worker thread はアクセスしない。
 pub(super) fn send_prefetch(
-    tx: &mpsc::Sender<usize>,
+    tx: &mpsc::Sender<WorkerRequest>,
     meta: &DocumentMeta,
     cache: &TiledDocumentCache,
     in_flight: &mut HashSet<usize>,
@@ -214,10 +335,61 @@ pub(super) fn send_prefetch(
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
         if idx < meta.tile_count && !cache.contains(idx) && !in_flight.contains(&idx) {
             debug!("prefetch: requesting tile {idx} (current={current})");
-            let _ = tx.send(idx);
+            let _ = tx.send(WorkerRequest::RenderTile(idx));
             in_flight.insert(idx);
         }
     }
+}
+
+/// Update search highlight overlays for visible tiles.
+///
+/// Sends `FindRects` requests to the worker for tiles that haven't been
+/// computed yet, receives rects, and stores them for placement by
+/// `place_overlay_rects`.
+pub(super) fn update_overlays(
+    meta: &DocumentMeta,
+    loaded: &mut LoadedTiles,
+    scroll: &ScrollState,
+    spec: &HighlightSpec,
+    req_tx: &mpsc::Sender<WorkerRequest>,
+    rect_rx: &mpsc::Receiver<(usize, Vec<HighlightRect>)>,
+) -> anyhow::Result<()> {
+    let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
+
+    let indices: Vec<usize> = match &visible {
+        VisibleTiles::Single { idx, .. } => vec![*idx],
+        VisibleTiles::Split {
+            top_idx, bot_idx, ..
+        } => vec![*top_idx, *bot_idx],
+    };
+
+    let mut needed = 0;
+    for &idx in &indices {
+        if loaded.has_overlay(idx) {
+            continue;
+        }
+        let _ = req_tx.send(WorkerRequest::FindRects {
+            idx,
+            spec: spec.clone(),
+        });
+        needed += 1;
+    }
+
+    while needed > 0 {
+        let (idx, rects) = rect_rx.recv()?;
+        needed -= 1;
+        loaded.set_overlay_rects(idx, rects);
+    }
+
+    // Ensure the shared highlight images are uploaded.
+    if indices
+        .iter()
+        .any(|idx| !loaded.overlay_rects(*idx).is_empty())
+    {
+        loaded.ensure_highlight_images()?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

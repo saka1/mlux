@@ -89,6 +89,8 @@ pub(super) struct Viewport {
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
+    /// Set when search state changes and the tile PNG cache must be fully cleared.
+    pub invalidate_cache: bool,
 }
 
 /// Read-only environment for effect application.
@@ -206,7 +208,7 @@ impl Viewport {
                         // ensure_loaded() re-uploads from cache.
                         terminal::clear_screen()?;
                         terminal::delete_all_images()?;
-                        self.tiles.map.clear();
+                        self.tiles.clear_all();
                         self.dirty = true;
                     }
                 }
@@ -214,6 +216,9 @@ impl Viewport {
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
+                // Only clear overlay images; base tile cache stays intact.
+                let _ = self.tiles.clear_overlays();
+                self.dirty = true;
             }
             Effect::DeletePlacements => {
                 self.tiles.delete_placements()?;
