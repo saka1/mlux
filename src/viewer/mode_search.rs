@@ -307,7 +307,7 @@ pub(super) fn draw_search_screen(
         " invalid pattern | Esc:cancel".to_string()
     } else {
         format!(
-            " {} matches | Enter:jump  Esc:cancel  j/k:select",
+            " {} matches | Enter:jump  Esc:cancel  ↑↓:select",
             matches.len()
         )
     };

@@ -293,12 +293,8 @@ pub(super) fn map_search_key(key: KeyEvent) -> Option<SearchAction> {
         }
         (KeyCode::Enter, _) => Some(SearchAction::Confirm),
         (KeyCode::Backspace, _) => Some(SearchAction::Backspace),
-        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
-            Some(SearchAction::SelectNext)
-        }
-        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => {
-            Some(SearchAction::SelectPrev)
-        }
+        (KeyCode::Down, _) => Some(SearchAction::SelectNext),
+        (KeyCode::Up, _) => Some(SearchAction::SelectPrev),
         (KeyCode::Char(c), _) => Some(SearchAction::Type(c)),
         _ => None,
     }
@@ -491,21 +487,9 @@ mod tests {
     }
 
     #[test]
-    fn test_search_select_next_j() {
-        let a = map_search_key(simple_key(KeyCode::Char('j')));
-        assert!(matches!(a, Some(SearchAction::SelectNext)));
-    }
-
-    #[test]
     fn test_search_select_next_down() {
         let a = map_search_key(simple_key(KeyCode::Down));
         assert!(matches!(a, Some(SearchAction::SelectNext)));
-    }
-
-    #[test]
-    fn test_search_select_prev_k() {
-        let a = map_search_key(simple_key(KeyCode::Char('k')));
-        assert!(matches!(a, Some(SearchAction::SelectPrev)));
     }
 
     #[test]
