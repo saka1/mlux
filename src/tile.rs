@@ -348,6 +348,156 @@ fn flush_pending_texts(pending: &mut Vec<(f64, Span)>, out: &mut Vec<(f64, Vec<S
     pending.clear();
 }
 
+/// Extract Markdown source lines corresponding to a range of visual lines.
+///
+/// Collects `md_block_range` from each visual line in `[start_vl..=end_vl]`,
+/// takes the union of all byte ranges, and returns the corresponding Markdown text.
+pub fn yank_lines(
+    md_source: &str,
+    visual_lines: &[VisualLine],
+    start_vl: usize,
+    end_vl: usize,
+) -> String {
+    let end_vl = end_vl.min(visual_lines.len().saturating_sub(1));
+    if start_vl > end_vl {
+        return String::new();
+    }
+
+    // Collect union of md_block_range byte offsets from the selected visual lines
+    let mut min_offset = usize::MAX;
+    let mut max_offset = 0usize;
+    let mut found = false;
+
+    for vl in &visual_lines[start_vl..=end_vl] {
+        if let Some(ref r) = vl.md_block_range {
+            min_offset = min_offset.min(r.start);
+            max_offset = max_offset.max(r.end);
+            found = true;
+        }
+    }
+
+    if !found {
+        return String::new();
+    }
+
+    let min_offset = min_offset.min(md_source.len());
+    let max_offset = max_offset.min(md_source.len());
+    md_source[min_offset..max_offset]
+        .trim_end_matches('\n')
+        .to_string()
+}
+
+/// Extract the precise Markdown source line for a visual line.
+///
+/// Uses `md_offset` to locate the exact line within the block.
+/// Falls back to block-level yank when no mapping is available.
+pub fn yank_exact(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> String {
+    if vl_idx >= visual_lines.len() {
+        return String::new();
+    }
+    let vl = &visual_lines[vl_idx];
+    if let Some(offset) = vl.md_offset {
+        let line = byte_offset_to_line(md_source, offset);
+        md_source.lines().nth(line - 1).unwrap_or("").to_string()
+    } else {
+        // Fallback to block yank (theme-derived lines)
+        yank_lines(md_source, visual_lines, vl_idx, vl_idx)
+    }
+}
+
+/// A URL extracted from Markdown source, with its link text.
+#[derive(Debug, Clone)]
+pub struct UrlEntry {
+    pub url: String,
+    pub text: String,
+}
+
+/// Extract URLs from the Markdown source lines corresponding to a visual line.
+///
+/// Uses `md_block_range` to find the relevant Markdown source lines, then parses
+/// them with pulldown-cmark to extract link destination URLs and link text.
+pub fn extract_urls(md_source: &str, visual_lines: &[VisualLine], vl_idx: usize) -> Vec<UrlEntry> {
+    if vl_idx >= visual_lines.len() {
+        return Vec::new();
+    }
+    let vl = &visual_lines[vl_idx];
+    let Some(ref r) = vl.md_block_range else {
+        return Vec::new();
+    };
+    let start = byte_offset_to_line(md_source, r.start);
+    let end = byte_offset_to_line(md_source, r.end.saturating_sub(1).max(r.start));
+
+    extract_urls_from_lines(md_source, start, end)
+}
+
+/// Extract URLs from a range of Markdown source lines (1-based, inclusive).
+///
+/// Step 1: Parse with pulldown-cmark to extract `[text](url)` links.
+/// Step 2: Extract bare URLs (e.g., `https://example.com`) from plain text
+///         using regex, deduplicating against URLs already found in step 1.
+pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec<UrlEntry> {
+    let lines: Vec<&str> = md_source.lines().collect();
+    let start_idx = start.saturating_sub(1);
+    let end_idx = end.min(lines.len());
+    if start_idx >= lines.len() {
+        return Vec::new();
+    }
+    let block_text = lines[start_idx..end_idx].join("\n");
+
+    // Step 1: Parse with pulldown-cmark and collect link URLs + text.
+    // Also collect individual plain text fragments for bare URL extraction.
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let parser = Parser::new_ext(&block_text, Options::empty());
+    let mut urls = Vec::new();
+    let mut in_link = false;
+    let mut current_url = String::new();
+    let mut current_text = String::new();
+    let mut plain_texts: Vec<String> = Vec::new();
+    for event in parser {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                in_link = true;
+                current_url = dest_url.into_string();
+                current_text.clear();
+            }
+            Event::End(TagEnd::Link) => {
+                if in_link && !current_url.is_empty() {
+                    urls.push(UrlEntry {
+                        url: current_url.clone(),
+                        text: current_text.clone(),
+                    });
+                }
+                in_link = false;
+            }
+            Event::Text(t) if in_link => {
+                current_text.push_str(&t);
+            }
+            Event::Code(c) if in_link => {
+                current_text.push_str(&c);
+            }
+            Event::Text(t) => {
+                plain_texts.push(t.into_string());
+            }
+            _ => {}
+        }
+    }
+
+    // Step 2: Extract bare URLs from each text fragment independently,
+    // deduplicating against URLs already found in step 1.
+    for text in &plain_texts {
+        for bare_url in crate::url::extract_bare_urls(text) {
+            if !urls.iter().any(|u| u.url == bare_url) {
+                urls.push(UrlEntry {
+                    url: bare_url.clone(),
+                    text: bare_url,
+                });
+            }
+        }
+    }
+
+    urls
+}
+
 // ---------------------------------------------------------------------------
 // Frame splitting — split a tall frame into vertical tiles
 // ---------------------------------------------------------------------------
@@ -1063,5 +1213,124 @@ mod tests {
 
         let new = merge_tile_cache(&hashes, &hashes, &mut old_cache);
         assert_eq!(new.len(), 0);
+    }
+
+    fn make_vl(md: &str, line_range: Option<(usize, usize)>) -> VisualLine {
+        let md_block_range = line_range.map(|(start_line, end_line)| {
+            let start_byte: usize = md
+                .split('\n')
+                .take(start_line - 1)
+                .map(|l| l.len() + 1)
+                .sum();
+            let end_byte: usize = md
+                .split('\n')
+                .take(end_line)
+                .map(|l| l.len() + 1)
+                .sum::<usize>()
+                .min(md.len());
+            start_byte..end_byte
+        });
+        VisualLine {
+            y_pt: 0.0,
+            y_px: 0,
+            md_block_range,
+            md_offset: None,
+        }
+    }
+
+    #[test]
+    fn test_extract_urls_single_link() {
+        let md = "Check [Rust](https://rust.invalid/) for details.\n";
+        let vls = vec![make_vl(md, Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://rust.invalid/");
+        assert_eq!(urls[0].text, "Rust");
+    }
+
+    #[test]
+    fn test_extract_urls_multiple_links() {
+        let md = "See [A](https://a.invalid/) and [B](https://b.invalid/).\n";
+        let vls = vec![make_vl(md, Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://a.invalid/");
+        assert_eq!(urls[0].text, "A");
+        assert_eq!(urls[1].url, "https://b.invalid/");
+        assert_eq!(urls[1].text, "B");
+    }
+
+    #[test]
+    fn test_extract_urls_no_links() {
+        let md = "Just plain text, no links here.\n";
+        let vls = vec![make_vl(md, Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_no_source_mapping() {
+        let md = "Has [link](https://example.invalid/) but no mapping.\n";
+        let vls = vec![make_vl(md, None)];
+        let urls = extract_urls(md, &vls, 0);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_out_of_bounds() {
+        let md = "Some text\n";
+        let vls = vec![make_vl(md, Some((1, 1)))];
+        let urls = extract_urls(md, &vls, 5);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_extract_urls_multiline_block() {
+        let md = "Line 1\n[link1](https://one.invalid/)\n[link2](https://two.invalid/)\nLine 4\n";
+        let vls = vec![make_vl(md, Some((2, 3)))];
+        let urls = extract_urls(md, &vls, 0);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://one.invalid/");
+        assert_eq!(urls[0].text, "link1");
+        assert_eq!(urls[1].url, "https://two.invalid/");
+        assert_eq!(urls[1].text, "link2");
+    }
+
+    #[test]
+    fn test_extract_urls_bare_url() {
+        let md = "Check https://rust-lang.invalid/ for more\n";
+        let urls = extract_urls_from_lines(md, 1, 1);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].url, "https://rust-lang.invalid/");
+        assert_eq!(urls[0].text, "https://rust-lang.invalid/");
+    }
+
+    #[test]
+    fn test_extract_urls_mixed_link_and_bare() {
+        let md = "[Rust](https://rust-lang.invalid) and https://crates.invalid\n";
+        let urls = extract_urls_from_lines(md, 1, 1);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].url, "https://rust-lang.invalid");
+        assert_eq!(urls[0].text, "Rust");
+        assert_eq!(urls[1].url, "https://crates.invalid");
+        assert_eq!(urls[1].text, "https://crates.invalid");
+    }
+
+    #[test]
+    fn test_extract_urls_bare_duplicate_with_link() {
+        let md = "[Rust](https://rust-lang.invalid) and https://rust-lang.invalid\n";
+        let urls = extract_urls_from_lines(md, 1, 1);
+        assert_eq!(urls.len(), 1, "duplicate bare URL should be deduplicated");
+        assert_eq!(urls[0].url, "https://rust-lang.invalid");
+        assert_eq!(urls[0].text, "Rust");
+    }
+
+    #[test]
+    fn test_extract_urls_bare_urls_in_list() {
+        let md = "- https://help.x.com/ja/using-x/create-a-thread\n- https://help.x.com/en/using-x/types-of-posts\n";
+        let urls = extract_urls_from_lines(md, 1, 2);
+        assert_eq!(urls.len(), 2, "each list item should produce one URL");
+        assert_eq!(urls[0].url, "https://help.x.com/ja/using-x/create-a-thread");
+        assert_eq!(urls[1].url, "https://help.x.com/en/using-x/types-of-posts");
     }
 }
