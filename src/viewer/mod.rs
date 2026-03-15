@@ -31,6 +31,8 @@ mod terminal;
 
 #[cfg(test)]
 mod test_harness;
+#[cfg(test)]
+mod test_highlight;
 
 pub use terminal::{TerminalTheme, detect_terminal_theme};
 
