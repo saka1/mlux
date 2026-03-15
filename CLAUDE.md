@@ -71,9 +71,9 @@ cargo +nightly-2025-11-01 fuzz run fuzz_pipeline -- -max_total_time=30
 After any code change, ensure all pass:
 
 ```bash
-cargo fmt       # auto-format
-cargo clippy    # zero warnings
-cargo test      # all tests pass
+cargo fmt                    # auto-format
+cargo clippy --all-targets   # zero warnings (must include tests — CI runs --all-targets)
+cargo test                   # all tests pass
 ```
 
 ## Non-obvious Notes
