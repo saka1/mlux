@@ -4,10 +4,6 @@
 //! `content_index`, `content_offset`) into a single `DocumentQuery` struct
 //! with a common query API.
 
-use std::ops::Range;
-
-use regex::RegexBuilder;
-
 use crate::pipeline::ContentIndex;
 use crate::tile::{self, UrlEntry, VisualLine};
 
@@ -57,45 +53,6 @@ impl<'a> DocumentQuery<'a> {
                 md_line >= s && md_line <= e
             })
         })
-    }
-
-    /// Build highlight ranges by running a regex on Markdown and converting
-    /// matches to main.typ byte ranges via ContentIndex.
-    ///
-    /// Returns `(all_ranges, per_match_ranges)` where `all_ranges` is the union
-    /// of all matches and `per_match_ranges[i]` is the ranges for the i-th match.
-    pub(super) fn build_highlight_ranges(
-        &self,
-        query: &str,
-        case_insensitive: bool,
-    ) -> (Vec<Range<usize>>, Vec<Vec<Range<usize>>>) {
-        let re = RegexBuilder::new(query)
-            .case_insensitive(case_insensitive)
-            .build();
-        let md_ranges: Vec<Range<usize>> = match re {
-            Ok(re) => re
-                .find_iter(self.markdown)
-                .map(|m| m.start()..m.end())
-                .collect(),
-            Err(_) => return (Vec::new(), Vec::new()),
-        };
-
-        let per_match_ranges: Vec<Vec<Range<usize>>> = md_ranges
-            .iter()
-            .map(|r| {
-                self.content_index.md_to_main_ranges(
-                    std::slice::from_ref(r),
-                    self.markdown,
-                    self.content_offset,
-                )
-            })
-            .collect();
-
-        let target_ranges =
-            self.content_index
-                .md_to_main_ranges(&md_ranges, self.markdown, self.content_offset);
-
-        (target_ranges, per_match_ranges)
     }
 
     /// Delegate to `tile::yank_exact`.

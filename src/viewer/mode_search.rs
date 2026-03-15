@@ -27,6 +27,8 @@ pub(super) struct SearchMatch {
     pub col_start: usize,
     /// Byte offset of match end within `context`.
     pub col_end: usize,
+    /// Byte range of the match within the full Markdown source.
+    pub md_range: std::ops::Range<usize>,
 }
 
 /// Mutable search state while in search mode.
@@ -66,9 +68,24 @@ impl LastSearch {
     ///
     /// Computes per-match ranges and caches the combined target_ranges.
     pub(super) fn from_search_state(ss: &SearchState, doc: &DocumentQuery) -> Self {
-        let case_insensitive = ss.query.chars().all(|c| !c.is_uppercase());
-        let (target_ranges, per_match_ranges) =
-            doc.build_highlight_ranges(&ss.query, case_insensitive);
+        let all_md_ranges: Vec<std::ops::Range<usize>> =
+            ss.matches.iter().map(|m| m.md_range.clone()).collect();
+
+        let per_match_ranges: Vec<Vec<std::ops::Range<usize>>> = all_md_ranges
+            .iter()
+            .map(|r| {
+                doc.content_index.md_to_main_ranges(
+                    std::slice::from_ref(r),
+                    doc.markdown,
+                    doc.content_offset,
+                )
+            })
+            .collect();
+
+        let target_ranges =
+            doc.content_index
+                .md_to_main_ranges(&all_md_ranges, doc.markdown, doc.content_offset);
+
         Self {
             matches: ss.matches.clone(),
             current_idx: ss.selected,
@@ -153,6 +170,7 @@ pub(super) fn grep_markdown(doc: &DocumentQuery, query: &str) -> (Vec<SearchMatc
                 context: line_text.to_string(),
                 col_start: m.start(),
                 col_end: m.end(),
+                md_range: line_byte_offset + m.start()..line_byte_offset + m.end(),
             });
         }
 
@@ -439,6 +457,38 @@ mod tests {
         let (matches, valid) = grep_markdown(&doc, "");
         assert!(valid);
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn grep_markdown_stores_md_range() {
+        let md = "foo bar baz\nqux foo quux";
+        let vl = make_visual_lines(md);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vl, &ci, 0);
+        let (matches, valid) = grep_markdown(&doc, "foo");
+        assert!(valid);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].md_range, 0..3);
+        assert_eq!(matches[1].md_range, 16..19);
+    }
+
+    #[test]
+    fn last_search_per_match_ranges_aligned_with_matches() {
+        // "foo foo bar" has two "foo" on the same line.
+        // grep_markdown finds 1 match (first per line).
+        // Old build_highlight_ranges would find 2 → index mismatch.
+        // After fix: per_match_ranges.len() == matches.len().
+        let md = "foo foo bar";
+        let vl = make_visual_lines(md);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vl, &ci, 0);
+        let mut ss = SearchState::new();
+        ss.query = "foo".into();
+        let (matches, _) = grep_markdown(&doc, &ss.query);
+        ss.matches = matches;
+
+        let ls = LastSearch::from_search_state(&ss, &doc);
+        assert_eq!(ls.per_match_ranges.len(), ls.matches.len());
     }
 
     // --- handle() tests (pure, no I/O) ---
