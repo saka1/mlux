@@ -120,6 +120,11 @@ pub fn markdown_to_typst(
     let mut text_spans: Vec<TextSpan> = Vec::new();
     // Deferred code spans: (md_range, buf_start..buf_end) within code_block_buf
     let mut code_spans_pending: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    // Deferred cell spans: (md_range, buf_offset_range, SpanKind) within current cell_buf
+    type PendingSpan = (Range<usize>, Range<usize>, SpanKind);
+    let mut cell_spans_pending: Vec<PendingSpan> = Vec::new();
+    // Collected cell spans for all cells in current table (parallel to table_cells)
+    let mut table_cell_spans: Vec<Vec<PendingSpan>> = Vec::new();
 
     for (event, md_range) in parser.into_offset_iter() {
         match event {
@@ -511,11 +516,25 @@ pub fn markdown_to_typst(
                 // before emitting so the range covers the actual output.
                 let table_typst_start = output.len();
                 output.push_str(&format!("#table(columns: {table_col_count},\n"));
-                for cell in &table_cells {
-                    output.push_str(&format!("  [{cell}],\n"));
+                for (i, cell) in table_cells.iter().enumerate() {
+                    output.push_str("  [");
+                    let cell_content_start = output.len();
+                    output.push_str(cell);
+                    output.push_str("],\n");
+                    if let Some(pending) = table_cell_spans.get(i) {
+                        for (pending_md_range, buf_range, kind) in pending {
+                            text_spans.push(TextSpan {
+                                typst_range: (cell_content_start + buf_range.start)
+                                    ..(cell_content_start + buf_range.end),
+                                md_range: pending_md_range.clone(),
+                                kind: *kind,
+                            });
+                        }
+                    }
                 }
                 output.push_str(")\n");
                 table_cells.clear();
+                table_cell_spans.clear();
                 pop_expect(&mut stack, "Table");
                 block_depth -= 1;
                 if block_depth == 0
@@ -536,6 +555,9 @@ pub fn markdown_to_typst(
             Event::End(TagEnd::TableCell) => {
                 if let Some(buf) = cell_buf.take() {
                     table_cells.push(buf);
+                    table_cell_spans.push(std::mem::take(&mut cell_spans_pending));
+                } else {
+                    cell_spans_pending.clear();
                 }
                 pop_expect(&mut stack, "TableCell");
             }
@@ -567,7 +589,16 @@ pub fn markdown_to_typst(
             Event::End(TagEnd::Image) => match stack.pop() {
                 Some(Container::Image { path }) => {
                     let is_available = available_images.is_some_and(|set| set.contains(&path));
-                    if cell_buf.is_none() {
+                    if let Some(buf) = cell_buf.as_mut() {
+                        let buf_start = buf.len();
+                        if is_available {
+                            buf.push_str(&typst_image(&path));
+                        } else {
+                            buf.push_str(&typst_image_placeholder(&path));
+                        }
+                        let buf_end = buf.len();
+                        cell_spans_pending.push((md_range, buf_start..buf_end, SpanKind::Opaque));
+                    } else {
                         let typst_start = output.len();
                         if is_available {
                             output.push_str(&typst_image(&path));
@@ -580,10 +611,6 @@ pub fn markdown_to_typst(
                             md_range,
                             kind: SpanKind::Opaque,
                         });
-                    } else if is_available {
-                        push_to_target(&mut output, &mut cell_buf, &typst_image(&path));
-                    } else {
-                        push_to_target(&mut output, &mut cell_buf, &typst_image_placeholder(&path));
                     }
                 }
                 other => {
@@ -605,10 +632,11 @@ pub fn markdown_to_typst(
                     code_block_buf.push_str(&text);
                     let buf_end = code_block_buf.len();
                     code_spans_pending.push((md_range, buf_start..buf_end));
-                } else if cell_buf.is_some() {
-                    // Table cells: only BlockSpan coverage, no TextSpan
-                    let escaped = escape_typst(&text);
-                    cell_buf.as_mut().unwrap().push_str(&escaped);
+                } else if let Some(buf) = cell_buf.as_mut() {
+                    let buf_start = buf.len();
+                    buf.push_str(&escape_typst(&text));
+                    let buf_end = buf.len();
+                    cell_spans_pending.push((md_range, buf_start..buf_end, SpanKind::Plain));
                 } else {
                     let typst_start = output.len();
                     output.push_str(&escape_typst(&text));
@@ -629,7 +657,12 @@ pub fn markdown_to_typst(
                 } else {
                     format!("`{code}`")
                 };
-                if cell_buf.is_none() {
+                if let Some(buf) = cell_buf.as_mut() {
+                    let buf_start = buf.len();
+                    buf.push_str(&s);
+                    let buf_end = buf.len();
+                    cell_spans_pending.push((md_range, buf_start..buf_end, SpanKind::Code));
+                } else {
                     let typst_start = output.len();
                     output.push_str(&s);
                     let typst_end = output.len();
@@ -638,15 +671,16 @@ pub fn markdown_to_typst(
                         md_range,
                         kind: SpanKind::Code,
                     });
-                } else {
-                    push_to_target(&mut output, &mut cell_buf, &s);
                 }
             }
             Event::SoftBreak => {
                 if in_code_block {
                     code_block_buf.push('\n');
-                } else if cell_buf.is_some() {
-                    cell_buf.as_mut().unwrap().push('\n');
+                } else if let Some(buf) = cell_buf.as_mut() {
+                    let buf_start = buf.len();
+                    buf.push('\n');
+                    let buf_end = buf.len();
+                    cell_spans_pending.push((md_range, buf_start..buf_end, SpanKind::Break));
                 } else {
                     let typst_start = output.len();
                     output.push('\n');
@@ -670,7 +704,12 @@ pub fn markdown_to_typst(
                 }
             }
             Event::HardBreak => {
-                if cell_buf.is_none() {
+                if let Some(buf) = cell_buf.as_mut() {
+                    let buf_start = buf.len();
+                    buf.push_str("\\ \n");
+                    let buf_end = buf.len();
+                    cell_spans_pending.push((md_range, buf_start..buf_end, SpanKind::Break));
+                } else {
                     let typst_start = output.len();
                     output.push_str("\\ \n");
                     let typst_end = output.len();
@@ -679,8 +718,6 @@ pub fn markdown_to_typst(
                         md_range,
                         kind: SpanKind::Break,
                     });
-                } else {
-                    push_to_target(&mut output, &mut cell_buf, "\\ \n");
                 }
             }
             Event::Rule => {
@@ -704,7 +741,12 @@ pub fn markdown_to_typst(
             Event::InlineMath(latex) => {
                 let typst_math = latex_to_typst_math(&latex);
                 let s = format!("${typst_math}$");
-                if cell_buf.is_none() {
+                if let Some(buf) = cell_buf.as_mut() {
+                    let buf_start = buf.len();
+                    buf.push_str(&s);
+                    let buf_end = buf.len();
+                    cell_spans_pending.push((md_range, buf_start..buf_end, SpanKind::Math));
+                } else {
                     let typst_start = output.len();
                     output.push_str(&s);
                     let typst_end = output.len();
@@ -713,8 +755,6 @@ pub fn markdown_to_typst(
                         md_range,
                         kind: SpanKind::Math,
                     });
-                } else {
-                    push_to_target(&mut output, &mut cell_buf, &s);
                 }
             }
             Event::DisplayMath(latex) => {

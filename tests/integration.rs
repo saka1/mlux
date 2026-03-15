@@ -1484,23 +1484,73 @@ fn test_content_index_japanese_text() {
 }
 
 #[test]
-fn test_content_index_table_no_text_spans() {
-    // Table content goes through cell_buf; TextSpans should NOT be recorded.
+fn test_content_index_table_has_text_spans() {
     let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
     let (typst, ci) = markdown_to_typst(md, None);
     assert_spans_in_bounds(md, &typst, &ci);
     assert_spans_sorted_no_overlap(&ci);
 
-    // Table cells should not produce Plain/Code text spans
-    // (they're covered by BlockSpan only)
-    let spans = ci.text_spans();
-    for span in spans {
-        let md_text = &md[span.md_range.clone()];
+    let plains: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Plain)
+        .collect();
+    let md_texts: Vec<&str> = plains.iter().map(|s| &md[s.md_range.clone()]).collect();
+    for expected in ["A", "B", "1", "2"] {
         assert!(
-            !["A", "B", "1", "2"].contains(&md_text),
-            "table cell content should not appear as TextSpan, found: {md_text:?}"
+            md_texts.contains(&expected),
+            "should have Plain span for {expected:?}, got {md_texts:?}"
         );
     }
+}
+
+#[test]
+fn test_content_index_table_search_highlight() {
+    let md = "| hello | world |\n|---|---|\n| foo | bar |\n";
+    let (typst, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let foo_start = md.find("foo").unwrap();
+    let ranges = ci.md_to_main_ranges(&[foo_start..foo_start + 3], md, 0);
+    assert!(
+        !ranges.is_empty(),
+        "should find typst range for 'foo' in table"
+    );
+    assert_eq!(&typst[ranges[0].clone()], "foo");
+}
+
+#[test]
+fn test_content_index_table_inline_code() {
+    let md = "| `code` | text |\n|---|---|\n";
+    let (typst, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    let code_spans: Vec<_> = ci
+        .text_spans()
+        .iter()
+        .filter(|s| s.kind == SpanKind::Code)
+        .collect();
+    assert!(
+        !code_spans.is_empty(),
+        "table inline code should produce Code span"
+    );
+}
+
+#[test]
+fn test_content_index_table_escaped_search() {
+    let md = "| $100 | #tag |\n|---|---|\n";
+    let (typst, ci) = markdown_to_typst(md, None);
+    assert_spans_in_bounds(md, &typst, &ci);
+    assert_spans_sorted_no_overlap(&ci);
+
+    // "$100" を検索 → エスケープ補正で正しい typst 範囲が返る
+    let dollar_start = md.find("$100").unwrap();
+    let ranges = ci.md_to_main_ranges(&[dollar_start..dollar_start + 4], md, 0);
+    assert!(!ranges.is_empty(), "should find typst range for '$100'");
+    let typst_text = &typst[ranges[0].clone()];
+    assert_eq!(typst_text, "\\$100", "typst side should have escaped $");
 }
 
 #[test]
