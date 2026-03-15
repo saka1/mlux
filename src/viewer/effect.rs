@@ -89,8 +89,6 @@ pub(super) struct Viewport {
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
-    /// Set when search state changes and the tile PNG cache must be fully cleared.
-    pub invalidate_cache: bool,
 }
 
 /// Read-only environment for effect application.

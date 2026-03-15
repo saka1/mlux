@@ -294,7 +294,6 @@ pub fn run(
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
-            invalidate_cache: false,
         };
 
         let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
@@ -507,12 +506,6 @@ pub fn run(
                                 if let Some(reason) = vp.apply(effect, &ctx)? {
                                     return Ok(reason);
                                 }
-                            }
-
-                            if vp.invalidate_cache {
-                                cache.clear();
-                                in_flight.clear();
-                                vp.invalidate_cache = false;
                             }
                         }
 
