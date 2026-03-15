@@ -54,30 +54,38 @@ impl SearchState {
 pub(super) struct LastSearch {
     pub matches: Vec<SearchMatch>,
     pub current_idx: usize,
-    /// Original search query pattern.
-    pub query: String,
-    /// Whether the search was case-insensitive (smartcase).
-    pub case_insensitive: bool,
+    /// Cached highlight spec (computed once on creation).
+    pub cached_spec: crate::highlight::HighlightSpec,
 }
 
 impl LastSearch {
     /// Create from a completed SearchState, using the selected match as current.
-    pub(super) fn from_search_state(ss: &SearchState) -> Self {
+    ///
+    /// Computes and caches the `HighlightSpec` once.
+    pub(super) fn from_search_state(
+        ss: &SearchState,
+        markdown: &str,
+        content_index: &crate::pipeline::ContentIndex,
+        content_offset: usize,
+    ) -> Self {
         let case_insensitive = ss.query.chars().all(|c| !c.is_uppercase());
+        let cached_spec = build_highlight_spec(
+            &ss.query,
+            case_insensitive,
+            markdown,
+            content_index,
+            content_offset,
+        );
         Self {
             matches: ss.matches.clone(),
             current_idx: ss.selected,
-            query: ss.query.clone(),
-            case_insensitive,
+            cached_spec,
         }
     }
 
-    /// Build a [`HighlightSpec`] from this search state.
-    pub(super) fn highlight_spec(&self) -> crate::highlight::HighlightSpec {
-        crate::highlight::HighlightSpec {
-            pattern: self.query.clone(),
-            case_insensitive: self.case_insensitive,
-        }
+    /// Get the cached highlight spec.
+    pub(super) fn highlight_spec(&self) -> &crate::highlight::HighlightSpec {
+        &self.cached_spec
     }
 
     /// Advance to the next match. Wraps around.
@@ -104,6 +112,26 @@ impl LastSearch {
             .get(self.current_idx)
             .map(|m| m.visual_line_idx)
     }
+}
+
+/// Build a [`HighlightSpec`] by running a regex on Markdown and converting
+/// matches to main.typ byte ranges via ContentIndex.
+fn build_highlight_spec(
+    query: &str,
+    case_insensitive: bool,
+    markdown: &str,
+    content_index: &crate::pipeline::ContentIndex,
+    content_offset: usize,
+) -> crate::highlight::HighlightSpec {
+    let re = RegexBuilder::new(query)
+        .case_insensitive(case_insensitive)
+        .build();
+    let md_ranges: Vec<std::ops::Range<usize>> = match re {
+        Ok(re) => re.find_iter(markdown).map(|m| m.start()..m.end()).collect(),
+        Err(_) => Vec::new(),
+    };
+    let target_ranges = content_index.md_to_main_ranges(&md_ranges, markdown, content_offset);
+    crate::highlight::HighlightSpec { target_ranges }
 }
 
 /// Find the visual line index corresponding to a 1-based Markdown line number.
@@ -267,6 +295,7 @@ pub(super) fn draw_search_screen(
     out.flush()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle(
     action: SearchAction,
     ss: &mut SearchState,
@@ -274,6 +303,8 @@ pub(super) fn handle(
     visual_lines: &[VisualLine],
     visible_count: usize,
     max_scroll: u32,
+    content_index: &crate::pipeline::ContentIndex,
+    content_offset: usize,
 ) -> Vec<Effect> {
     match action {
         SearchAction::Type(c) => {
@@ -309,7 +340,7 @@ pub(super) fn handle(
                 return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
             }
             let vl_idx = ss.matches[ss.selected].visual_line_idx;
-            let last = LastSearch::from_search_state(ss);
+            let last = LastSearch::from_search_state(ss, markdown, content_index, content_offset);
             let line_num = (vl_idx + 1) as u32;
             let y = visual_line_offset(visual_lines, max_scroll, line_num);
             let flash = format!("match {}/{}", ss.selected + 1, ss.matches.len());
@@ -336,6 +367,10 @@ fn update_grep(ss: &mut SearchState, markdown: &str, visual_lines: &[VisualLine]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_ci() -> crate::pipeline::ContentIndex {
+        crate::pipeline::ContentIndex::new(vec![], vec![])
+    }
 
     /// Helper: build visual_lines where line N maps to md_line_range (N, N).
     fn make_visual_lines(n: usize) -> Vec<VisualLine> {
@@ -418,7 +453,16 @@ mod tests {
         let md = "hello world\nfoo bar";
         let vl = make_visual_lines(2);
         let mut ss = SearchState::new();
-        let effects = handle(SearchAction::Type('h'), &mut ss, md, &vl, 20, 1000);
+        let effects = handle(
+            SearchAction::Type('h'),
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.query, "h");
         assert!(!ss.matches.is_empty()); // "hello" matches
         assert!(matches!(effects[0], Effect::RedrawSearch));
@@ -430,7 +474,16 @@ mod tests {
         let vl = make_visual_lines(1);
         let mut ss = SearchState::new();
         ss.query = "he".into();
-        let effects = handle(SearchAction::Backspace, &mut ss, md, &vl, 20, 1000);
+        let effects = handle(
+            SearchAction::Backspace,
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.query, "h");
         assert!(matches!(effects[0], Effect::RedrawSearch));
     }
@@ -441,9 +494,27 @@ mod tests {
         let vl = make_visual_lines(3);
         let mut ss = SearchState::new();
         // Pre-populate with matches
-        handle(SearchAction::Type('a'), &mut ss, md, &vl, 20, 1000);
+        handle(
+            SearchAction::Type('a'),
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.selected, 0);
-        handle(SearchAction::SelectNext, &mut ss, md, &vl, 20, 1000);
+        handle(
+            SearchAction::SelectNext,
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.selected, 1);
     }
 
@@ -452,9 +523,27 @@ mod tests {
         let md = "aaa\naaa";
         let vl = make_visual_lines(2);
         let mut ss = SearchState::new();
-        handle(SearchAction::Type('a'), &mut ss, md, &vl, 20, 1000);
+        handle(
+            SearchAction::Type('a'),
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.selected, 0);
-        handle(SearchAction::SelectPrev, &mut ss, md, &vl, 20, 1000);
+        handle(
+            SearchAction::SelectPrev,
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.selected, 0);
     }
 
@@ -463,8 +552,26 @@ mod tests {
         let md = "hello world";
         let vl = make_visual_lines(1);
         let mut ss = SearchState::new();
-        handle(SearchAction::Type('h'), &mut ss, md, &vl, 20, 1000);
-        let effects = handle(SearchAction::Confirm, &mut ss, md, &vl, 20, 1000);
+        handle(
+            SearchAction::Type('h'),
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
+        let effects = handle(
+            SearchAction::Confirm,
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert!(
             effects
                 .iter()
@@ -484,7 +591,16 @@ mod tests {
         let vl = make_visual_lines(1);
         let mut ss = SearchState::new();
         // No matches (empty query)
-        let effects = handle(SearchAction::Confirm, &mut ss, md, &vl, 20, 1000);
+        let effects = handle(
+            SearchAction::Confirm,
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert!(
             effects
                 .iter()
@@ -498,7 +614,16 @@ mod tests {
         let md = "hello";
         let vl = make_visual_lines(1);
         let mut ss = SearchState::new();
-        let effects = handle(SearchAction::Cancel, &mut ss, md, &vl, 20, 1000);
+        let effects = handle(
+            SearchAction::Cancel,
+            &mut ss,
+            md,
+            &vl,
+            20,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert!(
             effects
                 .iter()
@@ -513,13 +638,49 @@ mod tests {
         let vl = make_visual_lines(5);
         let mut ss = SearchState::new();
         // Search with visible_count = 2 (only 2 rows visible)
-        handle(SearchAction::Type('a'), &mut ss, md, &vl, 2, 1000);
+        handle(
+            SearchAction::Type('a'),
+            &mut ss,
+            md,
+            &vl,
+            2,
+            1000,
+            &empty_ci(),
+            0,
+        );
         // This matches only line 1, so we need a query that matches all
         ss.query.clear();
-        handle(SearchAction::Type('.'), &mut ss, md, &vl, 2, 1000);
+        handle(
+            SearchAction::Type('.'),
+            &mut ss,
+            md,
+            &vl,
+            2,
+            1000,
+            &empty_ci(),
+            0,
+        );
         assert_eq!(ss.matches.len(), 5);
-        handle(SearchAction::SelectNext, &mut ss, md, &vl, 2, 1000);
-        handle(SearchAction::SelectNext, &mut ss, md, &vl, 2, 1000);
+        handle(
+            SearchAction::SelectNext,
+            &mut ss,
+            md,
+            &vl,
+            2,
+            1000,
+            &empty_ci(),
+            0,
+        );
+        handle(
+            SearchAction::SelectNext,
+            &mut ss,
+            md,
+            &vl,
+            2,
+            1000,
+            &empty_ci(),
+            0,
+        );
         // selected=2, visible_count=2, should scroll
         assert!(ss.scroll_offset > 0);
     }

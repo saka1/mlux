@@ -11,7 +11,7 @@ use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::{Source, Span};
 use typst::visualize::{Geometry, Paint};
 
-use crate::pipeline::SourceMap;
+use crate::pipeline::{ContentIndex, SourceMap};
 
 /// Compute pixel size matching typst_render's formula exactly.
 ///
@@ -799,6 +799,8 @@ pub struct DocumentMeta {
     /// Per-tile content hashes (tile index order). Empty if not computed.
     #[serde(default)]
     pub tile_hashes: Vec<TilePairHash>,
+    pub content_index: ContentIndex,
+    pub content_offset: usize,
 }
 
 impl DocumentMeta {
@@ -875,6 +877,13 @@ impl DocumentMeta {
     }
 }
 
+/// Bundled content mapping data passed to [`TiledDocument::new`].
+pub struct ContentMapping {
+    pub source: Source,
+    pub content_index: ContentIndex,
+    pub content_offset: usize,
+}
+
 /// A document split into renderable tiles for lazy, bounded-memory rendering.
 ///
 /// All methods take `&self` — rendering is pure (no internal caching).
@@ -891,6 +900,9 @@ pub struct TiledDocument {
     total_height_px: u32,
     page_height_pt: f64,
     visual_lines: Vec<VisualLine>,
+    source: Source,
+    content_index: ContentIndex,
+    content_offset: usize,
 }
 
 impl TiledDocument {
@@ -906,6 +918,7 @@ impl TiledDocument {
         visual_lines: Vec<VisualLine>,
         tile_height_pt: f64,
         ppi: f32,
+        content_mapping: ContentMapping,
     ) -> Result<Self> {
         if document.pages.is_empty() {
             bail!("[BUG] document has no pages");
@@ -952,6 +965,9 @@ impl TiledDocument {
             total_height_px,
             page_height_pt,
             visual_lines,
+            source: content_mapping.source,
+            content_index: content_mapping.content_index,
+            content_offset: content_mapping.content_offset,
         })
     }
 
@@ -1113,6 +1129,8 @@ impl TiledDocument {
             page_height_pt: self.page_height_pt,
             visual_lines: self.visual_lines.clone(),
             tile_hashes: self.compute_tile_hashes(),
+            content_index: self.content_index.clone(),
+            content_offset: self.content_offset,
         }
     }
 
@@ -1129,7 +1147,7 @@ impl TiledDocument {
         idx: usize,
         spec: &crate::highlight::HighlightSpec,
     ) -> Vec<crate::highlight::HighlightRect> {
-        crate::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi)
+        crate::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi, &self.source)
     }
 }
 
