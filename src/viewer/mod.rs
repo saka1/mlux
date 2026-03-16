@@ -45,7 +45,6 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::config::{CliOverrides, Config};
-use crate::fork_render::TileResponse;
 use crate::input::InputSource;
 use crate::pipeline::FontCache;
 use crate::tile::{TilePairHash, TiledDocumentCache, merge_tile_cache};
@@ -287,7 +286,7 @@ pub fn run(
         let img_h = meta.total_height_px;
         let (vp_w, vp_h) = layout::vp_dims(&session.layout, img_w, img_h);
 
-        // 6. thread::scope — prefetch worker + inner event loop
+        // 6. Inner event loop
         let mut vp = Viewport {
             mode: ViewerMode::Normal,
             scroll: ScrollState {
@@ -312,7 +311,8 @@ pub fn run(
             let mut acc = InputAccumulator::new();
 
             // Initial redraw + prefetch
-            display_state::redraw(
+            let search_spec = vp.last_search.as_ref().map(|ls| ls.highlight_spec());
+            display_state::redraw_and_prefetch(
                 &meta,
                 &mut cache,
                 &mut vp.display,
@@ -321,59 +321,26 @@ pub fn run(
                 &session.filename,
                 acc.peek(),
                 None,
+                search_spec.as_ref(),
                 &mut RenderHandle {
                     renderer: &mut renderer,
                     in_flight: &mut in_flight,
                 },
             )?;
-            // Generate overlay for visible tiles if search is active
-            if let Some(ls) = &vp.last_search {
-                let spec = ls.highlight_spec();
-                display_state::update_overlays(
-                    &meta,
-                    &mut vp.display,
-                    &mut cache,
-                    &vp.scroll,
-                    &spec,
-                    &mut RenderHandle {
-                        renderer: &mut renderer,
-                        in_flight: &mut in_flight,
-                    },
-                )?;
-                let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
-                terminal::place_overlay_rects(&visible, &vp.display, &session.layout)?;
-            }
-            display_state::send_prefetch(
-                &mut RenderHandle {
-                    renderer: &mut renderer,
-                    in_flight: &mut in_flight,
-                },
-                &meta,
-                &cache,
-                vp.scroll.y_offset,
-            );
 
             // Inner event loop
             let mut last_render = Instant::now();
 
             loop {
                 // Drain completed responses from the child process.
-                while let Some(resp) = renderer.try_recv()? {
-                    match resp {
-                        TileResponse::Tile { idx, pngs } => {
-                            debug!(
-                                "main: received tile {idx} (content={}, sidebar={} bytes)",
-                                pngs.content.len(),
-                                pngs.sidebar.len()
-                            );
-                            in_flight.remove(&idx);
-                            cache.insert(idx, pngs);
-                        }
-                        TileResponse::Rects { idx, rects } => {
-                            vp.display.set_overlay_rects(idx, rects);
-                        }
-                    }
-                }
+                display_state::drain_responses(
+                    &mut RenderHandle {
+                        renderer: &mut renderer,
+                        in_flight: &mut in_flight,
+                    },
+                    &mut cache,
+                    &mut vp.display,
+                )?;
 
                 let has_live_source = session.watcher.is_some()
                     || (matches!(&session.input, InputSource::Stdin(_)) && !stdin_eof);
@@ -501,26 +468,8 @@ pub fn run(
 
                 // poll timeout → frame budget elapsed, execute redraw
                 if vp.dirty {
-                    // Extra drain just before redraw: collect results the child
-                    // completed while event::poll() was blocking, avoiding
-                    // synchronous rendering during redraw.
-                    while let Some(resp) = renderer.try_recv()? {
-                        match resp {
-                            TileResponse::Tile { idx, pngs } => {
-                                debug!(
-                                    "main: received tile {idx} (content={}, sidebar={} bytes, pre-redraw)",
-                                    pngs.content.len(),
-                                    pngs.sidebar.len()
-                                );
-                                in_flight.remove(&idx);
-                                cache.insert(idx, pngs);
-                            }
-                            TileResponse::Rects { idx, rects } => {
-                                vp.display.set_overlay_rects(idx, rects);
-                            }
-                        }
-                    }
-                    display_state::redraw(
+                    let search_spec = vp.last_search.as_ref().map(|ls| ls.highlight_spec());
+                    display_state::redraw_and_prefetch(
                         &meta,
                         &mut cache,
                         &mut vp.display,
@@ -529,40 +478,12 @@ pub fn run(
                         &session.filename,
                         acc.peek(),
                         vp.flash.as_deref(),
+                        search_spec.as_ref(),
                         &mut RenderHandle {
                             renderer: &mut renderer,
                             in_flight: &mut in_flight,
                         },
                     )?;
-                    // Generate overlay for visible tiles if search is active
-                    if let Some(ls) = &vp.last_search {
-                        let spec = ls.highlight_spec();
-                        display_state::update_overlays(
-                            &meta,
-                            &mut vp.display,
-                            &mut cache,
-                            &vp.scroll,
-                            &spec,
-                            &mut RenderHandle {
-                                renderer: &mut renderer,
-                                in_flight: &mut in_flight,
-                            },
-                        )?;
-                        // Place overlay rects that update_overlays just computed.
-                        // redraw() already called place_overlay_rects, but the
-                        // rects were empty at that point (cleared by SetLastSearch).
-                        let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
-                        terminal::place_overlay_rects(&visible, &vp.display, &session.layout)?;
-                    }
-                    display_state::send_prefetch(
-                        &mut RenderHandle {
-                            renderer: &mut renderer,
-                            in_flight: &mut in_flight,
-                        },
-                        &meta,
-                        &cache,
-                        vp.scroll.y_offset,
-                    );
                     cache.evict_distant(
                         (vp.scroll.y_offset / meta.tile_height_px) as usize,
                         session.config.viewer.evict_distance,

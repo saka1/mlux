@@ -430,6 +430,57 @@ pub(super) fn update_overlays(
     Ok(())
 }
 
+/// Drain all pending tile/rect responses from the child process.
+///
+/// Moves completed tile PNGs into the cache and overlay rects into display state.
+/// Returns immediately when no data is ready (non-blocking).
+pub(super) fn drain_responses(
+    rh: &mut RenderHandle<'_>,
+    cache: &mut TiledDocumentCache,
+    display: &mut DisplayState,
+) -> anyhow::Result<()> {
+    while let Some(resp) = rh.renderer.try_recv()? {
+        match resp {
+            TileResponse::Tile { idx, pngs } => {
+                rh.in_flight.remove(&idx);
+                cache.insert(idx, pngs);
+            }
+            TileResponse::Rects { idx, rects } => {
+                display.set_overlay_rects(idx, rects);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Full redraw cycle: drain pending responses, render visible tiles,
+/// update search overlays, and prefetch adjacent tiles.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn redraw_and_prefetch(
+    meta: &DocumentMeta,
+    cache: &mut TiledDocumentCache,
+    display: &mut DisplayState,
+    layout: &Layout,
+    scroll: &ScrollState,
+    filename: &str,
+    acc_peek: Option<u32>,
+    flash: Option<&str>,
+    search_spec: Option<&HighlightSpec>,
+    rh: &mut RenderHandle<'_>,
+) -> anyhow::Result<()> {
+    drain_responses(rh, cache, display)?;
+    redraw(
+        meta, cache, display, layout, scroll, filename, acc_peek, flash, rh,
+    )?;
+    if let Some(spec) = search_spec {
+        update_overlays(meta, display, cache, scroll, spec, rh)?;
+        let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
+        terminal::place_overlay_rects(&visible, display, layout)?;
+    }
+    send_prefetch(rh, meta, cache, scroll.y_offset);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
