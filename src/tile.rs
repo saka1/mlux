@@ -414,7 +414,7 @@ impl TiledDocument {
 // ---------------------------------------------------------------------------
 
 /// A pair of rendered PNGs: content + sidebar for the same tile index.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TilePngs {
     pub content: Vec<u8>,
     pub sidebar: Vec<u8>,

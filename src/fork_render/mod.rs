@@ -35,9 +35,28 @@ enum Request {
 #[derive(Serialize, Deserialize)]
 enum Response {
     Meta(DocumentMeta),
-    Tile(TilePngs),
-    Rects(Vec<HighlightRect>),
+    Tile {
+        idx: usize,
+        pngs: TilePngs,
+    },
+    Rects {
+        idx: usize,
+        rects: Vec<HighlightRect>,
+    },
     Error(String),
+}
+
+/// A response from the child process, tagged with the tile index.
+#[derive(Debug)]
+pub enum TileResponse {
+    Tile {
+        idx: usize,
+        pngs: TilePngs,
+    },
+    Rects {
+        idx: usize,
+        rects: Vec<HighlightRect>,
+    },
 }
 
 /// Tile renderer communicating with a forked child process via typed IPC.
@@ -62,12 +81,42 @@ impl TileRenderer {
         }
     }
 
+    /// Send a tile render request without waiting for the response.
+    pub fn send_render_tile(&mut self, idx: usize) -> Result<()> {
+        self.tx.send(&Request::RenderTile(idx))
+    }
+
+    /// Send a highlight rects request without waiting for the response.
+    pub fn send_find_rects(&mut self, idx: usize, spec: &HighlightSpec) -> Result<()> {
+        self.tx.send(&Request::FindHighlightRects {
+            idx,
+            spec: spec.clone(),
+        })
+    }
+
+    /// Non-blocking receive. Returns `Ok(None)` if no data is ready.
+    pub fn try_recv(&mut self) -> Result<Option<TileResponse>> {
+        if !self.has_pending_data() {
+            return Ok(None);
+        }
+        self.recv().map(Some)
+    }
+
+    /// Blocking receive. Waits for the next response from the child.
+    pub fn recv(&mut self) -> Result<TileResponse> {
+        match self.rx.recv()? {
+            Response::Tile { idx, pngs } => Ok(TileResponse::Tile { idx, pngs }),
+            Response::Rects { idx, rects } => Ok(TileResponse::Rects { idx, rects }),
+            Response::Error(e) => anyhow::bail!("{e}"),
+            Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
+        }
+    }
+
     /// Request a tile pair (content + sidebar) from the child.
     pub fn render_tile_pair(&mut self, idx: usize) -> Result<TilePngs> {
-        self.tx.send(&Request::RenderTile(idx))?;
-        match self.rx.recv()? {
-            Response::Tile(pngs) => Ok(pngs),
-            Response::Error(e) => anyhow::bail!("{e}"),
+        self.send_render_tile(idx)?;
+        match self.recv()? {
+            TileResponse::Tile { pngs, .. } => Ok(pngs),
             _ => anyhow::bail!("unexpected response, expected Tile"),
         }
     }
@@ -78,13 +127,9 @@ impl TileRenderer {
         idx: usize,
         spec: &HighlightSpec,
     ) -> Result<Vec<HighlightRect>> {
-        self.tx.send(&Request::FindHighlightRects {
-            idx,
-            spec: spec.clone(),
-        })?;
-        match self.rx.recv()? {
-            Response::Rects(rects) => Ok(rects),
-            Response::Error(e) => anyhow::bail!("{e}"),
+        self.send_find_rects(idx, spec)?;
+        match self.recv()? {
+            TileResponse::Rects { rects, .. } => Ok(rects),
             _ => anyhow::bail!("unexpected response, expected Rects"),
         }
     }
@@ -189,7 +234,7 @@ pub fn fork_renderer(
                             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 doc.render_tile_pair(idx)
                             })) {
-                                Ok(Ok(pngs)) => Response::Tile(pngs),
+                                Ok(Ok(pngs)) => Response::Tile { idx, pngs },
                                 Ok(Err(e)) => Response::Error(format!("render tile {idx}: {e:#}")),
                                 Err(_) => Response::Error(format!("render tile {idx}: panic")),
                             };
@@ -202,7 +247,7 @@ pub fn fork_renderer(
                             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 doc.find_tile_highlight_rects(idx, &spec)
                             })) {
-                                Ok(rects) => Response::Rects(rects),
+                                Ok(rects) => Response::Rects { idx, rects },
                                 Err(_) => Response::Error(format!(
                                     "find highlight rects tile {idx}: panic"
                                 )),
