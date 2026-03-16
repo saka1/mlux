@@ -3,20 +3,12 @@
 use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::sync::mpsc;
 
 use super::layout::{Layout, ScrollState};
 use super::terminal;
+use crate::fork_render::{TileRenderer, TileResponse};
 use crate::highlight::{HighlightRect, HighlightSpec};
-use crate::tile::{DocumentMeta, TilePngs, TiledDocumentCache, VisibleTiles};
-
-/// Request sent to the prefetch worker thread.
-pub(super) enum WorkerRequest {
-    /// Render a base tile (content + sidebar).
-    RenderTile(usize),
-    /// Compute highlight rectangles for a tile.
-    FindRects { idx: usize, spec: HighlightSpec },
-}
+use crate::tile::{DocumentMeta, TiledDocumentCache, VisibleTiles};
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
@@ -143,25 +135,30 @@ impl DisplayState {
 
     /// Ensure a tile (content + sidebar) is loaded in the terminal.
     ///
-    /// If the tile is not in the doc cache, sends a request to the prefetch worker
-    /// and blocks until the result arrives.
+    /// If the tile is not in the doc cache, sends a request to the fork child
+    /// and blocks until the result arrives. Stray responses (e.g. Rects) are
+    /// routed to the appropriate handler.
     pub(super) fn ensure_loaded(
         &mut self,
         cache: &mut TiledDocumentCache,
         idx: usize,
-        req_tx: &mpsc::Sender<WorkerRequest>,
-        res_rx: &mpsc::Receiver<(usize, TilePngs)>,
-        in_flight: &mut HashSet<usize>,
+        rh: &mut RenderHandle<'_>,
     ) -> anyhow::Result<()> {
         if let Some(action) = self.plan_load(idx) {
             if !cache.contains(idx) {
-                if in_flight.insert(idx) {
-                    let _ = req_tx.send(WorkerRequest::RenderTile(idx));
+                if rh.in_flight.insert(idx) {
+                    let _ = rh.renderer.send_render_tile(idx);
                 }
                 while !cache.contains(idx) {
-                    let (i, pngs) = res_rx.recv()?;
-                    in_flight.remove(&i);
-                    cache.insert(i, pngs);
+                    match rh.renderer.recv()? {
+                        TileResponse::Tile { idx: i, pngs } => {
+                            rh.in_flight.remove(&i);
+                            cache.insert(i, pngs);
+                        }
+                        TileResponse::Rects { idx: i, rects } => {
+                            self.set_overlay_rects(i, rects);
+                        }
+                    }
                 }
             }
             execute_load(&action, cache.get(idx).unwrap())?;
@@ -297,10 +294,9 @@ fn execute_load(action: &LoadAction, pngs: &crate::tile::TilePngs) -> anyhow::Re
     Ok(())
 }
 
-/// Prefetch channel handles for requesting and receiving rendered tiles.
-pub(super) struct PrefetchChannels<'a> {
-    pub req_tx: &'a mpsc::Sender<WorkerRequest>,
-    pub res_rx: &'a mpsc::Receiver<(usize, TilePngs)>,
+/// Handle for sending/receiving tile render requests directly via fork IPC.
+pub(super) struct RenderHandle<'a> {
+    pub renderer: &'a mut TileRenderer,
     pub in_flight: &'a mut HashSet<usize>,
 }
 
@@ -317,20 +313,20 @@ pub(super) fn redraw(
     filename: &str,
     acc_peek: Option<u32>,
     flash: Option<&str>,
-    pf: &mut PrefetchChannels<'_>,
+    rh: &mut RenderHandle<'_>,
 ) -> anyhow::Result<()> {
     let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
 
     // Phase 1: Ensure all needed tiles are rendered and sent to the terminal.
     match &visible {
         VisibleTiles::Single { idx, .. } => {
-            loaded.ensure_loaded(cache, *idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
+            loaded.ensure_loaded(cache, *idx, rh)?;
         }
         VisibleTiles::Split {
             top_idx, bot_idx, ..
         } => {
-            loaded.ensure_loaded(cache, *top_idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
-            loaded.ensure_loaded(cache, *bot_idx, pf.req_tx, pf.res_rx, pf.in_flight)?;
+            loaded.ensure_loaded(cache, *top_idx, rh)?;
+            loaded.ensure_loaded(cache, *bot_idx, rh)?;
         }
     }
 
@@ -363,19 +359,18 @@ pub(super) fn redraw(
 ///
 /// `in_flight` は main thread 専用。worker thread はアクセスしない。
 pub(super) fn send_prefetch(
-    tx: &mpsc::Sender<WorkerRequest>,
+    rh: &mut RenderHandle<'_>,
     meta: &DocumentMeta,
     cache: &TiledDocumentCache,
-    in_flight: &mut HashSet<usize>,
     y_offset: u32,
 ) {
     let current = (y_offset / meta.tile_height_px) as usize;
     // Forward 2 + backward 1
     for idx in [current + 1, current + 2, current.wrapping_sub(1)] {
-        if idx < meta.tile_count && !cache.contains(idx) && !in_flight.contains(&idx) {
+        if idx < meta.tile_count && !cache.contains(idx) && !rh.in_flight.contains(&idx) {
             debug!("prefetch: requesting tile {idx} (current={current})");
-            let _ = tx.send(WorkerRequest::RenderTile(idx));
-            in_flight.insert(idx);
+            let _ = rh.renderer.send_render_tile(idx);
+            rh.in_flight.insert(idx);
         }
     }
 }
@@ -388,10 +383,10 @@ pub(super) fn send_prefetch(
 pub(super) fn update_overlays(
     meta: &DocumentMeta,
     loaded: &mut DisplayState,
+    cache: &mut TiledDocumentCache,
     scroll: &ScrollState,
     spec: &HighlightSpec,
-    req_tx: &mpsc::Sender<WorkerRequest>,
-    rect_rx: &mpsc::Receiver<(usize, Vec<HighlightRect>)>,
+    rh: &mut RenderHandle<'_>,
 ) -> anyhow::Result<()> {
     let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
 
@@ -407,17 +402,21 @@ pub(super) fn update_overlays(
         if loaded.has_overlay(idx) {
             continue;
         }
-        let _ = req_tx.send(WorkerRequest::FindRects {
-            idx,
-            spec: spec.clone(),
-        });
+        let _ = rh.renderer.send_find_rects(idx, spec);
         needed += 1;
     }
 
     while needed > 0 {
-        let (idx, rects) = rect_rx.recv()?;
-        needed -= 1;
-        loaded.set_overlay_rects(idx, rects);
+        match rh.renderer.recv()? {
+            TileResponse::Rects { idx, rects } => {
+                needed -= 1;
+                loaded.set_overlay_rects(idx, rects);
+            }
+            TileResponse::Tile { idx, pngs } => {
+                rh.in_flight.remove(&idx);
+                cache.insert(idx, pngs);
+            }
+        }
     }
 
     // Ensure the shared highlight images are uploaded.

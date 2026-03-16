@@ -42,17 +42,16 @@ use crossterm::{
 };
 use log::{debug, info};
 use std::collections::HashSet;
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::{CliOverrides, Config};
+use crate::fork_render::TileResponse;
 use crate::input::InputSource;
 use crate::pipeline::FontCache;
-use crate::tile::{TilePairHash, TilePngs, TiledDocumentCache, merge_tile_cache};
+use crate::tile::{TilePairHash, TiledDocumentCache, merge_tile_cache};
 use crate::watch::FileWatcher;
 
-use display_state::{DisplayState, PrefetchChannels};
+use display_state::{DisplayState, RenderHandle};
 use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
 use input::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
@@ -303,59 +302,12 @@ pub fn run(
             last_search: None,
         };
 
-        let exit = thread::scope(|s| -> anyhow::Result<ExitReason> {
-            let (req_tx, req_rx) = mpsc::channel::<display_state::WorkerRequest>();
-            let (res_tx, res_rx) = mpsc::channel::<(usize, TilePngs)>();
-            let (rect_tx, rect_rx) =
-                mpsc::channel::<(usize, Vec<crate::highlight::HighlightRect>)>();
+        // in_flight: set of tile indices sent to the child but not yet received.
+        // Inserted by send_prefetch(), removed on try_recv().
+        let mut in_flight: HashSet<usize> = HashSet::new();
+        let mut renderer = renderer;
 
-            // Worker thread: handles both tile rendering and highlight rect requests.
-            //
-            // Tile results go to res_tx, rect results go to rect_tx.
-            let mut renderer = renderer;
-            s.spawn(move || {
-                debug!("prefetch worker: started");
-                while let Ok(req) = req_rx.recv() {
-                    match req {
-                        display_state::WorkerRequest::RenderTile(idx) => {
-                            debug!("prefetch worker: rendering tile {idx}");
-                            let render_start = Instant::now();
-                            match renderer.render_tile_pair(idx) {
-                                Ok(pngs) => {
-                                    debug!("prefetch worker: tile {idx} done in {:.1}ms (content={}, sidebar={} bytes)", render_start.elapsed().as_secs_f64() * 1000.0, pngs.content.len(), pngs.sidebar.len());
-                                    let _ = res_tx.send((idx, pngs));
-                                }
-                                Err(e) => {
-                                    log::error!("prefetch worker: tile {idx} failed: {e}");
-                                }
-                            }
-                        }
-                        display_state::WorkerRequest::FindRects { idx, spec } => {
-                            debug!("prefetch worker: finding rects for tile {idx}");
-                            match renderer.find_highlight_rects(idx, &spec) {
-                                Ok(rects) => {
-                                    let _ = rect_tx.send((idx, rects));
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "prefetch worker: find rects tile {idx} failed: {e}"
-                                    );
-                                    let _ = rect_tx.send((idx, Vec::new()));
-                                }
-                            }
-                        }
-                    }
-                }
-                renderer.shutdown();
-                debug!("prefetch worker: exiting");
-            });
-
-            // in_flight: set of tile indices sent to the worker but not yet received.
-            // Owned exclusively by the main thread (worker never accesses it).
-            // Inserted by send_prefetch(), removed on res_rx.try_recv().
-            // Checked together with doc to prevent duplicate renders.
-            let mut in_flight: HashSet<usize> = HashSet::new();
-
+        let exit: anyhow::Result<ExitReason> = (|| -> anyhow::Result<ExitReason> {
             // Vim-style number prefix accumulator
             let mut acc = InputAccumulator::new();
 
@@ -369,9 +321,8 @@ pub fn run(
                 &session.filename,
                 acc.peek(),
                 None,
-                &mut PrefetchChannels {
-                    req_tx: &req_tx,
-                    res_rx: &res_rx,
+                &mut RenderHandle {
+                    renderer: &mut renderer,
                     in_flight: &mut in_flight,
                 },
             )?;
@@ -381,19 +332,24 @@ pub fn run(
                 display_state::update_overlays(
                     &meta,
                     &mut vp.display,
+                    &mut cache,
                     &vp.scroll,
                     &spec,
-                    &req_tx,
-                    &rect_rx,
+                    &mut RenderHandle {
+                        renderer: &mut renderer,
+                        in_flight: &mut in_flight,
+                    },
                 )?;
                 let visible = meta.visible_tiles(vp.scroll.y_offset, vp.scroll.vp_h);
                 terminal::place_overlay_rects(&visible, &vp.display, &session.layout)?;
             }
             display_state::send_prefetch(
-                &req_tx,
+                &mut RenderHandle {
+                    renderer: &mut renderer,
+                    in_flight: &mut in_flight,
+                },
                 &meta,
                 &cache,
-                &mut in_flight,
                 vp.scroll.y_offset,
             );
 
@@ -401,15 +357,22 @@ pub fn run(
             let mut last_render = Instant::now();
 
             loop {
-                // Drain prefetch results into cache.
-                while let Ok((idx, pngs)) = res_rx.try_recv() {
-                    debug!(
-                        "main: received prefetched tile {idx} (content={}, sidebar={} bytes)",
-                        pngs.content.len(),
-                        pngs.sidebar.len()
-                    );
-                    in_flight.remove(&idx);
-                    cache.insert(idx, pngs);
+                // Drain completed responses from the child process.
+                while let Some(resp) = renderer.try_recv()? {
+                    match resp {
+                        TileResponse::Tile { idx, pngs } => {
+                            debug!(
+                                "main: received tile {idx} (content={}, sidebar={} bytes)",
+                                pngs.content.len(),
+                                pngs.sidebar.len()
+                            );
+                            in_flight.remove(&idx);
+                            cache.insert(idx, pngs);
+                        }
+                        TileResponse::Rects { idx, rects } => {
+                            vp.display.set_overlay_rects(idx, rects);
+                        }
+                    }
                 }
 
                 let has_live_source = session.watcher.is_some()
@@ -529,7 +492,6 @@ pub fn run(
 
                         Event::Resize(new_cols, new_rows) => {
                             return Ok(ExitReason::Resize { new_cols, new_rows });
-                            // req_tx dropped → worker exits → scope joins
                         }
 
                         _ => {}
@@ -539,17 +501,24 @@ pub fn run(
 
                 // poll timeout → frame budget elapsed, execute redraw
                 if vp.dirty {
-                    // Extra drain just before redraw: collect results the worker
+                    // Extra drain just before redraw: collect results the child
                     // completed while event::poll() was blocking, avoiding
                     // synchronous rendering during redraw.
-                    while let Ok((idx, pngs)) = res_rx.try_recv() {
-                        debug!(
-                            "main: received prefetched tile {idx} (content={}, sidebar={} bytes, pre-redraw)",
-                            pngs.content.len(),
-                            pngs.sidebar.len()
-                        );
-                        in_flight.remove(&idx);
-                        cache.insert(idx, pngs);
+                    while let Some(resp) = renderer.try_recv()? {
+                        match resp {
+                            TileResponse::Tile { idx, pngs } => {
+                                debug!(
+                                    "main: received tile {idx} (content={}, sidebar={} bytes, pre-redraw)",
+                                    pngs.content.len(),
+                                    pngs.sidebar.len()
+                                );
+                                in_flight.remove(&idx);
+                                cache.insert(idx, pngs);
+                            }
+                            TileResponse::Rects { idx, rects } => {
+                                vp.display.set_overlay_rects(idx, rects);
+                            }
+                        }
                     }
                     display_state::redraw(
                         &meta,
@@ -560,9 +529,8 @@ pub fn run(
                         &session.filename,
                         acc.peek(),
                         vp.flash.as_deref(),
-                        &mut PrefetchChannels {
-                            req_tx: &req_tx,
-                            res_rx: &res_rx,
+                        &mut RenderHandle {
+                            renderer: &mut renderer,
                             in_flight: &mut in_flight,
                         },
                     )?;
@@ -572,10 +540,13 @@ pub fn run(
                         display_state::update_overlays(
                             &meta,
                             &mut vp.display,
+                            &mut cache,
                             &vp.scroll,
                             &spec,
-                            &req_tx,
-                            &rect_rx,
+                            &mut RenderHandle {
+                                renderer: &mut renderer,
+                                in_flight: &mut in_flight,
+                            },
                         )?;
                         // Place overlay rects that update_overlays just computed.
                         // redraw() already called place_overlay_rects, but the
@@ -584,10 +555,12 @@ pub fn run(
                         terminal::place_overlay_rects(&visible, &vp.display, &session.layout)?;
                     }
                     display_state::send_prefetch(
-                        &req_tx,
+                        &mut RenderHandle {
+                            renderer: &mut renderer,
+                            in_flight: &mut in_flight,
+                        },
                         &meta,
                         &cache,
-                        &mut in_flight,
                         vp.scroll.y_offset,
                     );
                     cache.evict_distant(
@@ -613,8 +586,9 @@ pub fn run(
                     return Ok(ExitReason::Reload);
                 }
             }
-            // req_tx dropped here → worker recv() gets Err → worker exits → scope joins
-        })?;
+        })();
+        renderer.shutdown();
+        let exit = exit?;
 
         // Preserve cache + hashes for merge on reload/resize; discard on navigation
         match &exit {
