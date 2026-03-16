@@ -332,16 +332,6 @@ pub fn run(
             let mut last_render = Instant::now();
 
             loop {
-                // Drain completed responses from the child process.
-                display_state::drain_responses(
-                    &mut ForkHandle {
-                        renderer: &mut renderer,
-                        in_flight: &mut in_flight,
-                    },
-                    &mut cache,
-                    &mut vp.display,
-                )?;
-
                 let has_live_source = session.watcher.is_some()
                     || (matches!(&session.input, InputSource::Stdin(_)) && !stdin_eof);
                 let timeout = if vp.dirty {
