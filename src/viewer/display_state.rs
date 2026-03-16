@@ -442,6 +442,11 @@ pub(super) fn drain_responses(
     while let Some(resp) = rh.renderer.try_recv()? {
         match resp {
             TileResponse::Tile { idx, pngs } => {
+                debug!(
+                    "drain: received tile {idx} ({} + {} bytes)",
+                    pngs.content.len(),
+                    pngs.sidebar.len()
+                );
                 rh.in_flight.remove(&idx);
                 cache.insert(idx, pngs);
             }
