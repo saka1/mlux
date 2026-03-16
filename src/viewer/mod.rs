@@ -344,19 +344,16 @@ pub fn run(
 
                 let has_live_source = session.watcher.is_some()
                     || (matches!(&session.input, InputSource::Stdin(_)) && !stdin_eof);
-                let idle_timeout = if has_live_source {
-                    session.config.viewer.watch_interval
-                } else {
-                    Duration::from_secs(86400)
-                };
                 let timeout = if vp.dirty {
                     session
                         .config
                         .viewer
                         .frame_budget
                         .saturating_sub(last_render.elapsed())
+                } else if has_live_source {
+                    session.config.viewer.watch_interval
                 } else {
-                    idle_timeout
+                    Duration::from_secs(86400)
                 };
 
                 if event::poll(timeout)? {
