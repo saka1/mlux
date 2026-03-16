@@ -142,7 +142,7 @@ impl DisplayState {
         &mut self,
         cache: &mut TiledDocumentCache,
         idx: usize,
-        rh: &mut RenderHandle<'_>,
+        rh: &mut ForkHandle<'_>,
     ) -> anyhow::Result<()> {
         if let Some(action) = self.plan_load(idx) {
             if !cache.contains(idx) {
@@ -295,7 +295,7 @@ fn execute_load(action: &LoadAction, pngs: &crate::tile::TilePngs) -> anyhow::Re
 }
 
 /// Handle for sending/receiving tile render requests directly via fork IPC.
-pub(super) struct RenderHandle<'a> {
+pub(super) struct ForkHandle<'a> {
     pub renderer: &'a mut TileRenderer,
     pub in_flight: &'a mut HashSet<usize>,
 }
@@ -313,7 +313,7 @@ pub(super) fn redraw(
     filename: &str,
     acc_peek: Option<u32>,
     flash: Option<&str>,
-    rh: &mut RenderHandle<'_>,
+    rh: &mut ForkHandle<'_>,
 ) -> anyhow::Result<()> {
     let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
 
@@ -359,7 +359,7 @@ pub(super) fn redraw(
 ///
 /// `in_flight` は main thread 専用。worker thread はアクセスしない。
 pub(super) fn send_prefetch(
-    rh: &mut RenderHandle<'_>,
+    rh: &mut ForkHandle<'_>,
     meta: &DocumentMeta,
     cache: &TiledDocumentCache,
     y_offset: u32,
@@ -386,7 +386,7 @@ pub(super) fn update_overlays(
     cache: &mut TiledDocumentCache,
     scroll: &ScrollState,
     spec: &HighlightSpec,
-    rh: &mut RenderHandle<'_>,
+    rh: &mut ForkHandle<'_>,
 ) -> anyhow::Result<()> {
     let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
 
@@ -435,7 +435,7 @@ pub(super) fn update_overlays(
 /// Moves completed tile PNGs into the cache and overlay rects into display state.
 /// Returns immediately when no data is ready (non-blocking).
 pub(super) fn drain_responses(
-    rh: &mut RenderHandle<'_>,
+    rh: &mut ForkHandle<'_>,
     cache: &mut TiledDocumentCache,
     display: &mut DisplayState,
 ) -> anyhow::Result<()> {
@@ -471,7 +471,7 @@ pub(super) fn redraw_and_prefetch(
     acc_peek: Option<u32>,
     flash: Option<&str>,
     search_spec: Option<&HighlightSpec>,
-    rh: &mut RenderHandle<'_>,
+    rh: &mut ForkHandle<'_>,
 ) -> anyhow::Result<()> {
     drain_responses(rh, cache, display)?;
     redraw(

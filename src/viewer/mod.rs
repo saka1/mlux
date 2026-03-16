@@ -50,7 +50,7 @@ use crate::pipeline::FontCache;
 use crate::tile::{TilePairHash, TiledDocumentCache, merge_tile_cache};
 use crate::watch::FileWatcher;
 
-use display_state::{DisplayState, RenderHandle};
+use display_state::{DisplayState, ForkHandle};
 use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
 use input::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
@@ -322,7 +322,7 @@ pub fn run(
                 acc.peek(),
                 None,
                 search_spec.as_ref(),
-                &mut RenderHandle {
+                &mut ForkHandle {
                     renderer: &mut renderer,
                     in_flight: &mut in_flight,
                 },
@@ -334,7 +334,7 @@ pub fn run(
             loop {
                 // Drain completed responses from the child process.
                 display_state::drain_responses(
-                    &mut RenderHandle {
+                    &mut ForkHandle {
                         renderer: &mut renderer,
                         in_flight: &mut in_flight,
                     },
@@ -476,7 +476,7 @@ pub fn run(
                         acc.peek(),
                         vp.flash.as_deref(),
                         search_spec.as_ref(),
-                        &mut RenderHandle {
+                        &mut ForkHandle {
                             renderer: &mut renderer,
                             in_flight: &mut in_flight,
                         },
