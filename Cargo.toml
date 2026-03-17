@@ -66,3 +66,6 @@ single_range_in_vec_init = "allow"
 strip = "debuginfo"
 lto = "thin"
 panic = "abort"
+
+[dev-dependencies]
+tempfile = "3.27.0"

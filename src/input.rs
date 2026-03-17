@@ -130,6 +130,33 @@ pub fn read_stdin_to_string() -> io::Result<String> {
     Ok(buf)
 }
 
+impl InputSource {
+    /// Read all content from the source, blocking until complete.
+    ///
+    /// - `File`: reads entire file via `std::fs::read_to_string`.
+    /// - `Stdin`: drains the `StdinReader` channel (blocking `recv()`) until EOF.
+    ///
+    /// Used by render mode for one-shot reads.
+    pub fn read_all(&mut self) -> anyhow::Result<String> {
+        match self {
+            InputSource::File(path) => std::fs::read_to_string(path.as_path())
+                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display())),
+            InputSource::Stdin(reader) => Ok(reader.read_all()),
+        }
+    }
+}
+
+impl StdinReader {
+    /// Block until EOF and return all accumulated data.
+    pub fn read_all(&self) -> String {
+        let mut buf = String::new();
+        while let Ok(StdinChunk::Data(s)) = self.rx.recv() {
+            buf.push_str(&s);
+        }
+        buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +345,39 @@ mod tests {
         assert!(result.got_data);
         assert!(result.eof);
         assert_eq!(buf, "aaabbb");
+    }
+
+    // --- read_all tests ---
+
+    #[test]
+    fn read_all_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "# Hello").unwrap();
+        let mut src = InputSource::File(path);
+        let content = src.read_all().unwrap();
+        assert_eq!(content, "# Hello");
+    }
+
+    #[test]
+    fn read_all_file_not_found() {
+        let mut src = InputSource::File(PathBuf::from("/nonexistent/path/file.md"));
+        assert!(src.read_all().is_err());
+    }
+
+    #[test]
+    fn read_all_stdin() {
+        let reader = StdinReader::from_reader(Cursor::new(b"stdin content"));
+        let mut src = InputSource::Stdin(reader);
+        let content = src.read_all().unwrap();
+        assert_eq!(content, "stdin content");
+    }
+
+    #[test]
+    fn read_all_stdin_empty() {
+        let reader = StdinReader::from_reader(Cursor::new(b""));
+        let mut src = InputSource::Stdin(reader);
+        let content = src.read_all().unwrap();
+        assert!(content.is_empty());
     }
 }
