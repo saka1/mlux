@@ -123,13 +123,6 @@ pub fn is_stdin_input(input: Option<&Path>) -> bool {
     }
 }
 
-/// Read all of stdin to a string (blocking, for render mode).
-pub fn read_stdin_to_string() -> io::Result<String> {
-    let mut buf = String::new();
-    io::stdin().read_to_string(&mut buf)?;
-    Ok(buf)
-}
-
 impl InputSource {
     /// Read all content from the source, blocking until complete.
     ///
