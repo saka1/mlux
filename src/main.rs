@@ -245,8 +245,21 @@ fn cmd_render(
         app.config.viewer.tile_height,
     );
 
+    // Fork 1: extract image paths (sandboxed) + parent fetches remote images
+    let (image_paths, remote_images) = mlux::fork_render::prepare_images(
+        &markdown,
+        app.cli_overrides.allow_remote_images,
+        no_sandbox,
+    )?;
+
     if dump {
-        let mut child = mlux::fork_render::fork_dump(&params, read_base.as_deref(), no_sandbox)?;
+        let mut child = mlux::fork_render::fork_dump(
+            &params,
+            &image_paths,
+            remote_images,
+            read_base.as_deref(),
+            no_sandbox,
+        )?;
         let code = child.wait()?;
         if code != 0 {
             anyhow::bail!("dump failed (child exited with code {code})");
@@ -270,6 +283,8 @@ fn cmd_render(
 
     cmd_render_fork(
         &params,
+        &image_paths,
+        remote_images,
         read_base.as_deref(),
         output_parent,
         &stem,
@@ -284,6 +299,8 @@ fn cmd_render(
 #[allow(clippy::too_many_arguments)]
 fn cmd_render_fork(
     params: &mlux::pipeline::BuildParams<'_>,
+    image_paths: &[String],
+    remote_images: mlux::image::LoadedImages,
     read_base: Option<&Path>,
     output_parent: &Path,
     stem: &str,
@@ -294,7 +311,8 @@ fn cmd_render_fork(
 ) -> Result<()> {
     use mlux::fork_render::spawn_renderer;
 
-    let (meta, mut renderer, mut _child) = spawn_renderer(params, read_base, no_sandbox)?;
+    let (meta, mut renderer, mut _child) =
+        spawn_renderer(params, image_paths, remote_images, read_base, no_sandbox)?;
 
     let mut files = Vec::new();
     for i in 0..meta.tile_count {

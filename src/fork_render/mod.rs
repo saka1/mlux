@@ -35,10 +35,8 @@ where
     let sandbox_base: Option<PathBuf> = sandbox_read_base.map(|p| p.to_path_buf());
     let (_, mut rx, mut child) =
         process::fork_with_channels::<(), T, _>(move |_req_rx, mut resp_tx| {
-            if !no_sandbox {
-                if let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref()) {
-                    log::warn!("child: sandbox failed: {e:#}");
-                }
+            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref()) {
+                log::warn!("child: sandbox failed: {e:#}");
             }
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
                 Ok(result) => {
@@ -229,16 +227,20 @@ impl TileRenderer {
 
 /// Fork a sandboxed renderer child process without waiting for metadata.
 ///
-/// The child:
-/// 1. Applies Landlock read-only sandbox
-/// 2. Builds the TiledDocument
-/// 3. Sends `Response::Meta` back to parent
-/// 4. Enters request loop: renders tiles on demand
+/// The child (Fork 2):
+/// 1. Applies Landlock V4 sandbox (FS read-only + TCP denied)
+/// 2. Loads local images within the read scope
+/// 3. Merges pre-fetched remote images from parent
+/// 4. Compiles the TiledDocument
+/// 5. Sends `Response::Meta` back to parent
+/// 6. Enters request loop: renders tiles on demand
 ///
 /// Returns `(renderer, child_handle)`.
 /// The caller must call [`TileRenderer::wait_for_meta`] to receive the first message.
 pub fn fork_renderer(
     params: &BuildParams<'_>,
+    image_paths: &[String],
+    remote_images: LoadedImages,
     sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
 ) -> Result<(TileRenderer, ChildProcess)> {
@@ -254,31 +256,50 @@ pub fn fork_renderer(
     let ppi = params.ppi;
     let allow_remote_images = params.allow_remote_images;
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
+    let image_paths = image_paths.to_vec();
 
     let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
         move |mut req_rx: process::TypedReader<Request>,
               mut resp_tx: process::TypedWriter<Response>| {
-            // Apply sandbox in child before any compilation
+            // SECURITY: Fork 2 applies sandbox immediately.
+            // All untrusted processing (pulldown-cmark, mermaid, Typst) runs
+            // under Landlock V4 (FS read-only + TCP denied).
+            // Local images are loaded from disk within the read scope.
+            // Remote images were pre-fetched by the parent (trusted side)
+            // and passed via closure capture (COW after fork).
             if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_read_base.as_deref()) {
                 log::warn!("child: sandbox failed: {e:#}");
             }
 
+            // Load local images (Landlock read scope allows git root)
+            let (mut images, errors) =
+                crate::image::load_images(&image_paths, base_dir.as_deref(), false);
+            for err in &errors {
+                log::warn!("{err}");
+            }
+
+            // Merge pre-fetched remote images from parent
+            images.extend(remote_images);
+
             // Font cache created in child (filesystem scan, not serializable)
             let fonts = crate::pipeline::FontCache::new();
 
-            let doc = match build_tiled_document(&BuildParams {
-                theme_name: &theme_name,
-                theme_text: &theme_text,
-                data_files,
-                markdown: &markdown,
-                base_dir: base_dir.as_deref(),
-                width_pt,
-                sidebar_width_pt,
-                tile_height_pt,
-                ppi,
-                fonts: &fonts,
-                allow_remote_images,
-            }) {
+            let doc = match compile_and_tile(
+                &BuildParams {
+                    theme_name: &theme_name,
+                    theme_text: &theme_text,
+                    data_files,
+                    markdown: &markdown,
+                    base_dir: base_dir.as_deref(),
+                    width_pt,
+                    sidebar_width_pt,
+                    tile_height_pt,
+                    ppi,
+                    fonts: &fonts,
+                    allow_remote_images,
+                },
+                images,
+            ) {
                 Ok(doc) => doc,
                 Err(e) => {
                     log::error!("child: build failed: {e:#}");
@@ -338,15 +359,17 @@ pub fn fork_renderer(
 
 /// Fork a sandboxed child that dumps the compiled document to stderr and exits.
 ///
-/// The child applies the sandbox, compiles the document, and writes the
-/// generated Typst source and frame tree to stderr. No IPC is needed because
-/// the forked child shares the parent's stderr.
+/// The child (Fork 2) applies the sandbox, loads local images, merges
+/// pre-fetched remote images, compiles the document, and writes the
+/// generated Typst source and frame tree to stderr.
 pub fn fork_dump(
     params: &BuildParams<'_>,
+    image_paths: &[String],
+    remote_images: LoadedImages,
     sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
 ) -> Result<ChildProcess> {
-    use crate::pipeline::build_and_dump;
+    use crate::pipeline::compile_and_dump;
 
     let theme_name = params.theme_name.to_string();
     let theme_text = params.theme_text.to_string();
@@ -359,27 +382,41 @@ pub fn fork_dump(
     let ppi = params.ppi;
     let allow_remote_images = params.allow_remote_images;
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
+    let image_paths = image_paths.to_vec();
 
     let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
         if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_read_base.as_deref()) {
             log::warn!("child: sandbox failed: {e:#}");
         }
 
+        // Load local images (Landlock read scope allows git root)
+        let (mut images, errors) =
+            crate::image::load_images(&image_paths, base_dir.as_deref(), false);
+        for err in &errors {
+            log::warn!("{err}");
+        }
+
+        // Merge pre-fetched remote images from parent
+        images.extend(remote_images);
+
         let fonts = crate::pipeline::FontCache::new();
 
-        if let Err(e) = build_and_dump(&BuildParams {
-            theme_name: &theme_name,
-            theme_text: &theme_text,
-            data_files,
-            markdown: &markdown,
-            base_dir: base_dir.as_deref(),
-            width_pt,
-            sidebar_width_pt,
-            tile_height_pt,
-            ppi,
-            fonts: &fonts,
-            allow_remote_images,
-        }) {
+        if let Err(e) = compile_and_dump(
+            &BuildParams {
+                theme_name: &theme_name,
+                theme_text: &theme_text,
+                data_files,
+                markdown: &markdown,
+                base_dir: base_dir.as_deref(),
+                width_pt,
+                sidebar_width_pt,
+                tile_height_pt,
+                ppi,
+                fonts: &fonts,
+                allow_remote_images,
+            },
+            images,
+        ) {
             eprintln!("{e:#}");
             unsafe { nix::libc::_exit(1) }
         }
@@ -396,10 +433,18 @@ pub fn fork_dump(
 /// Returns `(metadata, renderer, child_handle)`.
 pub fn spawn_renderer(
     params: &BuildParams<'_>,
+    image_paths: &[String],
+    remote_images: LoadedImages,
     sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
 ) -> Result<(DocumentMeta, TileRenderer, ChildProcess)> {
-    let (mut renderer, child) = fork_renderer(params, sandbox_read_base, no_sandbox)?;
+    let (mut renderer, child) = fork_renderer(
+        params,
+        image_paths,
+        remote_images,
+        sandbox_read_base,
+        no_sandbox,
+    )?;
     let meta = renderer.wait_for_meta()?;
     Ok((meta, renderer, child))
 }

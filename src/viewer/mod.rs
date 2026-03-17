@@ -186,10 +186,22 @@ pub fn run(
                 InputSource::File(p) => p.parent().map(|d| d.to_path_buf()),
                 InputSource::Stdin(_) => None,
             };
-            // Fork before any threads (fork safety).
+            // Fork 1: extract image paths (sandboxed) + parent fetches remote images
+            let (image_paths, remote_images) = crate::fork_render::prepare_images(
+                &markdown,
+                app.cli_overrides.allow_remote_images,
+                no_sandbox,
+            )?;
+
+            // Fork 2 before any threads (fork safety).
             // The child starts building immediately; we wait for meta below.
-            let (mut renderer, child) =
-                crate::fork_render::fork_renderer(&params, read_base.as_deref(), no_sandbox)?;
+            let (mut renderer, child) = crate::fork_render::fork_renderer(
+                &params,
+                &image_paths,
+                remote_images,
+                read_base.as_deref(),
+                no_sandbox,
+            )?;
             _fork_child = Some(child);
 
             // Wait for metadata from child, polling for quit/resize events.

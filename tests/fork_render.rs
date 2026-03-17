@@ -5,6 +5,7 @@
 //! and run each test sequentially in a single thread.
 
 use mlux::fork_render::{fork_dump, fork_renderer, spawn_renderer};
+use mlux::image::LoadedImages;
 use mlux::pipeline::{BuildParams, FontCache, build_tiled_document};
 use mlux::tile::VisibleTiles;
 
@@ -38,7 +39,8 @@ fn test_fork_render_matches_local() {
     let local_meta = local_doc.metadata();
 
     // Fork render
-    let (fork_meta, mut renderer, mut _child) = spawn_renderer(&params, None, true).unwrap();
+    let (fork_meta, mut renderer, mut _child) =
+        spawn_renderer(&params, &[], LoadedImages::default(), None, true).unwrap();
 
     // Metadata should match
     assert_eq!(fork_meta.tile_count, local_meta.tile_count);
@@ -83,7 +85,8 @@ fn test_fork_render_metadata_methods() {
         allow_remote_images: false,
     };
 
-    let (meta, _renderer, mut _child) = spawn_renderer(&params, None, true).unwrap();
+    let (meta, _renderer, mut _child) =
+        spawn_renderer(&params, &[], LoadedImages::default(), None, true).unwrap();
 
     // DocumentMeta methods should work
     assert!(meta.tile_count > 0);
@@ -124,7 +127,8 @@ fn test_fork_renderer_build_error_propagated() {
     let font_cache = FontCache::new();
     let params = make_failing_params(&font_cache);
 
-    let (mut renderer, mut _child) = fork_renderer(&params, None, true).unwrap();
+    let (mut renderer, mut _child) =
+        fork_renderer(&params, &[], LoadedImages::default(), None, true).unwrap();
     match renderer.wait_for_meta() {
         Ok(_) => panic!("expected build error, got Ok"),
         Err(err) => {
@@ -141,7 +145,7 @@ fn test_fork_dump_build_error_exit_code() {
     let font_cache = FontCache::new();
     let params = make_failing_params(&font_cache);
 
-    let mut child = fork_dump(&params, None, true).unwrap();
+    let mut child = fork_dump(&params, &[], LoadedImages::default(), None, true).unwrap();
     let code = child.wait().unwrap();
     assert_ne!(code, 0, "fork_dump should exit non-zero on build failure");
 }
