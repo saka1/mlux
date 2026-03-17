@@ -44,9 +44,8 @@ use log::{debug, info};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::config::{CliOverrides, Config};
+use crate::app_context::{AppContext, AppContextBuilder};
 use crate::input::InputSource;
-use crate::pipeline::FontCache;
 use crate::tile_cache::TileCache;
 use crate::watch::FileWatcher;
 
@@ -63,21 +62,18 @@ const FAST_THRESHOLD: Duration = Duration::from_millis(100);
 
 /// Run the terminal viewer.
 ///
+/// `app` is the shared application context (fonts, config, theme).
 /// `input` is the input source (file path or stdin pipe).
-/// `config` contains all resolved settings (theme, PPI, viewer params, etc.).
-/// `cli_overrides` are preserved across config reloads.
 /// `watch` enables automatic reload on file change.
 /// `no_sandbox` disables Landlock sandbox (fork is always used).
 pub fn run(
+    mut app: AppContext,
     input: InputSource,
-    config: Config,
-    cli_overrides: &CliOverrides,
     watch: bool,
     no_sandbox: bool,
 ) -> anyhow::Result<()> {
     terminal::check_tty()?;
 
-    // 2. Get terminal size first to determine the viewport width
     let winsize = crossterm_terminal::window_size()
         .map_err(|e| anyhow::anyhow!("failed to get terminal size: {e}"))?;
     let (term_cols, term_rows) = (winsize.columns, winsize.rows);
@@ -91,26 +87,7 @@ pub fn run(
         );
     }
 
-    // 3. Font cache (one-time filesystem scan, shared across rebuilds)
-    //
-    // `Box::leak` turns the heap allocation into a `&'static` reference.
-    // This is sound here because:
-    //   - `font_cache` is intentionally immortal: it must outlive every build
-    //     thread, the inner event loop, and all outer-loop rebuilds.
-    //   - The process exits immediately after `run()` returns, so the leak
-    //     has no practical consequence (the OS reclaims the memory anyway).
-    //   - The alternative — `Arc<FontCache>` — would require cloning the Arc
-    //     into every `thread::spawn` / `thread::scope` closure.  Since the
-    //     lifetime is truly "until process exit", `&'static` is both simpler
-    //     and more honest about the intent than reference-counting.
-    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
-
-    // 4. raw mode + alternate screen (maintained across rebuilds)
     let mut guard = terminal::RawGuard::enter()?;
-
-    // 4a. Detect terminal theme (must be in raw mode, before alternate screen content)
-    let detected_light = terminal::detect_terminal_theme(Duration::from_millis(100))
-        == terminal::TerminalTheme::Light;
 
     // Session: persistent state across document rebuilds
     let watcher_init = if watch {
@@ -127,18 +104,15 @@ pub fn run(
             term_rows,
             pixel_w,
             pixel_h,
-            config.viewer.sidebar_cols,
+            app.config.viewer.sidebar_cols,
         ),
         filename: input.display_name().to_string(),
-        config,
-        cli_overrides: cli_overrides.clone(),
         input,
         watcher: watcher_init,
         jump_stack: Vec::new(),
         scroll_carry: 0,
         pending_flash: None,
         watch,
-        detected_light,
     };
 
     // Stdin buffer and EOF flag (stdin mode only)
@@ -150,11 +124,6 @@ pub fn run(
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
-        // 1. Load theme (inside the loop because config reload may change the theme name)
-        let theme_name = crate::theme::resolve_theme_name(&session.config.theme, detected_light);
-        let theme_text = crate::theme::get(theme_name)
-            .ok_or_else(|| anyhow::anyhow!("unknown theme '{theme_name}'"))?;
-
         // 5a. Read markdown (re-read on each iteration for reload support)
         // For stdin mode, drain any available data first
         if let InputSource::Stdin(ref reader) = session.input {
@@ -177,17 +146,10 @@ pub fn run(
         };
 
         // 5b. Build document (content + sidebar compiled & split)
-        //
-        // On unix with sandbox enabled: fork a child process, compile/render
-        // in the sandboxed child, communicate via IPC.
-        // Otherwise: build directly in-process on a background thread.
-        //
-        // Both paths use build_async_with_threshold for loading UI.
         info!("building tiled document...");
         let layout_copy = session.layout;
-        let ppi = session.config.ppi;
-        let tile_height = session.config.viewer.tile_height;
-        let data_files = crate::theme::data_files(theme_name);
+        let ppi = app.config.ppi;
+        let tile_height = app.config.viewer.tile_height;
 
         // ChildProcess handle kept alive for the duration of the inner loop.
         // Dropped on reload/resize/quit → sends SIGKILL to child.
@@ -213,19 +175,13 @@ pub fn run(
             let sidebar_width_pt =
                 layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
 
-            let params = crate::pipeline::BuildParams {
-                theme_name,
-                theme_text,
-                data_files,
-                markdown: &markdown,
+            let params = app.build_params(
+                &markdown,
                 base_dir,
                 width_pt,
                 sidebar_width_pt,
                 tile_height_pt,
-                ppi,
-                fonts: font_cache,
-                allow_remote_images: session.cli_overrides.allow_remote_images,
-            };
+            );
             let read_base = match &session.input {
                 InputSource::File(p) => p.parent().map(|d| d.to_path_buf()),
                 InputSource::Stdin(_) => None,
@@ -262,7 +218,11 @@ pub fn run(
                             break 'outer;
                         }
                         Event::Resize(new_cols, new_rows) => {
-                            session.update_layout_for_resize(new_cols, new_rows)?;
+                            session.update_layout_for_resize(
+                                new_cols,
+                                new_rows,
+                                app.config.viewer.sidebar_cols,
+                            )?;
                             continue 'outer;
                         }
                         _ => {}
@@ -287,7 +247,7 @@ pub fn run(
                 vp_w,
                 vp_h,
             },
-            display: DisplayState::new(session.config.viewer.evict_distance),
+            display: DisplayState::new(app.config.viewer.evict_distance),
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
@@ -327,13 +287,12 @@ pub fn run(
                 let has_live_source = session.watcher.is_some()
                     || (matches!(&session.input, InputSource::Stdin(_)) && !stdin_eof);
                 let timeout = if vp.dirty {
-                    session
-                        .config
+                    app.config
                         .viewer
                         .frame_budget
                         .saturating_sub(last_render.elapsed())
                 } else if has_live_source {
-                    session.config.viewer.watch_interval
+                    app.config.viewer.watch_interval
                 } else {
                     Duration::from_secs(86400)
                 };
@@ -363,7 +322,7 @@ pub fn run(
                                                 scroll: &vp.scroll,
                                                 doc: &doc,
                                                 max_scroll: max_y,
-                                                scroll_step: session.config.viewer.scroll_step
+                                                scroll_step: app.config.viewer.scroll_step
                                                     * session.layout.cell_h as u32,
                                                 half_page: (session.layout.image_rows as u32 / 2)
                                                     .max(1)
@@ -465,7 +424,7 @@ pub fn run(
                     )?;
                     tile_cache.evict_distant(
                         (vp.scroll.y_offset / meta.tile_height_px) as usize,
-                        session.config.viewer.evict_distance,
+                        app.config.viewer.evict_distance,
                     );
                     vp.dirty = false;
                 }
@@ -498,7 +457,51 @@ pub fn run(
             }
         }
 
-        if session.handle_exit(exit, vp.scroll.y_offset)? {
+        // Handle config reload: rebuild AppContext with new config
+        if matches!(&exit, ExitReason::ConfigReload) {
+            match crate::config::reload_config(&app.cli_overrides) {
+                Ok(new_config) => {
+                    // Validate theme before consuming AppContext
+                    let resolved =
+                        crate::theme::resolve_theme_name(&new_config.theme, app.detected_light);
+                    if crate::theme::get(resolved).is_none() {
+                        session.pending_flash = Some(format!(
+                            "Reload failed: unknown theme '{}'",
+                            new_config.theme
+                        ));
+                        debug!(
+                            "config reload: unknown theme '{}', keeping old config",
+                            new_config.theme
+                        );
+                        // continue with old AppContext
+                    } else {
+                        // Recalculate layout if sidebar_cols changed
+                        if new_config.viewer.sidebar_cols != app.config.viewer.sidebar_cols {
+                            let winsize = crossterm_terminal::window_size()?;
+                            session.layout = layout::compute_layout(
+                                winsize.columns,
+                                winsize.rows,
+                                winsize.width,
+                                winsize.height,
+                                new_config.viewer.sidebar_cols,
+                            );
+                        }
+
+                        let new_overrides = app.cli_overrides.clone();
+                        app = AppContextBuilder::from_existing(new_config, new_overrides, app)
+                            .build()
+                            .expect("theme validated above");
+                        session.pending_flash = Some("Config reloaded".into());
+                    }
+                }
+                Err(e) => {
+                    session.pending_flash = Some(format!("Reload failed: {e}"));
+                    debug!("config reload failed: {e}");
+                }
+            }
+        }
+
+        if session.handle_exit(exit, vp.scroll.y_offset, app.config.viewer.sidebar_cols)? {
             break 'outer;
         }
     }

@@ -12,7 +12,6 @@ use crossterm::terminal as crossterm_terminal;
 use log::debug;
 use std::path::{Path, PathBuf};
 
-use crate::config::{self, CliOverrides, Config};
 use crate::input::InputSource;
 use crate::watch::FileWatcher;
 
@@ -270,8 +269,6 @@ impl Viewport {
 /// configuration, file management, and navigation history.
 pub(super) struct Session {
     pub layout: Layout,
-    pub config: Config,
-    pub cli_overrides: CliOverrides,
     pub input: InputSource,
     pub filename: String,
     pub watcher: Option<FileWatcher>,
@@ -279,7 +276,6 @@ pub(super) struct Session {
     pub scroll_carry: u32,
     pub pending_flash: Option<String>,
     pub watch: bool,
-    pub detected_light: bool,
 }
 
 impl Session {
@@ -288,6 +284,7 @@ impl Session {
         &mut self,
         new_cols: u16,
         new_rows: u16,
+        sidebar_cols: u16,
     ) -> anyhow::Result<()> {
         let new_winsize = crossterm_terminal::window_size()?;
         self.layout = layout::compute_layout(
@@ -295,7 +292,7 @@ impl Session {
             new_rows,
             new_winsize.width,
             new_winsize.height,
-            self.config.viewer.sidebar_cols,
+            sidebar_cols,
         );
         terminal::delete_all_images()?;
         Ok(())
@@ -306,13 +303,14 @@ impl Session {
         &mut self,
         exit: ExitReason,
         scroll_position: u32,
+        sidebar_cols: u16,
     ) -> anyhow::Result<bool> {
         match exit {
             ExitReason::Quit => return Ok(true),
             ExitReason::Resize { new_cols, new_rows } => {
                 self.scroll_carry = scroll_position;
                 debug!("resize: rebuilding tiled document and sidebar");
-                self.update_layout_for_resize(new_cols, new_rows)?;
+                self.update_layout_for_resize(new_cols, new_rows, sidebar_cols)?;
             }
             ExitReason::Reload => {
                 self.scroll_carry = scroll_position;
@@ -322,51 +320,7 @@ impl Session {
             ExitReason::ConfigReload => {
                 self.scroll_carry = scroll_position;
                 debug!("config reload requested");
-
-                match config::reload_config(&self.cli_overrides) {
-                    Ok(new_config) => {
-                        // Verify built-in theme exists before committing
-                        let resolved = crate::theme::resolve_theme_name(
-                            &new_config.theme,
-                            self.detected_light,
-                        );
-                        if crate::theme::get(resolved).is_none() {
-                            self.pending_flash = Some(format!(
-                                "Reload failed: unknown theme '{}'",
-                                new_config.theme
-                            ));
-                            debug!(
-                                "config reload: unknown theme '{}', keeping old config",
-                                new_config.theme
-                            );
-                            // Rebuild with old config
-                            terminal::delete_all_images()?;
-                            return Ok(false);
-                        }
-
-                        // Recalculate layout if sidebar_cols changed
-                        if new_config.viewer.sidebar_cols != self.config.viewer.sidebar_cols {
-                            let winsize = crossterm_terminal::window_size()?;
-                            self.layout = layout::compute_layout(
-                                winsize.columns,
-                                winsize.rows,
-                                winsize.width,
-                                winsize.height,
-                                new_config.viewer.sidebar_cols,
-                            );
-                        }
-
-                        self.config = new_config;
-                        self.pending_flash = Some("Config reloaded".into());
-                    }
-                    Err(e) => {
-                        self.pending_flash = Some(format!("Reload failed: {e}"));
-                        debug!("config reload failed: {e}");
-                        // Rebuild with old config
-                    }
-                }
                 terminal::delete_all_images()?;
-                // continue 'outer -> rebuild document with new (or old) config
             }
             ExitReason::Navigate { path } => {
                 if !path.exists() {

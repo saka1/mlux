@@ -6,9 +6,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use log::info;
 
+use mlux::app_context::{AppContext, AppContextBuilder};
 use mlux::config;
 use mlux::input::{self, InputSource};
-use mlux::pipeline::{BuildParams, FontCache};
 
 /// Default sidebar width in typst points for headless (non-terminal) rendering.
 const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
@@ -141,49 +141,49 @@ fn main() {
     };
 
     cfg.merge_cli(cli.theme, render_width, render_ppi, render_tile_height);
-
     let config = cfg.resolve();
 
-    let result = match cli.command {
-        Some(Command::Render {
-            input,
-            output,
-            dump,
-            ..
-        }) => cmd_render(
-            input,
-            &config,
-            output,
-            dump,
-            cli.no_sandbox,
-            cli.allow_remote_images,
-        ),
-        None => {
-            let input_source = if input::is_stdin_input(cli.input.as_deref()) {
-                InputSource::Stdin(input::StdinReader::new())
-            } else {
-                match cli.input {
-                    Some(p) => match p.canonicalize() {
-                        Ok(canonical) => InputSource::File(canonical),
-                        Err(e) => {
-                            eprintln!("Error: failed to resolve {}: {e}", p.display());
-                            std::process::exit(1);
-                        }
-                    },
-                    None => {
-                        eprintln!("Error: input file required (or pipe via stdin)");
-                        std::process::exit(1);
-                    }
-                }
-            };
-            mlux::viewer::run(
-                input_source,
-                config,
-                &cli_overrides,
-                !cli.no_watch,
-                cli.no_sandbox,
-            )
+    // Theme detection: only when theme is "auto" and stdout is a TTY
+    let detected_light = if config.theme == "auto" {
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() {
+            let _raw = crossterm::terminal::enable_raw_mode();
+            let result = mlux::viewer::detect_terminal_theme(std::time::Duration::from_millis(100))
+                == mlux::viewer::TerminalTheme::Light;
+            let _ = crossterm::terminal::disable_raw_mode();
+            result
+        } else {
+            false
         }
+    } else {
+        false
+    };
+
+    // Build AppContext: shared initialization for both modes
+    let app = match AppContextBuilder::new(config, cli_overrides)
+        .load_fonts()
+        .set_detected_light(detected_light)
+        .build()
+    {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
+    };
+
+    // Build InputSource: shared for both modes
+    let render_input_path = cli
+        .command
+        .as_ref()
+        .map(|Command::Render { input, .. }| input.clone());
+    let input_source = build_input_source(cli.input.or(render_input_path));
+
+    let result = match cli.command {
+        Some(Command::Render { output, dump, .. }) => {
+            cmd_render(app, input_source, output, dump, cli.no_sandbox)
+        }
+        None => mlux::viewer::run(app, input_source, !cli.no_watch, cli.no_sandbox),
     };
 
     if let Err(e) = result {
@@ -197,82 +197,53 @@ fn main() {
     }
 }
 
+fn build_input_source(input: Option<PathBuf>) -> InputSource {
+    if input::is_stdin_input(input.as_deref()) {
+        InputSource::Stdin(input::StdinReader::new())
+    } else {
+        match input {
+            Some(p) => match p.canonicalize() {
+                Ok(canonical) => InputSource::File(canonical),
+                Err(e) => {
+                    eprintln!("Error: failed to resolve {}: {e}", p.display());
+                    std::process::exit(1);
+                }
+            },
+            None => {
+                eprintln!("Error: input file required (or pipe via stdin)");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 fn cmd_render(
-    input: PathBuf,
-    config: &config::Config,
+    app: AppContext,
+    mut input: InputSource,
     output: PathBuf,
     dump: bool,
     no_sandbox: bool,
-    allow_remote_images: bool,
 ) -> Result<()> {
     let pipeline_start = Instant::now();
 
-    let width = config.width;
-    let ppi = config.ppi;
-    let tile_height = config.viewer.tile_height;
-
-    // Resolve "auto" theme: detect terminal background if on a TTY
-    let is_light = if config.theme == "auto" {
-        use std::io::IsTerminal;
-        if std::io::stdout().is_terminal() {
-            // Enter raw mode temporarily to query OSC 11
-            let _raw = crossterm::terminal::enable_raw_mode();
-            let result = mlux::viewer::detect_terminal_theme(std::time::Duration::from_millis(100))
-                == mlux::viewer::TerminalTheme::Light;
-            let _ = crossterm::terminal::disable_raw_mode();
-            result
-        } else {
-            false // not a TTY → dark fallback
-        }
-    } else {
-        false
-    };
-    let theme_resolved = mlux::theme::resolve_theme_name(&config.theme, is_light);
-    let theme = theme_resolved;
-
-    // Read input markdown (support `-` for stdin)
-    let is_stdin = input.as_os_str() == "-";
-    let markdown = if is_stdin {
-        input::read_stdin_to_string().context("failed to read stdin")?
-    } else {
-        fs::read_to_string(&input).with_context(|| format!("failed to read {}", input.display()))?
-    };
-
-    // Look up built-in theme
-    let theme_text =
-        mlux::theme::get(theme).ok_or_else(|| anyhow::anyhow!("unknown theme '{theme}'"))?;
+    let markdown = input.read_all()?;
 
     if markdown.trim().is_empty() {
         anyhow::bail!("input file is empty or contains only whitespace");
     }
 
-    let (base_dir, read_base) = if is_stdin {
-        (None, None)
-    } else {
-        let canonical = input
-            .canonicalize()
-            .with_context(|| format!("failed to resolve {}", input.display()))?;
-        let parent = canonical
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        (Some(parent.to_path_buf()), Some(parent.to_path_buf()))
+    let read_base = match &input {
+        InputSource::File(path) => path.parent().map(|d| d.to_path_buf()),
+        InputSource::Stdin(_) => None,
     };
 
-    let data_files = mlux::theme::data_files(theme);
-    let font_cache = FontCache::new();
-    let params = BuildParams {
-        theme_name: theme,
-        theme_text,
-        data_files,
-        markdown: &markdown,
-        base_dir: base_dir.as_deref(),
-        width_pt: width,
-        sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
-        tile_height_pt: tile_height,
-        ppi,
-        fonts: &font_cache,
-        allow_remote_images,
-    };
+    let params = app.build_params(
+        &markdown,
+        read_base.as_deref(),
+        app.config.width,
+        DEFAULT_SIDEBAR_WIDTH_PT,
+        app.config.viewer.tile_height,
+    );
 
     if dump {
         let mut child = mlux::fork_render::fork_dump(&params, read_base.as_deref(), no_sandbox)?;
@@ -303,7 +274,6 @@ fn cmd_render(
         output_parent,
         &stem,
         &ext,
-        is_stdin,
         &input,
         pipeline_start,
         no_sandbox,
@@ -313,13 +283,12 @@ fn cmd_render(
 /// Render via fork+IPC: child compiles/renders in a forked process.
 #[allow(clippy::too_many_arguments)]
 fn cmd_render_fork(
-    params: &BuildParams<'_>,
+    params: &mlux::pipeline::BuildParams<'_>,
     read_base: Option<&Path>,
     output_parent: &Path,
     stem: &str,
     ext: &str,
-    is_stdin: bool,
-    input: &Path,
+    input: &InputSource,
     pipeline_start: Instant,
     no_sandbox: bool,
 ) -> Result<()> {
@@ -343,11 +312,7 @@ fn cmd_render_fork(
         pipeline_start.elapsed().as_secs_f64() * 1000.0
     );
 
-    let input_name = if is_stdin {
-        "<stdin>".to_string()
-    } else {
-        input.display().to_string()
-    };
+    let input_name = input.display_name();
     eprintln!("rendered {} -> {} tile(s):", input_name, meta.tile_count);
     for (filename, size) in &files {
         eprintln!("  {} ({} bytes)", filename, size);
