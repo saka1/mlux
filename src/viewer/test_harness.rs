@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
 use crate::highlight::HighlightRect;
-use crate::input::InputSource;
+use crate::input_source::InputSource;
 use crate::pipeline::{BuildParams, FontCache, build_tiled_document};
 use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
 

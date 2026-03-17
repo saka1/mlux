@@ -4,7 +4,7 @@ pub mod diagram;
 pub mod fork_render;
 pub mod highlight;
 pub mod image;
-pub mod input;
+pub mod input_source;
 pub mod pipeline;
 pub mod theme;
 pub mod tile;

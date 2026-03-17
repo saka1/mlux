@@ -12,7 +12,7 @@ use crossterm::terminal as crossterm_terminal;
 use log::debug;
 use std::path::{Path, PathBuf};
 
-use crate::input::InputSource;
+use crate::input_source::InputSource;
 use crate::watch::FileWatcher;
 
 use super::display_state::DisplayState;

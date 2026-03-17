@@ -8,7 +8,7 @@ use log::info;
 
 use mlux::app_context::{AppContext, AppContextBuilder};
 use mlux::config;
-use mlux::input::{self, InputSource};
+use mlux::input_source::{self, InputSource};
 
 /// Default sidebar width in typst points for headless (non-terminal) rendering.
 const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
@@ -198,8 +198,8 @@ fn main() {
 }
 
 fn build_input_source(input: Option<PathBuf>) -> InputSource {
-    if input::is_stdin_input(input.as_deref()) {
-        InputSource::Stdin(input::StdinReader::new())
+    if input_source::is_stdin_input(input.as_deref()) {
+        InputSource::Stdin(input_source::StdinReader::new())
     } else {
         match input {
             Some(p) => match p.canonicalize() {

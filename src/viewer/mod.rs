@@ -45,7 +45,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::app_context::{AppContext, AppContextBuilder};
-use crate::input::InputSource;
+use crate::input_source::InputSource;
 use crate::tile_cache::TileCache;
 use crate::watch::FileWatcher;
 
