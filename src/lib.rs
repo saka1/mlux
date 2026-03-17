@@ -7,6 +7,7 @@ pub mod input;
 pub mod pipeline;
 pub mod theme;
 pub mod tile;
+pub mod tile_cache;
 pub mod url;
 pub mod viewer;
 pub mod visual_line;

@@ -8,7 +8,8 @@ use super::layout::{Layout, ScrollState};
 use super::terminal;
 use crate::fork_render::{TileRenderer, TileResponse};
 use crate::highlight::{HighlightRect, HighlightSpec};
-use crate::tile::{DocumentMeta, TiledDocumentCache, VisibleTiles};
+use crate::tile::{DocumentMeta, VisibleTiles};
+use crate::tile_cache::TileCache;
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
@@ -140,7 +141,7 @@ impl DisplayState {
     /// routed to the appropriate handler.
     pub(super) fn ensure_loaded(
         &mut self,
-        cache: &mut TiledDocumentCache,
+        cache: &mut TileCache,
         idx: usize,
         rh: &mut ForkHandle<'_>,
     ) -> anyhow::Result<()> {
@@ -284,7 +285,7 @@ fn delete_placements_for_ids(ids: &[u32]) -> io::Result<()> {
 }
 
 /// Execute the I/O for a load action: send images to the terminal and evict distant tiles.
-fn execute_load(action: &LoadAction, pngs: &crate::tile::TilePngs) -> anyhow::Result<()> {
+fn execute_load(action: &LoadAction, pngs: &crate::tile_cache::TilePngs) -> anyhow::Result<()> {
     terminal::send_image(&pngs.content, action.content_id)?;
     terminal::send_image(&pngs.sidebar, action.sidebar_id)?;
     for (_, ids) in &action.evict {
@@ -306,7 +307,7 @@ pub(super) struct ForkHandle<'a> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn redraw(
     meta: &DocumentMeta,
-    cache: &mut TiledDocumentCache,
+    cache: &mut TileCache,
     loaded: &mut DisplayState,
     layout: &Layout,
     scroll: &ScrollState,
@@ -361,7 +362,7 @@ pub(super) fn redraw(
 pub(super) fn send_prefetch(
     rh: &mut ForkHandle<'_>,
     meta: &DocumentMeta,
-    cache: &TiledDocumentCache,
+    cache: &TileCache,
     y_offset: u32,
 ) {
     let current = (y_offset / meta.tile_height_px) as usize;
@@ -383,7 +384,7 @@ pub(super) fn send_prefetch(
 pub(super) fn update_overlays(
     meta: &DocumentMeta,
     loaded: &mut DisplayState,
-    cache: &mut TiledDocumentCache,
+    cache: &mut TileCache,
     scroll: &ScrollState,
     spec: &HighlightSpec,
     rh: &mut ForkHandle<'_>,
@@ -436,7 +437,7 @@ pub(super) fn update_overlays(
 /// Returns immediately when no data is ready (non-blocking).
 pub(super) fn drain_responses(
     rh: &mut ForkHandle<'_>,
-    cache: &mut TiledDocumentCache,
+    cache: &mut TileCache,
     display: &mut DisplayState,
 ) -> anyhow::Result<()> {
     while let Some(resp) = rh.renderer.try_recv()? {
@@ -463,7 +464,7 @@ pub(super) fn drain_responses(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn redraw_and_prefetch(
     meta: &DocumentMeta,
-    cache: &mut TiledDocumentCache,
+    cache: &mut TileCache,
     display: &mut DisplayState,
     layout: &Layout,
     scroll: &ScrollState,

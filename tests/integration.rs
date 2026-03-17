@@ -1062,7 +1062,8 @@ fn test_inline_code_no_line_overlap() {
 // ---------------------------------------------------------------------------
 
 use mlux::pipeline::build_tiled_document;
-use mlux::tile::{TilePairHash, TiledDocumentCache, merge_tile_cache};
+use mlux::tile::TilePairHash;
+use mlux::tile_cache::{TileCache, TilePngs};
 
 /// Build a TiledDocument from markdown, returning metadata with hashes.
 fn build_hashes(md: &str) -> Vec<TilePairHash> {
@@ -1111,12 +1112,13 @@ fn test_tile_hash_merge_recovers_unchanged_tiles() {
     let md_original: String = lines.iter().cloned().collect();
 
     let old_hashes = build_hashes(&md_original);
-    let mut old_cache = TiledDocumentCache::new();
-    // Simulate rendering all tiles
+    let mut tile_cache = TileCache::new();
+    // Seed cache with old generation hashes + simulated rendered tiles
+    tile_cache.merge_generation(&old_hashes);
     for i in 0..old_hashes.len() {
-        old_cache.insert(
+        tile_cache.insert(
             i,
-            mlux::tile::TilePngs {
+            TilePngs {
                 content: vec![i as u8],
                 sidebar: vec![i as u8],
             },
@@ -1129,13 +1131,12 @@ fn test_tile_hash_merge_recovers_unchanged_tiles() {
 
     let new_hashes = build_hashes(&md_modified);
     let total = new_hashes.len();
-    let new_cache = merge_tile_cache(&new_hashes, &old_hashes, &mut old_cache);
+    let recovered = tile_cache.merge_generation(&new_hashes);
 
     // At least some tiles should be recovered (early tiles are unchanged)
     assert!(
-        !new_cache.is_empty(),
-        "merge should recover at least some tiles (recovered {}/{total})",
-        new_cache.len()
+        recovered > 0,
+        "merge should recover at least some tiles (recovered {recovered}/{total})",
     );
 }
 
@@ -1143,11 +1144,13 @@ fn test_tile_hash_merge_recovers_unchanged_tiles() {
 fn test_tile_hash_no_change_full_recovery() {
     let md = "# Title\n\nSome content.\n";
     let hashes = build_hashes(md);
-    let mut old_cache = TiledDocumentCache::new();
+    let mut tile_cache = TileCache::new();
+    // Seed cache with old generation
+    tile_cache.merge_generation(&hashes);
     for i in 0..hashes.len() {
-        old_cache.insert(
+        tile_cache.insert(
             i,
-            mlux::tile::TilePngs {
+            TilePngs {
                 content: vec![i as u8],
                 sidebar: vec![i as u8],
             },
@@ -1156,10 +1159,9 @@ fn test_tile_hash_no_change_full_recovery() {
 
     // Rebuild identical document
     let total = hashes.len();
-    let new_cache = merge_tile_cache(&hashes, &hashes, &mut old_cache);
+    let recovered = tile_cache.merge_generation(&hashes);
     assert_eq!(
-        new_cache.len(),
-        total,
+        recovered, total,
         "identical rebuild should recover all {total} tiles"
     );
 }

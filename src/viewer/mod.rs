@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 use crate::config::{CliOverrides, Config};
 use crate::input::InputSource;
 use crate::pipeline::FontCache;
-use crate::tile::{TilePairHash, TiledDocumentCache, merge_tile_cache};
+use crate::tile_cache::TileCache;
 use crate::watch::FileWatcher;
 
 use display_state::{DisplayState, ForkHandle};
@@ -145,9 +145,8 @@ pub fn run(
     let mut stdin_buf = String::new();
     let mut stdin_eof = false;
 
-    // Previous cache + hashes for content-addressed merge across rebuilds
-    let mut prev_cache: Option<TiledDocumentCache> = None;
-    let mut prev_hashes: Option<Vec<TilePairHash>> = None;
+    // Content-addressed tile cache for merge across rebuilds
+    let mut tile_cache = TileCache::new();
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
@@ -273,14 +272,8 @@ pub fn run(
             }
         };
         // Merge cached tiles from previous generation
-        let mut cache = match (prev_cache.take(), prev_hashes.take()) {
-            (Some(mut old_cache), Some(old_hashes)) => {
-                let c = merge_tile_cache(&meta.tile_hashes, &old_hashes, &mut old_cache);
-                info!("merge: recovered {}/{} tiles", c.len(), meta.tile_count);
-                c
-            }
-            _ => TiledDocumentCache::new(),
-        };
+        let recovered = tile_cache.merge_generation(&meta.tile_hashes);
+        info!("merge: recovered {}/{} tiles", recovered, meta.tile_count);
 
         let img_w = meta.width_px;
         let img_h = meta.total_height_px;
@@ -314,7 +307,7 @@ pub fn run(
             let search_spec = vp.last_search.as_ref().map(|ls| ls.highlight_spec());
             display_state::redraw_and_prefetch(
                 &meta,
-                &mut cache,
+                &mut tile_cache,
                 &mut vp.display,
                 &session.layout,
                 &vp.scroll,
@@ -458,7 +451,7 @@ pub fn run(
                     let search_spec = vp.last_search.as_ref().map(|ls| ls.highlight_spec());
                     display_state::redraw_and_prefetch(
                         &meta,
-                        &mut cache,
+                        &mut tile_cache,
                         &mut vp.display,
                         &session.layout,
                         &vp.scroll,
@@ -471,7 +464,7 @@ pub fn run(
                             in_flight: &mut in_flight,
                         },
                     )?;
-                    cache.evict_distant(
+                    tile_cache.evict_distant(
                         (vp.scroll.y_offset / meta.tile_height_px) as usize,
                         session.config.viewer.evict_distance,
                     );
@@ -498,15 +491,11 @@ pub fn run(
         renderer.shutdown();
         let exit = exit?;
 
-        // Preserve cache + hashes for merge on reload/resize; discard on navigation
+        // Discard cache on navigation (reload/resize keeps it for merge_generation)
         match &exit {
-            ExitReason::Reload | ExitReason::Resize { .. } | ExitReason::ConfigReload => {
-                prev_cache = Some(cache);
-                prev_hashes = Some(meta.tile_hashes.clone());
-            }
+            ExitReason::Reload | ExitReason::Resize { .. } | ExitReason::ConfigReload => {}
             _ => {
-                prev_cache = None;
-                prev_hashes = None;
+                tile_cache.clear();
             }
         }
 

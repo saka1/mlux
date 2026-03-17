@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::pipeline::{BuildParams, build_tiled_document};
-use crate::tile::{DocumentMeta, TilePngs};
+use crate::tile::DocumentMeta;
+use crate::tile_cache::TilePngs;
 
 pub use process::ChildProcess;
 

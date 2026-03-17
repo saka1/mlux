@@ -1,5 +1,10 @@
 # Content-Addressed Tile Cache
 
+> **Note (2026-03-18):** この設計ドキュメントは初期実装時のもの。現在は `src/tile_cache.rs` の
+> `TileCache` composite 構造体に統合され、`merge_tile_cache` 自由関数は
+> `TileCache::merge_generation()` メソッドに、`prev_cache`/`prev_hashes` の
+> `Option` ペアは単一の `TileCache` フィールドに置き換わっている。
+
 rebuild 時に変化しなかったタイルのキャッシュを保持し、再レンダリングを回避する仕組み。
 
 ## 背景
