@@ -184,7 +184,6 @@ pub fn run(
         //
         // Both paths use build_async_with_threshold for loading UI.
         info!("building tiled document...");
-        let markdown_clone = markdown.clone(); // markdown also needed by inner loop
         let layout_copy = session.layout;
         let ppi = session.config.ppi;
         let tile_height = session.config.viewer.tile_height;
@@ -218,7 +217,7 @@ pub fn run(
                 theme_name,
                 theme_text,
                 data_files,
-                markdown: &markdown_clone,
+                markdown: &markdown,
                 base_dir,
                 width_pt,
                 sidebar_width_pt,
