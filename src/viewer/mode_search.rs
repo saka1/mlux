@@ -10,7 +10,7 @@ use std::io::{self, Write, stdout};
 
 use super::Effect;
 use super::ViewerMode;
-use super::input::SearchAction;
+use super::keymap::SearchAction;
 use super::layout::{Layout, visual_line_offset};
 use super::query::DocumentQuery;
 

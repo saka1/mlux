@@ -10,7 +10,7 @@ use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
 
 use super::display_state::DisplayState;
 use super::effect::{Effect, RenderOp, ViewContext, ViewerMode, Viewport};
-use super::input::{
+use super::keymap::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
 };
 use super::layout::{self, Layout, ScrollState};

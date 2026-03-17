@@ -8,7 +8,7 @@ use crossterm::{
 use std::io::{self, Write, stdout};
 
 use super::effect::ExitReason;
-use super::input::TocAction;
+use super::keymap::TocAction;
 use super::layout::{Layout, visual_line_offset};
 use super::query::DocumentQuery;
 use super::{Effect, ViewerMode};

@@ -7,7 +7,7 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
-use super::input::UrlAction;
+use super::keymap::UrlAction;
 use super::layout::Layout;
 use super::query::{DocumentQuery, UrlEntry, extract_urls_from_lines};
 use super::{Effect, ViewerMode};

@@ -3,7 +3,7 @@
 use log::debug;
 
 use super::effect::ExitReason;
-use super::input::Action;
+use super::keymap::Action;
 use super::layout::{ScrollState, visual_line_offset};
 use super::mode_command::CommandState;
 use super::mode_search::{LastSearch, SearchState};

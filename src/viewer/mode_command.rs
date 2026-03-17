@@ -1,7 +1,7 @@
 //! Command mode handler (`:` prompt).
 
 use super::effect::ExitReason;
-use super::input::CommandAction;
+use super::keymap::CommandAction;
 use super::{Effect, ViewerMode};
 
 /// Mutable state for command mode (`:` prompt).

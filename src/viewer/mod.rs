@@ -19,7 +19,7 @@
 
 mod display_state;
 mod effect;
-mod input;
+mod keymap;
 mod layout;
 mod mode_command;
 mod mode_normal;
@@ -51,7 +51,7 @@ use crate::watch::FileWatcher;
 
 use display_state::{DisplayState, ForkHandle};
 use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
-use input::{
+use keymap::{
     InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
