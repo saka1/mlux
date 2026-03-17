@@ -97,14 +97,18 @@ read scope に含める必要がなくなる。これはサンドボックスの
 
 ```
 fetch_resources(params) -> Resources
-  extract_image_paths → load_images  (FS + ネットワーク I/O)
-  extract_diagrams → render_diagrams (mermaid SVG 生成)
+  extract_image_paths → load_images  (FS + ネットワーク I/O のみ)
 
 compile_and_tile(params, resources) -> TiledDocument
+  extract_diagrams → render_diagrams (mermaid → SVG: 純粋計算、I/O なし)
   markdown_to_typst  (純粋変換)
   compile_document   (Typst コンパイル)
   split_frame        (フレーム分割)
 ```
+
+`fetch_resources` は I/O を伴うリソース取得のみを担当する。
+`render_diagrams` (mermaid-rs-renderer) は純粋な計算処理でありネットワーク・FS アクセスを
+行わないため、サンドボックス後の `compile_and_tile` 側に配置する。
 
 `build_tiled_document()` は互換性のために残し、内部で両関数を呼ぶラッパーとする。
 ただし `fork_renderer()` / `fork_dump()` の子プロセスクロージャ内では、ラッパーを使わず
@@ -237,9 +241,8 @@ Landlock V4 でネットワークを封じた上で、seccomp で syscall をさ
 Landlock V4 ネットワーク制限の実装後。実装コストが高いため、Landlock で得られる防御が
 十分かを運用で評価した上で判断する。
 
-### 注: mermaid レンダリングのセキュリティ
+### 注: mermaid レンダリング
 
-`fetch_resources()` 内の mermaid ダイアグラム生成 (`mermaid-rs-renderer`) は内部で
-ヘッドレス Chromium を起動し JavaScript を実行する。これはサンドボックス適用前（Phase 1）
-に行われるため機能上の問題はないが、Chromium プロセス自体が攻撃面となりうる。
-本変更のスコープ外だが、将来的に mermaid レンダリングの隔離も検討に値する。
+`mermaid-rs-renderer` (default-features = false) は純粋な Rust 計算であり、
+ネットワーク・FS アクセスやヘッドレスブラウザの起動は行わない。
+Phase 3（サンドボックス後）で安全に実行できる。
