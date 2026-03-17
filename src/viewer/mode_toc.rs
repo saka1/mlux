@@ -117,8 +117,9 @@ pub(super) fn draw_toc_screen(layout: &Layout, state: &TocState) -> io::Result<(
         let indent = (e.level as usize - 1) * 2;
         let marker = if is_selected { " > " } else { "   " };
         let line_label = format!("L{:<4}", e.md_line);
+        let hashes = "#".repeat(e.level as usize);
         let content = format!(
-            "{marker}{line_label} {:indent$}\u{2022} {}",
+            "{marker}{line_label} {:indent$}{hashes} {}",
             "",
             e.text,
             indent = indent
