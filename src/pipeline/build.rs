@@ -33,30 +33,27 @@ struct CompiledContent<'f> {
     content_index: ContentIndex,
 }
 
-/// Shared build steps: image loading, diagram rendering, markdown→typst,
+/// Shared build steps: diagram rendering, markdown→typst,
 /// world construction, and compilation.
-fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> {
-    // 1. Image pipeline
-    let image_paths = super::markup::extract_image_paths(params.markdown);
-    let (mut image_files, image_errors) =
-        crate::image::load_images(&image_paths, params.base_dir, params.allow_remote_images);
-    for err in &image_errors {
-        log::warn!("{err}");
-    }
-
-    // 2. Diagram pipeline
+///
+/// Image loading is the caller's responsibility — pass pre-loaded images via `image_files`.
+fn compile_content<'f>(
+    params: &BuildParams<'f>,
+    mut image_files: crate::image::LoadedImages,
+) -> Result<CompiledContent<'f>> {
+    // 1. Diagram pipeline
     let diagrams = crate::diagram::extract_diagrams(params.markdown);
     let mermaid_colors = crate::theme::mermaid_colors(params.theme_name);
     for (key, svg) in crate::diagram::render_diagrams(&diagrams, mermaid_colors) {
         image_files.insert(key, svg);
     }
 
-    // 3. Markdown -> Typst
+    // 2. Markdown -> Typst
     let loaded_set = image_files.key_set();
     let (content_text, content_index) =
         super::markup::markdown_to_typst(params.markdown, Some(&loaded_set));
 
-    // 4. Compile content document
+    // 3. Compile content document
     let world = MluxWorld::new(
         params.theme_text,
         params.data_files,
@@ -76,7 +73,21 @@ fn compile_content<'f>(params: &BuildParams<'f>) -> Result<CompiledContent<'f>> 
 
 /// Compile the document and dump the generated Typst source and frame tree to stderr.
 pub fn build_and_dump(params: &BuildParams<'_>) -> Result<()> {
-    let compiled = compile_content(params)?;
+    let image_paths = super::markup::extract_image_paths(params.markdown);
+    let (images, errors) =
+        crate::image::load_images(&image_paths, params.base_dir, params.allow_remote_images);
+    for err in &errors {
+        log::warn!("{err}");
+    }
+    compile_and_dump(params, images)
+}
+
+/// Compile from pre-loaded images and dump the generated Typst source and frame tree to stderr.
+pub fn compile_and_dump(
+    params: &BuildParams<'_>,
+    image_files: crate::image::LoadedImages,
+) -> Result<()> {
+    let compiled = compile_content(params, image_files)?;
 
     // Print generated main.typ to stderr
     let source_text = compiled.world.main_source().text();
@@ -95,20 +106,36 @@ pub fn build_and_dump(params: &BuildParams<'_>) -> Result<()> {
 
 /// Build a TiledDocument from Markdown source.
 ///
-/// Shared pipeline used by both `cmd_render` and the terminal viewer.
-/// Runs image loading, diagram rendering, Markdown→Typst conversion,
+/// Convenience wrapper that loads images internally then delegates to
+/// [`compile_and_tile`]. Used by tests and non-fork code paths.
+pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
+    let image_paths = super::markup::extract_image_paths(params.markdown);
+    let (images, errors) =
+        crate::image::load_images(&image_paths, params.base_dir, params.allow_remote_images);
+    for err in &errors {
+        log::warn!("{err}");
+    }
+    compile_and_tile(params, images)
+}
+
+/// Compile from pre-loaded images and build a TiledDocument.
+///
+/// Core pipeline: diagram rendering, Markdown→Typst conversion,
 /// Typst compilation, visual line extraction, sidebar generation,
 /// and tile assembly.
-pub fn build_tiled_document(params: &BuildParams<'_>) -> Result<TiledDocument> {
+pub fn compile_and_tile(
+    params: &BuildParams<'_>,
+    image_files: crate::image::LoadedImages,
+) -> Result<TiledDocument> {
     let start = Instant::now();
 
     let CompiledContent {
         world: content_world,
         document,
         content_index,
-    } = compile_content(params)?;
+    } = compile_content(params, image_files)?;
 
-    // 5. Extract visual lines with source mapping
+    // 4. Extract visual lines with source mapping
     let bound_index = BoundIndex::new(
         &content_index,
         content_world.main_source(),

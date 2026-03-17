@@ -9,17 +9,90 @@
 mod process;
 mod sandbox;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::highlight::{HighlightRect, HighlightSpec};
-use crate::pipeline::{BuildParams, build_tiled_document};
+use crate::image::LoadedImages;
+use crate::pipeline::{BuildParams, compile_and_tile};
 use crate::tile::DocumentMeta;
 use crate::tile_cache::TilePngs;
 
 pub use process::ChildProcess;
+
+/// Fork a sandboxed child that computes a value and returns it.
+///
+/// The child applies Landlock, runs `f()`, sends the result via IPC, and exits.
+/// Panics in `f` are caught and converted to an error on the parent side
+/// (child exits, pipe closes, parent recv fails).
+pub fn fork_compute<T, F>(sandbox_read_base: Option<&Path>, no_sandbox: bool, f: F) -> Result<T>
+where
+    T: Serialize + DeserializeOwned,
+    F: FnOnce() -> T,
+{
+    let sandbox_base: Option<PathBuf> = sandbox_read_base.map(|p| p.to_path_buf());
+    let (_, mut rx, mut child) =
+        process::fork_with_channels::<(), T, _>(move |_req_rx, mut resp_tx| {
+            if !no_sandbox {
+                if let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref()) {
+                    log::warn!("child: sandbox failed: {e:#}");
+                }
+            }
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+                Ok(result) => {
+                    let _ = resp_tx.send(&result);
+                }
+                Err(_) => {
+                    log::error!("child: fork_compute panicked");
+                }
+            }
+        })?;
+    let result = rx.recv().context("fork_compute: child failed")?;
+    child.wait()?;
+    Ok(result)
+}
+
+/// Extract image paths (Fork 1, sandboxed) and fetch remote images (parent).
+///
+/// Fork 1 runs pulldown-cmark under a sandbox with no FS access and TCP denied.
+/// The parent then fetches any remote images on the trusted side.
+///
+/// Returns `(all_paths, remote_images)` for passing to fork_renderer/fork_dump.
+pub fn prepare_images(
+    markdown: &str,
+    allow_remote_images: bool,
+    no_sandbox: bool,
+) -> Result<(Vec<String>, LoadedImages)> {
+    // Fork 1: extract image paths under sandbox (no FS, no network)
+    let paths = fork_compute(None, no_sandbox, {
+        let md = markdown.to_string();
+        move || crate::pipeline::extract_image_paths(&md)
+    })?;
+
+    // Parent: fetch remote images (trusted side)
+    let remote_images = if allow_remote_images {
+        let remote_urls: Vec<String> = paths
+            .iter()
+            .filter(|p| p.starts_with("http://") || p.starts_with("https://"))
+            .cloned()
+            .collect();
+        if remote_urls.is_empty() {
+            LoadedImages::default()
+        } else {
+            let (images, errors) = crate::image::load_images(&remote_urls, None, true);
+            for err in &errors {
+                log::warn!("{err}");
+            }
+            images
+        }
+    } else {
+        LoadedImages::default()
+    };
+
+    Ok((paths, remote_images))
+}
 
 /// Request from parent to child.
 #[derive(Serialize, Deserialize)]
@@ -186,10 +259,7 @@ pub fn fork_renderer(
         move |mut req_rx: process::TypedReader<Request>,
               mut resp_tx: process::TypedWriter<Response>| {
             // Apply sandbox in child before any compilation
-            if !no_sandbox
-                && let Err(e) =
-                    sandbox::enforce_sandbox(sandbox_read_base.as_deref(), allow_remote_images)
-            {
+            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_read_base.as_deref()) {
                 log::warn!("child: sandbox failed: {e:#}");
             }
 
@@ -291,9 +361,7 @@ pub fn fork_dump(
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
 
     let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
-        if !no_sandbox
-            && let Err(e) = sandbox::enforce_read_only_sandbox(sandbox_read_base.as_deref())
-        {
+        if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_read_base.as_deref()) {
             log::warn!("child: sandbox failed: {e:#}");
         }
 

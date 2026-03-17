@@ -7,7 +7,6 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use std::os::fd::{FromRawFd, IntoRawFd};
 
 use anyhow::{Context, Result};
 use nix::libc;
@@ -139,8 +138,8 @@ where
             drop(p2c_write);
             drop(c2p_read);
 
-            let reader = TypedReader::new(unsafe { File::from_raw_fd(p2c_read.into_raw_fd()) });
-            let writer = TypedWriter::new(unsafe { File::from_raw_fd(c2p_write.into_raw_fd()) });
+            let reader = TypedReader::new(File::from(p2c_read));
+            let writer = TypedWriter::new(File::from(c2p_write));
 
             child_fn(reader, writer);
             // Use _exit(2) instead of std::process::exit() to avoid running
@@ -153,8 +152,8 @@ where
             drop(p2c_read);
             drop(c2p_write);
 
-            let writer = TypedWriter::new(unsafe { File::from_raw_fd(p2c_write.into_raw_fd()) });
-            let reader = TypedReader::new(unsafe { File::from_raw_fd(c2p_read.into_raw_fd()) });
+            let writer = TypedWriter::new(File::from(p2c_write));
+            let reader = TypedReader::new(File::from(c2p_read));
 
             Ok((
                 writer,
@@ -176,10 +175,8 @@ mod tests {
     fn roundtrip_send_recv() {
         let (read_fd, write_fd) = pipe().unwrap();
 
-        let mut writer: TypedWriter<String> =
-            TypedWriter::new(unsafe { File::from_raw_fd(write_fd.into_raw_fd()) });
-        let mut reader: TypedReader<String> =
-            TypedReader::new(unsafe { File::from_raw_fd(read_fd.into_raw_fd()) });
+        let mut writer: TypedWriter<String> = TypedWriter::new(File::from(write_fd));
+        let mut reader: TypedReader<String> = TypedReader::new(File::from(read_fd));
 
         writer.send(&"hello".to_string()).unwrap();
         writer.send(&"world".to_string()).unwrap();
@@ -200,10 +197,8 @@ mod tests {
 
         let (read_fd, write_fd) = pipe().unwrap();
 
-        let mut writer: TypedWriter<Msg> =
-            TypedWriter::new(unsafe { File::from_raw_fd(write_fd.into_raw_fd()) });
-        let mut reader: TypedReader<Msg> =
-            TypedReader::new(unsafe { File::from_raw_fd(read_fd.into_raw_fd()) });
+        let mut writer: TypedWriter<Msg> = TypedWriter::new(File::from(write_fd));
+        let mut reader: TypedReader<Msg> = TypedReader::new(File::from(read_fd));
 
         let msg = Msg {
             id: 42,

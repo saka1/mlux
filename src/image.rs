@@ -35,6 +35,10 @@ impl LoadedImages {
     pub fn insert(&mut self, key: String, data: Bytes) {
         self.inner.insert(key, data);
     }
+
+    pub fn extend(&mut self, other: LoadedImages) {
+        self.inner.extend(other.inner);
+    }
 }
 
 #[derive(Debug)]
