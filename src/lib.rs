@@ -1,7 +1,7 @@
 pub mod app_context;
 pub mod config;
 pub mod diagram;
-pub mod fork_render;
+pub mod fork_sandbox;
 pub mod highlight;
 pub mod image;
 pub mod input_source;

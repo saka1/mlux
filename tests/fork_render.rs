@@ -4,7 +4,7 @@
 //! processes. We use `harness = false` to avoid the test runner's thread pool
 //! and run each test sequentially in a single thread.
 
-use mlux::fork_render::{fork_dump, fork_renderer, spawn_renderer};
+use mlux::fork_sandbox::{fork_dump, fork_renderer, spawn_renderer};
 use mlux::image::LoadedImages;
 use mlux::pipeline::{BuildParams, FontCache, build_tiled_document};
 use mlux::tile::VisibleTiles;

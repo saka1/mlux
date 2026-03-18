@@ -153,7 +153,7 @@ pub fn run(
 
         // ChildProcess handle kept alive for the duration of the inner loop.
         // Dropped on reload/resize/quit → sends SIGKILL to child.
-        let mut _fork_child: Option<crate::fork_render::ChildProcess> = None;
+        let mut _fork_child: Option<crate::fork_sandbox::ChildProcess> = None;
 
         // Build: fork a child process, compile/render there, communicate via IPC.
         let (meta, renderer) = {
@@ -187,7 +187,7 @@ pub fn run(
                 InputSource::Stdin(_) => None,
             };
             // Fork 1: extract image paths (sandboxed) + parent fetches remote images
-            let (image_paths, remote_images) = crate::fork_render::prepare_images(
+            let (image_paths, remote_images) = crate::fork_sandbox::prepare_images(
                 &markdown,
                 app.cli_overrides.allow_remote_images,
                 no_sandbox,
@@ -195,7 +195,7 @@ pub fn run(
 
             // Fork 2 before any threads (fork safety).
             // The child starts building immediately; we wait for meta below.
-            let (mut renderer, child) = crate::fork_render::fork_renderer(
+            let (mut renderer, child) = crate::fork_sandbox::fork_renderer(
                 &params,
                 &image_paths,
                 remote_images,

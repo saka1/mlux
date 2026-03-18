@@ -246,14 +246,14 @@ fn cmd_render(
     );
 
     // Fork 1: extract image paths (sandboxed) + parent fetches remote images
-    let (image_paths, remote_images) = mlux::fork_render::prepare_images(
+    let (image_paths, remote_images) = mlux::fork_sandbox::prepare_images(
         &markdown,
         app.cli_overrides.allow_remote_images,
         no_sandbox,
     )?;
 
     if dump {
-        let mut child = mlux::fork_render::fork_dump(
+        let mut child = mlux::fork_sandbox::fork_dump(
             &params,
             &image_paths,
             remote_images,
@@ -309,7 +309,7 @@ fn cmd_render_fork(
     pipeline_start: Instant,
     no_sandbox: bool,
 ) -> Result<()> {
-    use mlux::fork_render::spawn_renderer;
+    use mlux::fork_sandbox::spawn_renderer;
 
     let (meta, mut renderer, mut _child) =
         spawn_renderer(params, image_paths, remote_images, read_base, no_sandbox)?;
