@@ -49,7 +49,7 @@ zstd = "0.13"
 # test harness because its thread pool leaves locked mutexes (heap allocator,
 # etc.) in the forked child.  A custom main() runs them single-threaded.
 [[test]]
-name = "fork_render"
+name = "usecase"
 harness = false
 
 [lints.clippy]

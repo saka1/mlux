@@ -1,4 +1,4 @@
-//! Fork render integration tests.
+//! Usecase orchestration integration tests.
 //!
 //! These tests call `fork()` internally, which is unsafe in multi-threaded
 //! processes. We use `harness = false` to avoid the test runner's thread pool
@@ -147,19 +147,19 @@ fn test_fork_dump_build_error_exit_code() {
 }
 
 fn main() {
-    eprint!("test fork_render::test_fork_render_matches_local ... ");
+    eprint!("test usecase::test_fork_render_matches_local ... ");
     test_fork_render_matches_local();
     eprintln!("ok");
 
-    eprint!("test fork_render::test_fork_render_metadata_methods ... ");
+    eprint!("test usecase::test_fork_render_metadata_methods ... ");
     test_fork_render_metadata_methods();
     eprintln!("ok");
 
-    eprint!("test fork_render::test_fork_renderer_build_error_propagated ... ");
+    eprint!("test usecase::test_fork_renderer_build_error_propagated ... ");
     test_fork_renderer_build_error_propagated();
     eprintln!("ok");
 
-    eprint!("test fork_render::test_fork_dump_build_error_exit_code ... ");
+    eprint!("test usecase::test_fork_dump_build_error_exit_code ... ");
     test_fork_dump_build_error_exit_code();
     eprintln!("ok");
 }
