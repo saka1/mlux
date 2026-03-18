@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -245,21 +245,8 @@ fn cmd_render(
         app.config.viewer.tile_height,
     );
 
-    // Fork 1: extract image paths (sandboxed) + parent fetches remote images
-    let (image_paths, remote_images) = mlux::fork_sandbox::prepare_images(
-        &markdown,
-        app.cli_overrides.allow_remote_images,
-        no_sandbox,
-    )?;
-
     if dump {
-        let mut child = mlux::fork_sandbox::fork_dump(
-            &params,
-            &image_paths,
-            remote_images,
-            read_base.as_deref(),
-            no_sandbox,
-        )?;
+        let mut child = mlux::usecase::build_dump(&params, no_sandbox)?;
         let code = child.wait()?;
         if code != 0 {
             anyhow::bail!("dump failed (child exited with code {code})");
@@ -281,38 +268,8 @@ fn cmd_render(
         .to_string_lossy()
         .to_string();
 
-    cmd_render_fork(
-        &params,
-        &image_paths,
-        remote_images,
-        read_base.as_deref(),
-        output_parent,
-        &stem,
-        &ext,
-        &input,
-        pipeline_start,
-        no_sandbox,
-    )
-}
-
-/// Render via fork+IPC: child compiles/renders in a forked process.
-#[allow(clippy::too_many_arguments)]
-fn cmd_render_fork(
-    params: &mlux::pipeline::BuildParams,
-    image_paths: &[String],
-    remote_images: mlux::image::LoadedImages,
-    read_base: Option<&Path>,
-    output_parent: &Path,
-    stem: &str,
-    ext: &str,
-    input: &InputSource,
-    pipeline_start: Instant,
-    no_sandbox: bool,
-) -> Result<()> {
-    use mlux::fork_sandbox::spawn_renderer;
-
     let (meta, mut renderer, mut _child) =
-        spawn_renderer(params, image_paths, remote_images, read_base, no_sandbox)?;
+        mlux::usecase::build_renderer_blocking(&params, no_sandbox)?;
 
     let mut files = Vec::new();
     for i in 0..meta.tile_count {

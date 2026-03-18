@@ -6,10 +6,10 @@ use std::io;
 
 use super::layout::{Layout, ScrollState};
 use super::terminal;
-use crate::fork_sandbox::{TileRenderer, TileResponse};
 use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::tile::{DocumentMeta, VisibleTiles};
 use crate::tile_cache::TileCache;
+use crate::usecase::{TileRenderer, TileResponse};
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
