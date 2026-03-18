@@ -238,23 +238,13 @@ impl TileRenderer {
 /// Returns `(renderer, child_handle)`.
 /// The caller must call [`TileRenderer::wait_for_meta`] to receive the first message.
 pub fn fork_renderer(
-    params: &BuildParams<'_>,
+    params: &BuildParams,
     image_paths: &[String],
     remote_images: LoadedImages,
     sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
 ) -> Result<(TileRenderer, ChildProcess)> {
-    // Clone owned data for the child closure (BuildParams borrows).
-    let theme_name = params.theme_name.to_string();
-    let theme_text = params.theme_text.to_string();
-    let data_files = params.data_files;
-    let markdown = params.markdown.to_string();
-    let base_dir = params.base_dir.map(|p| p.to_path_buf());
-    let width_pt = params.width_pt;
-    let sidebar_width_pt = params.sidebar_width_pt;
-    let tile_height_pt = params.tile_height_pt;
-    let ppi = params.ppi;
-    let allow_remote_images = params.allow_remote_images;
+    let params = params.clone();
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
     let image_paths = image_paths.to_vec();
 
@@ -273,7 +263,7 @@ pub fn fork_renderer(
 
             // Load local images (Landlock read scope allows git root)
             let (mut images, errors) =
-                crate::image::load_images(&image_paths, base_dir.as_deref(), false);
+                crate::image::load_images(&image_paths, params.base_dir.as_deref(), false);
             for err in &errors {
                 log::warn!("{err}");
             }
@@ -281,25 +271,8 @@ pub fn fork_renderer(
             // Merge pre-fetched remote images from parent
             images.extend(remote_images);
 
-            // Font cache created in child (filesystem scan, not serializable)
-            let fonts = crate::pipeline::FontCache::new();
-
-            let doc = match compile_and_tile(
-                &BuildParams {
-                    theme_name: &theme_name,
-                    theme_text: &theme_text,
-                    data_files,
-                    markdown: &markdown,
-                    base_dir: base_dir.as_deref(),
-                    width_pt,
-                    sidebar_width_pt,
-                    tile_height_pt,
-                    ppi,
-                    fonts: &fonts,
-                    allow_remote_images,
-                },
-                images,
-            ) {
+            // Font cache inherited from parent via fork COW (static lifetime)
+            let doc = match compile_and_tile(&params, images) {
                 Ok(doc) => doc,
                 Err(e) => {
                     log::error!("child: build failed: {e:#}");
@@ -363,7 +336,7 @@ pub fn fork_renderer(
 /// pre-fetched remote images, compiles the document, and writes the
 /// generated Typst source and frame tree to stderr.
 pub fn fork_dump(
-    params: &BuildParams<'_>,
+    params: &BuildParams,
     image_paths: &[String],
     remote_images: LoadedImages,
     sandbox_read_base: Option<&Path>,
@@ -371,16 +344,7 @@ pub fn fork_dump(
 ) -> Result<ChildProcess> {
     use crate::pipeline::compile_and_dump;
 
-    let theme_name = params.theme_name.to_string();
-    let theme_text = params.theme_text.to_string();
-    let data_files = params.data_files;
-    let markdown = params.markdown.to_string();
-    let base_dir = params.base_dir.map(|p| p.to_path_buf());
-    let width_pt = params.width_pt;
-    let sidebar_width_pt = params.sidebar_width_pt;
-    let tile_height_pt = params.tile_height_pt;
-    let ppi = params.ppi;
-    let allow_remote_images = params.allow_remote_images;
+    let params = params.clone();
     let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
     let image_paths = image_paths.to_vec();
 
@@ -391,7 +355,7 @@ pub fn fork_dump(
 
         // Load local images (Landlock read scope allows git root)
         let (mut images, errors) =
-            crate::image::load_images(&image_paths, base_dir.as_deref(), false);
+            crate::image::load_images(&image_paths, params.base_dir.as_deref(), false);
         for err in &errors {
             log::warn!("{err}");
         }
@@ -399,24 +363,8 @@ pub fn fork_dump(
         // Merge pre-fetched remote images from parent
         images.extend(remote_images);
 
-        let fonts = crate::pipeline::FontCache::new();
-
-        if let Err(e) = compile_and_dump(
-            &BuildParams {
-                theme_name: &theme_name,
-                theme_text: &theme_text,
-                data_files,
-                markdown: &markdown,
-                base_dir: base_dir.as_deref(),
-                width_pt,
-                sidebar_width_pt,
-                tile_height_pt,
-                ppi,
-                fonts: &fonts,
-                allow_remote_images,
-            },
-            images,
-        ) {
+        // Font cache inherited from parent via fork COW (static lifetime)
+        if let Err(e) = compile_and_dump(&params, images) {
             eprintln!("{e:#}");
             unsafe { nix::libc::_exit(1) }
         }
@@ -432,7 +380,7 @@ pub fn fork_dump(
 ///
 /// Returns `(metadata, renderer, child_handle)`.
 pub fn spawn_renderer(
-    params: &BuildParams<'_>,
+    params: &BuildParams,
     image_paths: &[String],
     remote_images: LoadedImages,
     sandbox_read_base: Option<&Path>,

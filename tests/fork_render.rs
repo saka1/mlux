@@ -18,19 +18,19 @@ fn load_theme() -> &'static str {
 fn test_fork_render_matches_local() {
     let md = "# Hello\n\nSome **bold** text.\n\n- Item 1\n- Item 2\n";
     let theme_text = load_theme();
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
 
     let params = BuildParams {
-        theme_name: "catppuccin",
-        theme_text,
+        theme_name: "catppuccin".into(),
+        theme_text: theme_text.into(),
         data_files: mlux::theme::data_files("catppuccin"),
-        markdown: md,
+        markdown: md.into(),
         base_dir: None,
         width_pt: 400.0,
         sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
         tile_height_pt: 500.0,
         ppi: 144.0,
-        fonts: &font_cache,
+        fonts: font_cache,
         allow_remote_images: false,
     };
 
@@ -69,19 +69,19 @@ fn test_fork_render_matches_local() {
 fn test_fork_render_metadata_methods() {
     let md = "# Title\n\nParagraph.\n";
     let theme_text = load_theme();
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
 
     let params = BuildParams {
-        theme_name: "catppuccin",
-        theme_text,
+        theme_name: "catppuccin".into(),
+        theme_text: theme_text.into(),
         data_files: mlux::theme::data_files("catppuccin"),
-        markdown: md,
+        markdown: md.into(),
         base_dir: None,
         width_pt: 400.0,
         sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
         tile_height_pt: 500.0,
         ppi: 144.0,
-        fonts: &font_cache,
+        fonts: font_cache,
         allow_remote_images: false,
     };
 
@@ -106,13 +106,13 @@ fn test_fork_render_metadata_methods() {
     }
 }
 
-fn make_failing_params(font_cache: &FontCache) -> BuildParams<'_> {
+fn make_failing_params(font_cache: &'static FontCache) -> BuildParams {
     // Invalid typst in theme_text causes compilation failure in the child
     BuildParams {
-        theme_name: "catppuccin",
-        theme_text: "#invalid-typst-syntax{{{{",
+        theme_name: "catppuccin".into(),
+        theme_text: "#invalid-typst-syntax{{{{".into(),
         data_files: &[],
-        markdown: "# Hello\n",
+        markdown: "# Hello\n".into(),
         base_dir: None,
         width_pt: 400.0,
         sidebar_width_pt: 40.0,
@@ -124,8 +124,8 @@ fn make_failing_params(font_cache: &FontCache) -> BuildParams<'_> {
 }
 
 fn test_fork_renderer_build_error_propagated() {
-    let font_cache = FontCache::new();
-    let params = make_failing_params(&font_cache);
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
+    let params = make_failing_params(font_cache);
 
     let (mut renderer, mut _child) =
         fork_renderer(&params, &[], LoadedImages::default(), None, true).unwrap();
@@ -142,8 +142,8 @@ fn test_fork_renderer_build_error_propagated() {
 }
 
 fn test_fork_dump_build_error_exit_code() {
-    let font_cache = FontCache::new();
-    let params = make_failing_params(&font_cache);
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
+    let params = make_failing_params(font_cache);
 
     let mut child = fork_dump(&params, &[], LoadedImages::default(), None, true).unwrap();
     let code = child.wait().unwrap();

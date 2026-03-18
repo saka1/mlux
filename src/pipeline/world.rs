@@ -102,10 +102,10 @@ impl FontCache {
 /// set-rules followed by the converted Markdown content.
 ///
 /// Borrows font data from a [`FontCache`] to avoid repeated filesystem scans.
-pub struct MluxWorld<'f> {
+pub struct MluxWorld {
     library: LazyHash<Library>,
     book: LazyHash<FontBook>,
-    font_cache: &'f FontCache,
+    font_cache: &'static FontCache,
     main_id: FileId,
     main_source: Source,
     /// Byte offset where content_text begins within main.typ.
@@ -116,7 +116,7 @@ pub struct MluxWorld<'f> {
     image_files: crate::image::LoadedImages,
 }
 
-impl<'f> MluxWorld<'f> {
+impl MluxWorld {
     /// Create a new MluxWorld.
     ///
     /// - `theme_text`: contents of the theme.typ file
@@ -129,7 +129,7 @@ impl<'f> MluxWorld<'f> {
         data_files: crate::theme::DataFiles,
         content_text: &str,
         width: f64,
-        fonts: &'f FontCache,
+        fonts: &'static FontCache,
         image_files: crate::image::LoadedImages,
     ) -> Self {
         let start = Instant::now();
@@ -151,7 +151,7 @@ impl<'f> MluxWorld<'f> {
     }
 
     /// Create a MluxWorld from raw Typst source (no theme injection or width override).
-    pub fn new_raw(source: &str, fonts: &'f FontCache) -> Self {
+    pub fn new_raw(source: &str, fonts: &'static FontCache) -> Self {
         Self::from_source(source, fonts)
     }
 
@@ -165,7 +165,7 @@ impl<'f> MluxWorld<'f> {
         self.content_offset
     }
 
-    fn from_source(main_text: &str, fonts: &'f FontCache) -> Self {
+    fn from_source(main_text: &str, fonts: &'static FontCache) -> Self {
         let vpath = VirtualPath::new("main.typ");
         let main_id = FileId::new(None, vpath);
         let main_source = Source::new(main_id, main_text.to_string());
@@ -183,7 +183,7 @@ impl<'f> MluxWorld<'f> {
     }
 }
 
-impl World for MluxWorld<'_> {
+impl World for MluxWorld {
     fn library(&self) -> &LazyHash<Library> {
         &self.library
     }

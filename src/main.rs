@@ -238,8 +238,8 @@ fn cmd_render(
     };
 
     let params = app.build_params(
-        &markdown,
-        read_base.as_deref(),
+        markdown.clone(),
+        read_base.clone(),
         app.config.width,
         DEFAULT_SIDEBAR_WIDTH_PT,
         app.config.viewer.tile_height,
@@ -298,7 +298,7 @@ fn cmd_render(
 /// Render via fork+IPC: child compiles/renders in a forked process.
 #[allow(clippy::too_many_arguments)]
 fn cmd_render_fork(
-    params: &mlux::pipeline::BuildParams<'_>,
+    params: &mlux::pipeline::BuildParams,
     image_paths: &[String],
     remote_images: mlux::image::LoadedImages,
     read_base: Option<&Path>,

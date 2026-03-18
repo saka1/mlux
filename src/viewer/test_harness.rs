@@ -40,7 +40,7 @@ pub(super) struct TestHarness {
 #[allow(dead_code)]
 impl TestHarness {
     pub fn new(md: &str, cols: u16, rows: u16) -> Self {
-        let font_cache = FontCache::new();
+        let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
         let theme_name = "catppuccin";
         let theme_text = crate::theme::get(theme_name).expect("built-in theme");
         let data_files = crate::theme::data_files(theme_name);
@@ -55,16 +55,16 @@ impl TestHarness {
         let tile_height_pt = 500.0_f64;
 
         let params = BuildParams {
-            theme_name,
-            theme_text,
+            theme_name: theme_name.into(),
+            theme_text: theme_text.into(),
             data_files,
-            markdown: md,
+            markdown: md.into(),
             base_dir: None,
             width_pt,
             sidebar_width_pt,
             tile_height_pt,
             ppi: PPI,
-            fonts: &font_cache,
+            fonts: font_cache,
             allow_remote_images: false,
         };
 

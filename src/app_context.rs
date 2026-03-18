@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::config::{CliOverrides, Config};
 use crate::pipeline::{BuildParams, FontCache};
@@ -16,7 +16,7 @@ pub struct ResolvedTheme {
 /// Created via `AppContextBuilder`. Owns the expensive, reusable state
 /// (FontCache, Config, resolved theme) that both modes need.
 pub struct AppContext {
-    pub font_cache: FontCache,
+    pub font_cache: &'static FontCache,
     pub config: Config,
     pub cli_overrides: CliOverrides,
     pub detected_light: bool,
@@ -28,17 +28,17 @@ impl AppContext {
     ///
     /// Render provides fixed width from CLI; viewer computes from terminal size.
     /// Fields `ppi`, `allow_remote_images`, theme, and fonts come from `self`.
-    pub fn build_params<'a>(
-        &'a self,
-        markdown: &'a str,
-        base_dir: Option<&'a Path>,
+    pub fn build_params(
+        &self,
+        markdown: String,
+        base_dir: Option<PathBuf>,
         width_pt: f64,
         sidebar_width_pt: f64,
         tile_height_pt: f64,
-    ) -> BuildParams<'a> {
+    ) -> BuildParams {
         BuildParams {
-            theme_name: &self.theme.name,
-            theme_text: self.theme.text,
+            theme_name: self.theme.name.clone(),
+            theme_text: self.theme.text.to_string(),
             data_files: self.theme.data_files,
             markdown,
             base_dir,
@@ -46,7 +46,7 @@ impl AppContext {
             sidebar_width_pt,
             tile_height_pt,
             ppi: self.config.ppi,
-            fonts: &self.font_cache,
+            fonts: self.font_cache,
             allow_remote_images: self.cli_overrides.allow_remote_images,
         }
     }
@@ -59,7 +59,7 @@ impl AppContext {
 pub struct AppContextBuilder {
     config: Config,
     cli_overrides: CliOverrides,
-    font_cache: Option<FontCache>,
+    font_cache: Option<&'static FontCache>,
     detected_light: Option<bool>,
 }
 
@@ -81,7 +81,7 @@ impl AppContextBuilder {
     pub fn from_existing(
         new_config: Config,
         new_cli_overrides: CliOverrides,
-        old: AppContext,
+        old: &AppContext,
     ) -> Self {
         Self {
             config: new_config,
@@ -93,7 +93,7 @@ impl AppContextBuilder {
 
     /// Load system + embedded fonts (one-time ~13ms filesystem scan).
     pub fn load_fonts(mut self) -> Self {
-        self.font_cache = Some(FontCache::new());
+        self.font_cache = Some(Box::leak(Box::new(FontCache::new())));
         self
     }
 
@@ -219,7 +219,7 @@ mod tests {
         new_config.theme = "catppuccin-latte".to_string();
         let new_overrides = test_overrides();
 
-        let app2 = AppContextBuilder::from_existing(new_config, new_overrides, app)
+        let app2 = AppContextBuilder::from_existing(new_config, new_overrides, &app)
             .build()
             .unwrap();
 

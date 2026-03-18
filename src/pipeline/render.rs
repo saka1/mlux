@@ -11,7 +11,7 @@ use typst::{World, WorldExt};
 use super::world::MluxWorld;
 
 /// Format a SourceDiagnostic with source location, hints, and trace.
-pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld<'_>) -> String {
+pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld) -> String {
     use std::fmt::Write;
     let mut out = String::new();
 
@@ -55,7 +55,7 @@ pub fn format_diagnostic(diag: &SourceDiagnostic, world: &MluxWorld<'_>) -> Stri
 }
 
 /// Compile Typst sources into a PagedDocument (no rendering).
-pub fn compile_document(world: &MluxWorld<'_>) -> Result<PagedDocument> {
+pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
     let start = Instant::now();
     let warned = typst::compile::<PagedDocument>(world);
 

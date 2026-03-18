@@ -29,13 +29,13 @@ fn test_paragraph_ja_renders() {
         fs::read_to_string("tests/fixtures/01_paragraph_ja.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown, None).0;
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
@@ -62,13 +62,13 @@ fn test_paragraph_ja_renders() {
 fn test_empty_input() {
     let theme = load_theme();
     let content = markdown_to_typst("", None).0;
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
@@ -85,13 +85,13 @@ fn test_full_document_renders() {
         fs::read_to_string("tests/fixtures/07_full_document.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown, None).0;
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
@@ -139,13 +139,13 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::visual_line::VisualLine> {
     let _ = env_logger::try_init();
     let theme = load_theme();
     let (content, content_index) = markdown_to_typst(md, None);
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         WIDTH_PT,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
@@ -775,13 +775,13 @@ fn test_all_features_renders() {
         fs::read_to_string("tests/fixtures/09_all_features.md").expect("fixture should exist");
     let theme = load_theme();
     let content = markdown_to_typst(&markdown, None).0;
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let document = compile_document(&world).expect("compilation should succeed");
@@ -852,13 +852,13 @@ fn test_image_renders() {
         "should contain #image() call, got: {content}"
     );
 
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         image_files,
     );
     let document = compile_document(&world).expect("compilation should succeed with image");
@@ -912,13 +912,13 @@ fn test_mermaid_diagram_renders() {
     );
 
     // Full render
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         image_files,
     );
     let document = compile_document(&world).expect("compilation should succeed with mermaid");
@@ -980,13 +980,13 @@ fn test_mermaid_fixture_renders() {
         "rust code block should be preserved"
     );
 
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
-        &font_cache,
+        font_cache,
         image_files,
     );
     let document = compile_document(&world).expect("compilation should succeed");
@@ -1068,18 +1068,18 @@ use mlux::tile_cache::{TileCache, TilePngs};
 /// Build a TiledDocument from markdown, returning metadata with hashes.
 fn build_hashes(md: &str) -> Vec<TilePairHash> {
     let theme = load_theme();
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let params = mlux::pipeline::BuildParams {
-        theme_name: "catppuccin",
-        theme_text: theme,
+        theme_name: "catppuccin".into(),
+        theme_text: theme.into(),
         data_files: mlux::theme::data_files("catppuccin"),
-        markdown: md,
+        markdown: md.into(),
         base_dir: None,
         width_pt: WIDTH_PT,
         sidebar_width_pt: 50.0,
         tile_height_pt: 200.0,
         ppi: PPI,
-        fonts: &font_cache,
+        fonts: font_cache,
         allow_remote_images: false,
     };
     let doc = build_tiled_document(&params).expect("build should succeed");
@@ -1591,14 +1591,14 @@ fn test_content_index_block_spans_consistent() {
 fn test_content_index_md_to_main_ranges_e2e() {
     let md = "Hello world. Search for hello in this document.\n";
     let (content, ci) = markdown_to_typst(md, None);
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let theme = load_theme();
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         WIDTH_PT,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let source_text = world.main_source().text();
@@ -1641,14 +1641,14 @@ fn test_content_index_md_to_main_ranges_e2e() {
 fn test_content_index_md_to_main_ranges_with_escapes() {
     let md = "Price is $100 today.\n";
     let (content, ci) = markdown_to_typst(md, None);
-    let font_cache = FontCache::new();
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let theme = load_theme();
     let world = MluxWorld::new(
         theme,
         mlux::theme::data_files("catppuccin"),
         &content,
         WIDTH_PT,
-        &font_cache,
+        font_cache,
         LoadedImages::default(),
     );
     let source_text = world.main_source().text();

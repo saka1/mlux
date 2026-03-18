@@ -176,8 +176,8 @@ pub fn run(
                 layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / ppi as f64;
 
             let params = app.build_params(
-                &markdown,
-                base_dir,
+                markdown.clone(),
+                base_dir.map(|p| p.to_path_buf()),
                 width_pt,
                 sidebar_width_pt,
                 tile_height_pt,
@@ -500,7 +500,7 @@ pub fn run(
                         }
 
                         let new_overrides = app.cli_overrides.clone();
-                        app = AppContextBuilder::from_existing(new_config, new_overrides, app)
+                        app = AppContextBuilder::from_existing(new_config, new_overrides, &app)
                             .build()
                             .expect("theme validated above");
                         session.pending_flash = Some("Config reloaded".into());
