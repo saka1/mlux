@@ -3,3 +3,4 @@ typst
 output/*.png
 .venv/
 __pycache__/
+.claude/
