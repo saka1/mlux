@@ -10,6 +10,7 @@ pub mod theme;
 pub mod tile;
 pub mod tile_cache;
 pub mod url;
+pub mod usecase;
 pub mod viewer;
 pub mod visual_line;
 pub mod watch;

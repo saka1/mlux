@@ -1,96 +1,27 @@
-//! Fork-based sandboxed renderer.
+//! Domain-specific orchestration layer.
 //!
-//! Spawns a child process that compiles the document and renders tiles on demand.
-//! The child applies Landlock (read-only) before compilation, isolating the
-//! render pipeline from the rest of the system.
-//!
-//! Internal submodules (`process`, `sandbox`) are implementation details.
+//! Provides high-level APIs that combine image preparation (Fork 1) with
+//! sandboxed rendering (Fork 2). Callers supply `BuildParams` and get back
+//! a renderer or dump result — all fork/sandbox/IPC details are hidden.
 
-pub(crate) mod process;
-pub(crate) mod sandbox;
-
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
+use crate::fork_sandbox::process;
+use crate::fork_sandbox::sandbox;
 use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::image::LoadedImages;
-use crate::pipeline::{BuildParams, compile_and_tile};
+use crate::pipeline::{BuildParams, compile_and_dump, compile_and_tile};
 use crate::tile::DocumentMeta;
 use crate::tile_cache::TilePngs;
 
-pub use process::ChildProcess;
+pub use crate::fork_sandbox::process::ChildProcess;
 
-/// Fork a sandboxed child that computes a value and returns it.
-///
-/// The child applies Landlock, runs `f()`, sends the result via IPC, and exits.
-/// Panics in `f` are caught and converted to an error on the parent side
-/// (child exits, pipe closes, parent recv fails).
-pub fn fork_compute<T, F>(sandbox_read_base: Option<&Path>, no_sandbox: bool, f: F) -> Result<T>
-where
-    T: Serialize + DeserializeOwned,
-    F: FnOnce() -> T,
-{
-    let sandbox_base: Option<PathBuf> = sandbox_read_base.map(|p| p.to_path_buf());
-    let (_, mut rx, mut child) =
-        process::fork_with_channels::<(), T, _>(move |_req_rx, mut resp_tx| {
-            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref()) {
-                log::warn!("child: sandbox failed: {e:#}");
-            }
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-                Ok(result) => {
-                    let _ = resp_tx.send(&result);
-                }
-                Err(_) => {
-                    log::error!("child: fork_compute panicked");
-                }
-            }
-        })?;
-    let result = rx.recv().context("fork_compute: child failed")?;
-    child.wait()?;
-    Ok(result)
-}
-
-/// Extract image paths (Fork 1, sandboxed) and fetch remote images (parent).
-///
-/// Fork 1 runs pulldown-cmark under a sandbox with no FS access and TCP denied.
-/// The parent then fetches any remote images on the trusted side.
-///
-/// Returns `(all_paths, remote_images)` for passing to fork_renderer/fork_dump.
-pub fn prepare_images(
-    markdown: &str,
-    allow_remote_images: bool,
-    no_sandbox: bool,
-) -> Result<(Vec<String>, LoadedImages)> {
-    // Fork 1: extract image paths under sandbox (no FS, no network)
-    let paths = fork_compute(None, no_sandbox, {
-        let md = markdown.to_string();
-        move || crate::pipeline::extract_image_paths(&md)
-    })?;
-
-    // Parent: fetch remote images (trusted side)
-    let remote_images = if allow_remote_images {
-        let remote_urls: Vec<String> = paths
-            .iter()
-            .filter(|p| p.starts_with("http://") || p.starts_with("https://"))
-            .cloned()
-            .collect();
-        if remote_urls.is_empty() {
-            LoadedImages::default()
-        } else {
-            let (images, errors) = crate::image::load_images(&remote_urls, None, true);
-            for err in &errors {
-                log::warn!("{err}");
-            }
-            images
-        }
-    } else {
-        LoadedImages::default()
-    };
-
-    Ok((paths, remote_images))
-}
+// ---------------------------------------------------------------------------
+// IPC protocol types (private)
+// ---------------------------------------------------------------------------
 
 /// Request from parent to child.
 #[derive(Serialize, Deserialize)]
@@ -118,6 +49,10 @@ enum Response {
     Error(String),
 }
 
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
 /// A response from the child process, tagged with the tile index.
 #[derive(Debug)]
 pub enum TileResponse {
@@ -140,7 +75,7 @@ pub struct TileRenderer {
 impl TileRenderer {
     /// Receive the initial metadata response from the child.
     ///
-    /// Must be called exactly once as the first operation after [`fork_renderer`].
+    /// Must be called exactly once as the first operation after [`build_renderer`].
     pub fn wait_for_meta(&mut self) -> Result<DocumentMeta> {
         match self
             .rx
@@ -225,45 +160,84 @@ impl TileRenderer {
     }
 }
 
-/// Fork a sandboxed renderer child process without waiting for metadata.
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+/// Extract image paths (Fork 1, sandboxed) and fetch remote images (parent).
 ///
-/// The child (Fork 2):
-/// 1. Applies Landlock V4 sandbox (FS read-only + TCP denied)
-/// 2. Loads local images within the read scope
-/// 3. Merges pre-fetched remote images from parent
-/// 4. Compiles the TiledDocument
-/// 5. Sends `Response::Meta` back to parent
-/// 6. Enters request loop: renders tiles on demand
-///
-/// Returns `(renderer, child_handle)`.
-/// The caller must call [`TileRenderer::wait_for_meta`] to receive the first message.
-pub fn fork_renderer(
+/// Fork 1 runs pulldown-cmark under a sandbox with no FS access and TCP denied.
+/// The parent then fetches any remote images on the trusted side.
+fn prepare_remote_images(
     params: &BuildParams,
-    image_paths: &[String],
-    remote_images: LoadedImages,
-    sandbox_read_base: Option<&Path>,
+    no_sandbox: bool,
+) -> Result<(Vec<String>, LoadedImages)> {
+    use crate::fork_sandbox::fork_compute;
+
+    // Fork 1: extract image paths under sandbox (no FS, no network)
+    let paths = fork_compute(None, no_sandbox, {
+        let md = params.markdown.clone();
+        move || crate::pipeline::extract_image_paths(&md)
+    })?;
+
+    // Parent: fetch remote images (trusted side)
+    let remote_images = if params.allow_remote_images {
+        let remote_urls: Vec<String> = paths
+            .iter()
+            .filter(|p| p.starts_with("http://") || p.starts_with("https://"))
+            .cloned()
+            .collect();
+        if remote_urls.is_empty() {
+            LoadedImages::default()
+        } else {
+            let (images, errors) = crate::image::load_images(&remote_urls, None, true);
+            for err in &errors {
+                log::warn!("{err}");
+            }
+            images
+        }
+    } else {
+        LoadedImages::default()
+    };
+
+    Ok((paths, remote_images))
+}
+
+/// Derive the sandbox read base path from BuildParams.
+fn sandbox_read_base(params: &BuildParams) -> Option<&Path> {
+    params.base_dir.as_deref()
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Build a sandboxed renderer: prepare images (Fork 1) + fork renderer (Fork 2).
+///
+/// Returns `(renderer, child_handle)` without waiting for metadata.
+/// The caller must call [`TileRenderer::wait_for_meta`] to receive the first message.
+pub fn build_renderer(
+    params: &BuildParams,
     no_sandbox: bool,
 ) -> Result<(TileRenderer, ChildProcess)> {
+    let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let read_base = sandbox_read_base(params);
+
     let params = params.clone();
-    let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
-    let image_paths = image_paths.to_vec();
+    let read_base = read_base.map(|p| p.to_path_buf());
+    let image_paths_owned = image_paths;
 
     let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
         move |mut req_rx: process::TypedReader<Request>,
               mut resp_tx: process::TypedWriter<Response>| {
             // SECURITY: Fork 2 applies sandbox immediately.
-            // All untrusted processing (pulldown-cmark, mermaid, Typst) runs
-            // under Landlock V4 (FS read-only + TCP denied).
-            // Local images are loaded from disk within the read scope.
-            // Remote images were pre-fetched by the parent (trusted side)
-            // and passed via closure capture (COW after fork).
-            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_read_base.as_deref()) {
+            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref()) {
                 log::warn!("child: sandbox failed: {e:#}");
             }
 
             // Load local images (Landlock read scope allows git root)
             let (mut images, errors) =
-                crate::image::load_images(&image_paths, params.base_dir.as_deref(), false);
+                crate::image::load_images(&image_paths_owned, params.base_dir.as_deref(), false);
             for err in &errors {
                 log::warn!("{err}");
             }
@@ -330,26 +304,34 @@ pub fn fork_renderer(
     Ok((TileRenderer { tx, rx }, child))
 }
 
-/// Fork a sandboxed child that dumps the compiled document to stderr and exits.
+/// Build a sandboxed renderer and wait for metadata.
 ///
-/// The child (Fork 2) applies the sandbox, loads local images, merges
-/// pre-fetched remote images, compiles the document, and writes the
-/// generated Typst source and frame tree to stderr.
-pub fn fork_dump(
+/// Convenience wrapper around [`build_renderer`] that also receives the initial
+/// `Response::Meta` message. Used by `render` mode where no loading UI is needed.
+///
+/// Returns `(metadata, renderer, child_handle)`.
+pub fn build_renderer_blocking(
     params: &BuildParams,
-    image_paths: &[String],
-    remote_images: LoadedImages,
-    sandbox_read_base: Option<&Path>,
     no_sandbox: bool,
-) -> Result<ChildProcess> {
-    use crate::pipeline::compile_and_dump;
+) -> Result<(DocumentMeta, TileRenderer, ChildProcess)> {
+    let (mut renderer, child) = build_renderer(params, no_sandbox)?;
+    let meta = renderer.wait_for_meta()?;
+    Ok((meta, renderer, child))
+}
+
+/// Build and dump: prepare images (Fork 1) + fork dump (Fork 2).
+///
+/// The child compiles the document and writes the generated Typst source
+/// and frame tree to stderr, then exits.
+pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess> {
+    let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let read_base = sandbox_read_base(params);
 
     let params = params.clone();
-    let sandbox_read_base = sandbox_read_base.map(|p| p.to_path_buf());
-    let image_paths = image_paths.to_vec();
+    let read_base = read_base.map(|p| p.to_path_buf());
 
     let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
-        if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_read_base.as_deref()) {
+        if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref()) {
             log::warn!("child: sandbox failed: {e:#}");
         }
 
@@ -371,30 +353,6 @@ pub fn fork_dump(
     })?;
 
     Ok(child)
-}
-
-/// Fork and spawn a sandboxed renderer, waiting for metadata.
-///
-/// Convenience wrapper around [`fork_renderer`] that also receives the initial
-/// `Response::Meta` message. Used by `render` mode where no loading UI is needed.
-///
-/// Returns `(metadata, renderer, child_handle)`.
-pub fn spawn_renderer(
-    params: &BuildParams,
-    image_paths: &[String],
-    remote_images: LoadedImages,
-    sandbox_read_base: Option<&Path>,
-    no_sandbox: bool,
-) -> Result<(DocumentMeta, TileRenderer, ChildProcess)> {
-    let (mut renderer, child) = fork_renderer(
-        params,
-        image_paths,
-        remote_images,
-        sandbox_read_base,
-        no_sandbox,
-    )?;
-    let meta = renderer.wait_for_meta()?;
-    Ok((meta, renderer, child))
 }
 
 #[cfg(test)]
