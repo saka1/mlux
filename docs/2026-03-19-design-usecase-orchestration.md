@@ -147,6 +147,23 @@ Note: child側でもextract_image_pathsを再実行する（Fork 1の結果をIP
 Fork 1の目的はremote URL抽出のためのsandboxed parseであり、child側のlocal image loadには
 パスの再抽出で十分。
 
+### Internal flow (build_dump)
+
+`build_renderer` と同じ2-stage forkパターンだが、child側で `compile_and_dump` を呼び、
+stderrに出力して終了する（request loopなし、MetaのIPC送信もなし）。
+
+```
+1. fork_compute(sandbox=no_fs) { extract_image_paths(&params.markdown) }
+2. parent: fetch remote images
+3. fork_with_channels(child_fn):
+     child:
+       enforce_sandbox(read_only base_dir)
+       child_setup variant: local images + merge + compile_and_dump → stderr
+       exit
+   parent:
+     return ChildProcess (caller waits for exit)
+```
+
 ### Calling site changes
 
 ```rust
