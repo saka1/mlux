@@ -175,7 +175,7 @@ fn prepare_remote_images(
     use crate::fork_sandbox::fork_compute;
 
     // Fork 1: extract image paths under sandbox (no FS, no network)
-    let paths = fork_compute(None, no_sandbox, {
+    let paths = fork_compute(None, &[], no_sandbox, {
         let md = params.markdown.clone();
         move || crate::pipeline::extract_image_paths(&md)
     })?;
@@ -222,6 +222,7 @@ pub fn build_renderer(
 ) -> Result<(TileRenderer, ChildProcess)> {
     let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
     let read_base = sandbox_read_base(params);
+    let font_dirs = params.fonts.font_dirs();
 
     let params = params.clone();
     let read_base = read_base.map(|p| p.to_path_buf());
@@ -231,7 +232,9 @@ pub fn build_renderer(
         move |mut req_rx: process::TypedReader<Request>,
               mut resp_tx: process::TypedWriter<Response>| {
             // SECURITY: Fork 2 applies sandbox immediately.
-            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref()) {
+            if !no_sandbox
+                && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), &font_dirs)
+            {
                 log::warn!("child: sandbox failed: {e:#}");
             }
 
@@ -326,12 +329,13 @@ pub fn build_renderer_blocking(
 pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess> {
     let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
     let read_base = sandbox_read_base(params);
+    let font_dirs = params.fonts.font_dirs();
 
     let params = params.clone();
     let read_base = read_base.map(|p| p.to_path_buf());
 
     let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
-        if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref()) {
+        if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), &font_dirs) {
             log::warn!("child: sandbox failed: {e:#}");
         }
 

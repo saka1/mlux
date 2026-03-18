@@ -19,15 +19,23 @@ pub use process::ChildProcess;
 /// The child applies Landlock, runs `f()`, sends the result via IPC, and exits.
 /// Panics in `f` are caught and converted to an error on the parent side
 /// (child exits, pipe closes, parent recv fails).
-pub fn fork_compute<T, F>(sandbox_read_base: Option<&Path>, no_sandbox: bool, f: F) -> Result<T>
+pub fn fork_compute<T, F>(
+    sandbox_read_base: Option<&Path>,
+    font_dirs: &[PathBuf],
+    no_sandbox: bool,
+    f: F,
+) -> Result<T>
 where
     T: Serialize + DeserializeOwned,
     F: FnOnce() -> T,
 {
     let sandbox_base: Option<PathBuf> = sandbox_read_base.map(|p| p.to_path_buf());
+    let font_dirs = font_dirs.to_vec();
     let (_, mut rx, mut child) =
         process::fork_with_channels::<(), T, _>(move |_req_rx, mut resp_tx| {
-            if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref()) {
+            if !no_sandbox
+                && let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref(), &font_dirs)
+            {
                 log::warn!("child: sandbox failed: {e:#}");
             }
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {

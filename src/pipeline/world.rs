@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Instant;
 
 use log::info;
@@ -84,6 +85,20 @@ impl FontCache {
             start.elapsed().as_secs_f64() * 1000.0,
         );
         custom
+    }
+
+    /// Unique parent directories of all discovered system font files.
+    /// Used to allowlist font reads in Landlock sandboxes.
+    pub fn font_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = std::collections::HashSet::new();
+        for slot in &self.fonts {
+            if let Some(path) = slot.path()
+                && let Some(parent) = path.parent()
+            {
+                dirs.insert(parent.to_path_buf());
+            }
+        }
+        dirs.into_iter().collect()
     }
 
     /// Look up a font by global index (system fonts first, then custom).
@@ -287,5 +302,17 @@ mod tests {
     #[test]
     fn restore_url_scheme_local_path() {
         assert_eq!(restore_url_scheme("images/photo.png"), None);
+    }
+
+    #[test]
+    fn font_dirs_returns_system_paths() {
+        let cache = FontCache::new();
+        let dirs = cache.font_dirs();
+        // Should find at least one font directory on any system
+        assert!(!dirs.is_empty());
+        // All returned paths should exist
+        for dir in &dirs {
+            assert!(dir.exists(), "font dir should exist: {}", dir.display());
+        }
     }
 }
