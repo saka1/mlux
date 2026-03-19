@@ -22,7 +22,6 @@ pub(super) struct LogState {
 }
 
 impl LogState {
-    #[allow(dead_code)] // Called in Task 5 when log mode entry is wired
     pub(super) fn new(buffer: &crate::log::LogBuffer) -> Self {
         Self {
             entries: buffer.entries(),

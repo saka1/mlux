@@ -266,7 +266,6 @@ pub(super) enum UrlAction {
 }
 
 /// Actions specific to log viewer mode.
-#[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LogAction {
     ScrollDown,
@@ -283,7 +282,6 @@ pub(super) enum LogAction {
 }
 
 /// Map a key event to a log viewer action.
-#[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
 pub(super) fn map_log_key(key: KeyEvent) -> Option<LogAction> {
     let KeyEvent {
         code, modifiers, ..
