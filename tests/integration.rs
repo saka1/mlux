@@ -136,7 +136,6 @@ const WIDTH_PT: f64 = 400.0;
 ///
 /// Returns visual_lines with byte-based source mapping via BoundIndex.
 fn source_map_pipeline(md: &str) -> Vec<mlux::visual_line::VisualLine> {
-    let _ = env_logger::try_init();
     let theme = load_theme();
     let (content, content_index) = markdown_to_typst(md, None);
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
