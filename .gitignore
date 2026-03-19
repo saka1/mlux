@@ -4,3 +4,4 @@ output/*.png
 .venv/
 __pycache__/
 .claude/
+.worktrees/
