@@ -5,7 +5,7 @@
 
 use crossterm::terminal as crossterm_terminal;
 use log::debug;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::input_source::InputSource;
 use crate::watch::FileWatcher;
@@ -36,6 +36,14 @@ pub(super) struct Session {
 }
 
 impl Session {
+    /// The current file path, if the input is a file (not stdin).
+    pub(super) fn current_file_path(&self) -> Option<&Path> {
+        match &self.input {
+            InputSource::File(p) => Some(p),
+            InputSource::Stdin(_) => None,
+        }
+    }
+
     /// Recompute layout for new terminal dimensions and clear stale images.
     pub(super) fn update_layout_for_resize(
         &mut self,

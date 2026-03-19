@@ -331,6 +331,7 @@ pub fn run(
                                                     .max(1)
                                                     * session.layout.cell_h as u32,
                                                 last_search: &mut vp.last_search,
+                                                current_file: session.current_file_path(),
                                             };
                                             mode_normal::handle(action, &mut ctx)
                                         }
@@ -374,7 +375,12 @@ pub fn run(
                                     Some(a) => {
                                         let visible_count =
                                             (session.layout.status_row - 1) as usize;
-                                        mode_url::handle(a, up, visible_count)
+                                        mode_url::handle(
+                                            a,
+                                            up,
+                                            visible_count,
+                                            session.current_file_path(),
+                                        )
                                     }
                                     None => vec![],
                                 },
@@ -391,7 +397,6 @@ pub fn run(
                             let ctx = ViewContext {
                                 layout: &session.layout,
                                 acc_value: acc.peek(),
-                                input: &session.input,
                                 filename: &session.filename,
                                 jump_stack: &session.jump_stack,
                                 doc: &doc,

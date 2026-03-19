@@ -7,14 +7,17 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
+use crate::url::LinkTarget;
+
 use super::keymap::UrlAction;
 use super::layout::Layout;
+use super::mode_normal::open_link_target;
 use super::query::{DocumentQuery, UrlEntry, extract_urls_from_lines};
 use super::{Effect, ViewerMode};
 
 /// A single entry in the URL picker list.
 pub(super) struct UrlPickerEntry {
-    pub url: String,
+    pub target: LinkTarget,
     pub text: String,
     /// 1-based visual line number (for display).
     pub visual_line: usize,
@@ -60,9 +63,9 @@ pub(super) fn collect_all_url_entries(doc: &DocumentQuery) -> Vec<UrlPickerEntry
         let end = doc.byte_offset_to_line(r.end.saturating_sub(1).max(r.start));
         let url_entries = extract_urls_from_lines(doc.markdown, start, end);
         let line_num = vl_idx + 1; // 1-based
-        for UrlEntry { url, text } in url_entries {
+        for UrlEntry { target, text } in url_entries {
             entries.push(UrlPickerEntry {
-                url,
+                target,
                 text,
                 visual_line: line_num,
             });
@@ -110,10 +113,11 @@ pub(super) fn draw_url_screen(layout: &Layout, state: &UrlPickerState) -> io::Re
         let marker = if is_selected { " > " } else { "   " };
         let line_label = format!("L{:<4}", e.visual_line);
 
+        let url_display = e.target.display_url();
         let content = if e.text.is_empty() {
-            format!("{marker}{line_label} {}", e.url)
+            format!("{marker}{line_label} {url_display}")
         } else {
-            format!("{marker}{line_label} [{}] {}", e.text, e.url)
+            format!("{marker}{line_label} [{}] {url_display}", e.text)
         };
 
         // Truncate to terminal width
@@ -150,6 +154,7 @@ pub(super) fn handle(
     action: UrlAction,
     state: &mut UrlPickerState,
     visible_count: usize,
+    current_file: Option<&std::path::Path>,
 ) -> Vec<Effect> {
     match action {
         UrlAction::SelectNext => {
@@ -174,12 +179,12 @@ pub(super) fn handle(
             if state.entries.is_empty() {
                 return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
             }
-            let url = state.entries[state.selected].url.clone();
-            vec![
-                Effect::OpenUrl(url.clone()),
-                Effect::Flash(format!("Opening {url}")),
-                Effect::SetMode(ViewerMode::Normal),
-            ]
+            let entry = &state.entries[state.selected];
+            let display = entry.target.display_url().to_string();
+            let mut effects = open_link_target(&entry.target, current_file);
+            effects.push(Effect::Flash(format!("Opening {display}")));
+            effects.push(Effect::SetMode(ViewerMode::Normal));
+            effects
         }
         UrlAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
     }
@@ -203,10 +208,10 @@ mod tests {
         let doc = DocumentQuery::new(md, &vls, &ci, 0);
         let entries = collect_all_url_entries(&doc);
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].url, "https://rust.invalid/");
+        assert_eq!(entries[0].target.display_url(), "https://rust.invalid/");
         assert_eq!(entries[0].text, "Rust");
         assert_eq!(entries[0].visual_line, 1);
-        assert_eq!(entries[1].url, "https://docs.invalid/");
+        assert_eq!(entries[1].target.display_url(), "https://docs.invalid/");
         assert_eq!(entries[1].visual_line, 3);
     }
 
@@ -235,22 +240,22 @@ mod tests {
     fn test_handle_select_next() {
         let entries = vec![
             UrlPickerEntry {
-                url: "https://a.invalid/".into(),
+                target: LinkTarget::ExternalUrl("https://a.invalid/".into()),
                 text: "A".into(),
                 visual_line: 1,
             },
             UrlPickerEntry {
-                url: "https://b.invalid/".into(),
+                target: LinkTarget::ExternalUrl("https://b.invalid/".into()),
                 text: "B".into(),
                 visual_line: 2,
             },
         ];
         let mut state = UrlPickerState::new(entries);
         assert_eq!(state.selected, 0);
-        let _ = handle(UrlAction::SelectNext, &mut state, 20);
+        let _ = handle(UrlAction::SelectNext, &mut state, 20, None);
         assert_eq!(state.selected, 1);
         // Should clamp at end
-        let _ = handle(UrlAction::SelectNext, &mut state, 20);
+        let _ = handle(UrlAction::SelectNext, &mut state, 20, None);
         assert_eq!(state.selected, 1);
     }
 
@@ -258,22 +263,22 @@ mod tests {
     fn test_handle_select_prev() {
         let entries = vec![
             UrlPickerEntry {
-                url: "https://a.invalid/".into(),
+                target: LinkTarget::ExternalUrl("https://a.invalid/".into()),
                 text: "A".into(),
                 visual_line: 1,
             },
             UrlPickerEntry {
-                url: "https://b.invalid/".into(),
+                target: LinkTarget::ExternalUrl("https://b.invalid/".into()),
                 text: "B".into(),
                 visual_line: 2,
             },
         ];
         let mut state = UrlPickerState::new(entries);
         state.selected = 1;
-        let _ = handle(UrlAction::SelectPrev, &mut state, 20);
+        let _ = handle(UrlAction::SelectPrev, &mut state, 20, None);
         assert_eq!(state.selected, 0);
         // Should clamp at 0
-        let _ = handle(UrlAction::SelectPrev, &mut state, 20);
+        let _ = handle(UrlAction::SelectPrev, &mut state, 20, None);
         assert_eq!(state.selected, 0);
     }
 
@@ -281,35 +286,35 @@ mod tests {
     fn test_handle_confirm_opens_selected() {
         let entries = vec![
             UrlPickerEntry {
-                url: "https://a.invalid/".into(),
+                target: LinkTarget::ExternalUrl("https://a.invalid/".into()),
                 text: "A".into(),
                 visual_line: 1,
             },
             UrlPickerEntry {
-                url: "https://b.invalid/".into(),
+                target: LinkTarget::ExternalUrl("https://b.invalid/".into()),
                 text: "B".into(),
                 visual_line: 2,
             },
         ];
         let mut state = UrlPickerState::new(entries);
         state.selected = 1;
-        let effects = handle(UrlAction::Confirm, &mut state, 20);
+        let effects = handle(UrlAction::Confirm, &mut state, 20, None);
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::OpenUrl(u) if u == "https://b.invalid/"))
+                .any(|e| matches!(e, Effect::OpenExternalUrl(u) if u == "https://b.invalid/"))
         );
     }
 
     #[test]
     fn test_handle_cancel_returns_normal() {
         let entries = vec![UrlPickerEntry {
-            url: "https://a.invalid/".into(),
+            target: LinkTarget::ExternalUrl("https://a.invalid/".into()),
             text: "A".into(),
             visual_line: 1,
         }];
         let mut state = UrlPickerState::new(entries);
-        let effects = handle(UrlAction::Cancel, &mut state, 20);
+        let effects = handle(UrlAction::Cancel, &mut state, 20, None);
         assert!(
             effects
                 .iter()

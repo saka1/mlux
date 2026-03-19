@@ -1,12 +1,9 @@
 //! Test harness for scenario-based viewer testing without a terminal.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
-
 use crate::highlight::HighlightRect;
-use crate::input_source::InputSource;
 use crate::pipeline::{BuildParams, FontCache, build_tiled_document};
 use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::display_state::DisplayState;
 use super::effect::{Effect, RenderOp, ViewerMode};
@@ -32,7 +29,6 @@ pub(super) struct TestHarness {
     doc: TiledDocument,
     markdown: String,
     acc: InputAccumulator,
-    input_source: InputSource,
     filename: String,
     render_ops: Vec<RenderOp>,
     scroll_step: u32,
@@ -99,7 +95,6 @@ impl TestHarness {
             doc,
             markdown: md.to_string(),
             acc: InputAccumulator::new(),
-            input_source: InputSource::File(PathBuf::from("test.md")),
             filename: "test.md".to_string(),
             render_ops: Vec::new(),
             scroll_step,
@@ -130,6 +125,7 @@ impl TestHarness {
                             scroll_step: self.scroll_step,
                             half_page: self.half_page,
                             last_search: &mut self.viewport.last_search,
+                            current_file: None,
                         };
                         super::mode_normal::handle(action, &mut ctx)
                     }
@@ -164,7 +160,7 @@ impl TestHarness {
             ViewerMode::UrlPicker(up) => match map_url_key(key) {
                 Some(a) => {
                     let visible_count = (self.layout.status_row - 1) as usize;
-                    super::mode_url::handle(a, up, visible_count)
+                    super::mode_url::handle(a, up, visible_count, None)
                 }
                 None => vec![],
             },
@@ -180,7 +176,6 @@ impl TestHarness {
         let ctx = ViewContext {
             layout: &self.layout,
             acc_value: self.acc.peek(),
-            input: &self.input_source,
             filename: &self.filename,
             jump_stack: &[],
             doc: &doc,

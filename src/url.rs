@@ -1,5 +1,47 @@
 use regex::Regex;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+
+/// Classified link destination, determined at URL extraction time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// External URL — open in browser (https://, http://, mailto:, etc.)
+    ExternalUrl(String),
+    /// Local markdown file — relative path as extracted, not yet resolved.
+    LocalMarkdown(String),
+}
+
+impl LinkTarget {
+    /// Classify a URL string into external or local markdown.
+    pub fn classify(url: &str) -> Self {
+        if url.contains("://") || url.starts_with("mailto:") {
+            return Self::ExternalUrl(url.to_string());
+        }
+        let path_part = url.split('#').next().unwrap_or(url);
+        if path_part.ends_with(".md") || path_part.ends_with(".markdown") {
+            Self::LocalMarkdown(url.to_string())
+        } else {
+            Self::ExternalUrl(url.to_string())
+        }
+    }
+
+    /// Extract the inner URL string for display.
+    pub fn display_url(&self) -> &str {
+        match self {
+            Self::ExternalUrl(u) | Self::LocalMarkdown(u) => u,
+        }
+    }
+}
+
+/// Resolve a relative link URL against the current file's directory.
+pub fn resolve_link_path(url: &str, current_file: &Path) -> Option<PathBuf> {
+    let path_part = url.split('#').next().unwrap_or(url);
+    if path_part.is_empty() {
+        return None;
+    }
+    let base_dir = current_file.parent()?;
+    Some(base_dir.join(path_part))
+}
 
 /// Regex for bare URLs starting with `http://` or `https://`.
 ///
@@ -100,5 +142,84 @@ mod tests {
     fn trailing_question_excluded() {
         let urls = extract_bare_urls("https://example.invalid?");
         assert_eq!(urls, vec!["https://example.invalid"]);
+    }
+
+    #[test]
+    fn classify_local_markdown() {
+        assert_eq!(
+            LinkTarget::classify("./other.md"),
+            LinkTarget::LocalMarkdown("./other.md".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("other.md"),
+            LinkTarget::LocalMarkdown("other.md".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("../docs/guide.md"),
+            LinkTarget::LocalMarkdown("../docs/guide.md".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("file.md#section"),
+            LinkTarget::LocalMarkdown("file.md#section".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("notes.markdown"),
+            LinkTarget::LocalMarkdown("notes.markdown".into())
+        );
+    }
+
+    #[test]
+    fn classify_external() {
+        assert_eq!(
+            LinkTarget::classify("https://example.com"),
+            LinkTarget::ExternalUrl("https://example.com".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("http://example.com/page.md"),
+            LinkTarget::ExternalUrl("http://example.com/page.md".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("mailto:user@example.com"),
+            LinkTarget::ExternalUrl("mailto:user@example.com".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("data.csv"),
+            LinkTarget::ExternalUrl("data.csv".into())
+        );
+        assert_eq!(
+            LinkTarget::classify("image.png"),
+            LinkTarget::ExternalUrl("image.png".into())
+        );
+        assert_eq!(LinkTarget::classify(""), LinkTarget::ExternalUrl("".into()));
+    }
+
+    #[test]
+    fn test_resolve_link_path() {
+        let current = Path::new("/home/user/docs/readme.md");
+
+        assert_eq!(
+            resolve_link_path("other.md", current),
+            Some(PathBuf::from("/home/user/docs/other.md"))
+        );
+        assert_eq!(
+            resolve_link_path("../guide.md", current),
+            Some(PathBuf::from("/home/user/docs/../guide.md"))
+        );
+        assert_eq!(
+            resolve_link_path("sub/page.md#heading", current),
+            Some(PathBuf::from("/home/user/docs/sub/page.md"))
+        );
+        // Fragment-only link -> None
+        assert_eq!(resolve_link_path("#heading", current), None);
+        // Empty -> None
+        assert_eq!(resolve_link_path("", current), None);
+    }
+
+    #[test]
+    fn display_url_returns_inner() {
+        let ext = LinkTarget::ExternalUrl("https://example.com".into());
+        assert_eq!(ext.display_url(), "https://example.com");
+        let local = LinkTarget::LocalMarkdown("other.md".into());
+        assert_eq!(local.display_url(), "other.md");
     }
 }

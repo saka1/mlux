@@ -7,12 +7,13 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 use crate::pipeline::ContentIndex;
+use crate::url::LinkTarget;
 use crate::visual_line::{self, VisualLine};
 
 /// A URL extracted from Markdown source, with its link text.
 #[derive(Debug, Clone)]
 pub struct UrlEntry {
-    pub url: String,
+    pub target: LinkTarget,
     pub text: String,
 }
 
@@ -173,7 +174,7 @@ pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec
             Event::End(TagEnd::Link) => {
                 if in_link && !current_url.is_empty() {
                     urls.push(UrlEntry {
-                        url: current_url.clone(),
+                        target: LinkTarget::classify(&current_url),
                         text: current_text.clone(),
                     });
                 }
@@ -194,9 +195,9 @@ pub fn extract_urls_from_lines(md_source: &str, start: usize, end: usize) -> Vec
 
     for text in &plain_texts {
         for bare_url in crate::url::extract_bare_urls(text) {
-            if !urls.iter().any(|u| u.url == bare_url) {
+            if !urls.iter().any(|u| u.target.display_url() == bare_url) {
                 urls.push(UrlEntry {
-                    url: bare_url.clone(),
+                    target: LinkTarget::ExternalUrl(bare_url.clone()),
                     text: bare_url,
                 });
             }
@@ -327,7 +328,7 @@ mod tests {
         let doc = DocumentQuery::new(md, &vls, &ci, 0);
         let urls = doc.extract_urls(0);
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].url, "https://rust.invalid/");
+        assert_eq!(urls[0].target.display_url(), "https://rust.invalid/");
         assert_eq!(urls[0].text, "Rust");
     }
 
@@ -339,9 +340,9 @@ mod tests {
         let doc = DocumentQuery::new(md, &vls, &ci, 0);
         let urls = doc.extract_urls(0);
         assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0].url, "https://a.invalid/");
+        assert_eq!(urls[0].target.display_url(), "https://a.invalid/");
         assert_eq!(urls[0].text, "A");
-        assert_eq!(urls[1].url, "https://b.invalid/");
+        assert_eq!(urls[1].target.display_url(), "https://b.invalid/");
         assert_eq!(urls[1].text, "B");
     }
 
@@ -383,9 +384,9 @@ mod tests {
         let doc = DocumentQuery::new(md, &vls, &ci, 0);
         let urls = doc.extract_urls(0);
         assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0].url, "https://one.invalid/");
+        assert_eq!(urls[0].target.display_url(), "https://one.invalid/");
         assert_eq!(urls[0].text, "link1");
-        assert_eq!(urls[1].url, "https://two.invalid/");
+        assert_eq!(urls[1].target.display_url(), "https://two.invalid/");
         assert_eq!(urls[1].text, "link2");
     }
 
@@ -394,7 +395,7 @@ mod tests {
         let md = "Check https://rust-lang.invalid/ for more\n";
         let urls = extract_urls_from_lines(md, 1, 1);
         assert_eq!(urls.len(), 1);
-        assert_eq!(urls[0].url, "https://rust-lang.invalid/");
+        assert_eq!(urls[0].target.display_url(), "https://rust-lang.invalid/");
         assert_eq!(urls[0].text, "https://rust-lang.invalid/");
     }
 
@@ -403,9 +404,9 @@ mod tests {
         let md = "[Rust](https://rust-lang.invalid) and https://crates.invalid\n";
         let urls = extract_urls_from_lines(md, 1, 1);
         assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0].url, "https://rust-lang.invalid");
+        assert_eq!(urls[0].target.display_url(), "https://rust-lang.invalid");
         assert_eq!(urls[0].text, "Rust");
-        assert_eq!(urls[1].url, "https://crates.invalid");
+        assert_eq!(urls[1].target.display_url(), "https://crates.invalid");
         assert_eq!(urls[1].text, "https://crates.invalid");
     }
 
@@ -414,7 +415,7 @@ mod tests {
         let md = "[Rust](https://rust-lang.invalid) and https://rust-lang.invalid\n";
         let urls = extract_urls_from_lines(md, 1, 1);
         assert_eq!(urls.len(), 1, "duplicate bare URL should be deduplicated");
-        assert_eq!(urls[0].url, "https://rust-lang.invalid");
+        assert_eq!(urls[0].target.display_url(), "https://rust-lang.invalid");
         assert_eq!(urls[0].text, "Rust");
     }
 
@@ -423,7 +424,13 @@ mod tests {
         let md = "- https://help.x.com/ja/using-x/create-a-thread\n- https://help.x.com/en/using-x/types-of-posts\n";
         let urls = extract_urls_from_lines(md, 1, 2);
         assert_eq!(urls.len(), 2, "each list item should produce one URL");
-        assert_eq!(urls[0].url, "https://help.x.com/ja/using-x/create-a-thread");
-        assert_eq!(urls[1].url, "https://help.x.com/en/using-x/types-of-posts");
+        assert_eq!(
+            urls[0].target.display_url(),
+            "https://help.x.com/ja/using-x/create-a-thread"
+        );
+        assert_eq!(
+            urls[1].target.display_url(),
+            "https://help.x.com/en/using-x/types-of-posts"
+        );
     }
 }

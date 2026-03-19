@@ -1,6 +1,9 @@
 //! Normal mode handler: scrolling, jumping, yanking, mode transitions.
 
 use log::debug;
+use std::path::Path;
+
+use crate::url::LinkTarget;
 
 use super::effect::ExitReason;
 use super::keymap::Action;
@@ -12,6 +15,22 @@ use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
 use super::query::DocumentQuery;
 use super::{Effect, ViewerMode};
 
+/// Produce the effect(s) to open a classified link target.
+///
+/// Local markdown links are resolved against `current_file` and become
+/// `Exit(Navigate)`; everything else becomes `OpenExternalUrl`.
+pub(super) fn open_link_target(target: &LinkTarget, current_file: Option<&Path>) -> Vec<Effect> {
+    match target {
+        LinkTarget::LocalMarkdown(rel) => {
+            match current_file.and_then(|f| crate::url::resolve_link_path(rel, f)) {
+                Some(path) => vec![Effect::Exit(ExitReason::Navigate { path })],
+                None => vec![Effect::OpenExternalUrl(rel.clone())],
+            }
+        }
+        LinkTarget::ExternalUrl(url) => vec![Effect::OpenExternalUrl(url.clone())],
+    }
+}
+
 pub(super) struct NormalCtx<'a> {
     pub scroll: &'a ScrollState,
     pub doc: &'a DocumentQuery<'a>,
@@ -19,6 +38,7 @@ pub(super) struct NormalCtx<'a> {
     pub scroll_step: u32,
     pub half_page: u32,
     pub last_search: &'a mut Option<LastSearch>,
+    pub current_file: Option<&'a Path>,
 }
 
 pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
@@ -259,18 +279,18 @@ fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
         ];
     }
     if urls.len() == 1 {
-        debug!("open_url L{line_num}: {}", urls[0].url);
-        vec![
-            Effect::OpenUrl(urls[0].url.clone()),
-            Effect::Flash(format!("Opening {}", urls[0].url)),
-            Effect::RedrawStatusBar,
-        ]
+        let display = urls[0].target.display_url().to_string();
+        debug!("open_url L{line_num}: {display}");
+        let mut effects = open_link_target(&urls[0].target, ctx.current_file);
+        effects.push(Effect::Flash(format!("Opening {display}")));
+        effects.push(Effect::RedrawStatusBar);
+        effects
     } else {
         debug!("open_url L{line_num}: {} URLs, entering picker", urls.len());
         let entries: Vec<UrlPickerEntry> = urls
             .into_iter()
             .map(|u| UrlPickerEntry {
-                url: u.url,
+                target: u.target,
                 text: u.text,
                 visual_line: line_num as usize,
             })
@@ -309,6 +329,7 @@ mod tests {
             scroll_step: 30,
             half_page: 200,
             last_search,
+            current_file: None,
         }
     }
 

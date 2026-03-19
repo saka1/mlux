@@ -50,7 +50,7 @@ pub(super) enum Effect {
     RedrawToc,
     RedrawLog,
     Yank(String),
-    OpenUrl(String),
+    OpenExternalUrl(String),
     SetMode(ViewerMode),
     SetLastSearch(LastSearch),
     DeletePlacements,
@@ -73,7 +73,7 @@ pub(super) enum RenderOp {
     ClearScreen,
     DeleteAllImages,
     CopyToClipboard(String),
-    OpenExternal(String),
+    OpenExternalUrl(String),
     DeletePlacements,
     DeleteOverlayPlacements,
     Exit(ExitReason),
@@ -133,7 +133,7 @@ pub(super) fn execute_render_ops(
             RenderOp::CopyToClipboard(text) => {
                 let _ = terminal::send_osc52(&text);
             }
-            RenderOp::OpenExternal(url) => {
+            RenderOp::OpenExternalUrl(url) => {
                 let _ = open::that_in_background(&url);
             }
             RenderOp::DeletePlacements => {

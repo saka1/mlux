@@ -5,9 +5,6 @@
 //! `(Self, Vec<RenderOp>)`.
 
 use log::debug;
-use std::path::{Path, PathBuf};
-
-use crate::input_source::InputSource;
 
 use super::display_state::DisplayState;
 use super::effect::{Effect, ExitReason, RenderOp, ViewerMode};
@@ -57,7 +54,6 @@ impl Default for Viewport {
 pub(super) struct ViewContext<'a> {
     pub layout: &'a super::layout::Layout,
     pub acc_value: Option<u32>,
-    pub input: &'a InputSource,
     pub filename: &'a str,
     pub jump_stack: &'a [JumpEntry],
     pub doc: &'a DocumentQuery<'a>,
@@ -121,15 +117,8 @@ impl Viewport {
             Effect::Yank(text) => {
                 ops.push(RenderOp::CopyToClipboard(text));
             }
-            Effect::OpenUrl(url) => {
-                if let InputSource::File(cur) = ctx.input
-                    && is_local_markdown_link(&url)
-                    && let Some(path) = resolve_link_path(&url, cur)
-                {
-                    ops.push(RenderOp::Exit(ExitReason::Navigate { path }));
-                } else {
-                    ops.push(RenderOp::OpenExternal(url));
-                }
+            Effect::OpenExternalUrl(url) => {
+                ops.push(RenderOp::OpenExternalUrl(url));
             }
             Effect::SetMode(m) => {
                 match &m {
@@ -206,71 +195,5 @@ impl Viewport {
             }
         }
         (self, ops)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Check if a URL points to a local markdown file (not a web URL).
-fn is_local_markdown_link(url: &str) -> bool {
-    if url.contains("://") || url.starts_with("mailto:") {
-        return false;
-    }
-    let path_part = url.split('#').next().unwrap_or(url);
-    path_part.ends_with(".md") || path_part.ends_with(".markdown")
-}
-
-/// Resolve a relative link URL against the current file's directory.
-fn resolve_link_path(url: &str, current_file: &Path) -> Option<PathBuf> {
-    let path_part = url.split('#').next().unwrap_or(url);
-    if path_part.is_empty() {
-        return None;
-    }
-    let base_dir = current_file.parent()?;
-    Some(base_dir.join(path_part))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_is_local_markdown_link() {
-        assert!(is_local_markdown_link("./other.md"));
-        assert!(is_local_markdown_link("other.md"));
-        assert!(is_local_markdown_link("../docs/guide.md"));
-        assert!(is_local_markdown_link("file.md#section"));
-        assert!(is_local_markdown_link("notes.markdown"));
-
-        assert!(!is_local_markdown_link("https://example.com"));
-        assert!(!is_local_markdown_link("http://example.com/page.md"));
-        assert!(!is_local_markdown_link("mailto:user@example.com"));
-        assert!(!is_local_markdown_link("data.csv"));
-        assert!(!is_local_markdown_link("image.png"));
-        assert!(!is_local_markdown_link(""));
-    }
-
-    #[test]
-    fn test_resolve_link_path() {
-        let current = Path::new("/home/user/docs/readme.md");
-
-        assert_eq!(
-            resolve_link_path("other.md", current),
-            Some(PathBuf::from("/home/user/docs/other.md"))
-        );
-        assert_eq!(
-            resolve_link_path("../guide.md", current),
-            Some(PathBuf::from("/home/user/docs/../guide.md"))
-        );
-        assert_eq!(
-            resolve_link_path("sub/page.md#heading", current),
-            Some(PathBuf::from("/home/user/docs/sub/page.md"))
-        );
-        // Fragment-only link -> None
-        assert_eq!(resolve_link_path("#heading", current), None);
-        // Empty -> None
-        assert_eq!(resolve_link_path("", current), None);
     }
 }
