@@ -9,13 +9,14 @@ use crate::pipeline::{BuildParams, FontCache, build_tiled_document};
 use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
 
 use super::display_state::DisplayState;
-use super::effect::{Effect, RenderOp, ViewContext, ViewerMode, Viewport};
+use super::effect::{Effect, RenderOp, ViewerMode};
 use super::keymap::{
     InputAccumulator, map_command_key, map_key_event, map_log_key, map_search_key, map_toc_key,
     map_url_key,
 };
 use super::layout::{self, Layout, ScrollState};
 use super::query::DocumentQuery;
+use super::viewport::{ViewContext, Viewport};
 
 const CELL_W: u16 = 10;
 const CELL_H: u16 = 20;
@@ -188,14 +189,13 @@ impl TestHarness {
 
         let mut ops = Vec::new();
         for effect in effects {
-            let mut effect_ops = Vec::new();
-            match self.viewport.apply(effect, &ctx, &mut effect_ops) {
-                Ok(Some(_exit)) => {
-                    ops.extend(effect_ops);
-                    break;
-                }
-                Ok(None) => ops.extend(effect_ops),
-                Err(e) => panic!("apply failed: {e}"),
+            let vp = std::mem::take(&mut self.viewport);
+            let (new_vp, effect_ops) = vp.apply(effect, &ctx);
+            self.viewport = new_vp;
+            let has_exit = effect_ops.iter().any(|op| matches!(op, RenderOp::Exit(_)));
+            ops.extend(effect_ops);
+            if has_exit {
+                break;
             }
         }
 

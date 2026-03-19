@@ -28,7 +28,9 @@ mod mode_search;
 mod mode_toc;
 mod mode_url;
 pub mod query;
+mod session;
 mod terminal;
+mod viewport;
 
 #[cfg(test)]
 mod test_harness;
@@ -51,13 +53,15 @@ use crate::tile_cache::TileCache;
 use crate::watch::FileWatcher;
 
 use display_state::{DisplayState, ForkHandle};
-use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
+use effect::{Effect, ExitReason, ViewerMode};
 use keymap::{
     InputAccumulator, map_command_key, map_key_event, map_log_key, map_search_key, map_toc_key,
     map_url_key,
 };
 use layout::ScrollState;
 use query::DocumentQuery;
+use session::Session;
+use viewport::{ViewContext, Viewport};
 
 /// Fast threshold: if the build completes within this window, skip the loading screen entirely.
 const FAST_THRESHOLD: Duration = Duration::from_millis(100);
@@ -257,7 +261,7 @@ pub fn run(
         let mut in_flight: HashSet<usize> = HashSet::new();
         let mut renderer = renderer;
 
-        let exit: anyhow::Result<ExitReason> = (|| -> anyhow::Result<ExitReason> {
+        let exit: anyhow::Result<(ExitReason, u32)> = (|| -> anyhow::Result<(ExitReason, u32)> {
             // Vim-style number prefix accumulator
             let mut acc = InputAccumulator::new();
 
@@ -394,17 +398,21 @@ pub fn run(
                                 log_buffer: &session.log_buffer,
                             };
                             for effect in effects {
-                                let mut render_ops = Vec::new();
-                                if let Some(reason) = vp.apply(effect, &ctx, &mut render_ops)? {
-                                    effect::execute_render_ops(&render_ops, &vp, &ctx)?;
-                                    return Ok(reason);
+                                let (new_vp, render_ops) = vp.apply(effect, &ctx);
+                                vp = new_vp;
+                                if let Some(reason) =
+                                    effect::execute_render_ops(render_ops, &vp, &ctx)?
+                                {
+                                    return Ok((reason, vp.scroll.y_offset));
                                 }
-                                effect::execute_render_ops(&render_ops, &vp, &ctx)?;
                             }
                         }
 
                         Event::Resize(new_cols, new_rows) => {
-                            return Ok(ExitReason::Resize { new_cols, new_rows });
+                            return Ok((
+                                ExitReason::Resize { new_cols, new_rows },
+                                vp.scroll.y_offset,
+                            ));
                         }
 
                         _ => {}
@@ -450,12 +458,12 @@ pub fn run(
                     }
                 };
                 if content_changed {
-                    return Ok(ExitReason::Reload);
+                    return Ok((ExitReason::Reload, vp.scroll.y_offset));
                 }
             }
         })();
         renderer.shutdown();
-        let exit = exit?;
+        let (exit, scroll_y) = exit?;
 
         // Discard cache on navigation (reload/resize keeps it for merge_generation)
         match &exit {
@@ -509,7 +517,7 @@ pub fn run(
             }
         }
 
-        if session.handle_exit(exit, vp.scroll.y_offset, app.config.viewer.sidebar_cols)? {
+        if session.handle_exit(exit, scroll_y, app.config.viewer.sidebar_cols)? {
             break 'outer;
         }
     }
