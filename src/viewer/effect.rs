@@ -18,6 +18,7 @@ use crate::watch::FileWatcher;
 use super::display_state::DisplayState;
 use super::layout::{self, Layout, ScrollState};
 use super::mode_command::CommandState;
+use super::mode_log::{self, LogState};
 use super::mode_search::{self, LastSearch, SearchState};
 use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
@@ -34,12 +35,6 @@ pub(super) enum ExitReason {
     GoBack,
 }
 
-/// Placeholder state for log viewer mode (full impl in mode_log.rs, Task 4).
-#[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
-pub(super) struct LogState {
-    pub scroll_offset: usize,
-}
-
 /// Viewer mode: normal (tile display), search (picker UI), command (`:` prompt), URL picker, or log viewer.
 pub(super) enum ViewerMode {
     Normal,
@@ -47,7 +42,7 @@ pub(super) enum ViewerMode {
     Command(CommandState),
     UrlPicker(UrlPickerState),
     Toc(TocState),
-    #[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
+    #[allow(dead_code)] // Constructed in Task 5 when log mode entry is wired
     Log(LogState),
 }
 
@@ -64,7 +59,6 @@ pub(super) enum Effect {
     RedrawCommandBar,
     RedrawUrlPicker,
     RedrawToc,
-    #[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
     RedrawLog,
     Yank(String),
     OpenUrl(String),
@@ -419,8 +413,8 @@ pub(super) fn execute_render_ops(
                 ViewerMode::Toc(ts) => {
                     mode_toc::draw_toc_screen(ctx.layout, ts)?;
                 }
-                ViewerMode::Log(_) => {
-                    // TODO: draw_log_screen (Task 4)
+                ViewerMode::Log(ls) => {
+                    mode_log::draw_log_screen(ctx.layout, ls)?;
                 }
                 ViewerMode::Normal => {}
             },
