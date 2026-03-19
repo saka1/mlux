@@ -30,7 +30,7 @@ notify = "8"
 open = "5"
 regex = "1"
 log = "0.4"
-env_filter = "0.1"
+env_filter = "1"
 zstd = "0.13"
 mitex = "0.2"
 mermaid-rs-renderer = { version = "0.2", default-features = false }

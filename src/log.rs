@@ -14,6 +14,9 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
+    /// Format as `[HH:MM:SS.mmm] [LEVEL] target: message`.
+    ///
+    /// Timestamps are UTC (no timezone dependency).
     pub fn format(&self) -> String {
         let dur = self
             .timestamp
