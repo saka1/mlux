@@ -11,7 +11,8 @@ use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
 use super::display_state::DisplayState;
 use super::effect::{Effect, RenderOp, ViewContext, ViewerMode, Viewport};
 use super::keymap::{
-    InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
+    InputAccumulator, map_command_key, map_key_event, map_log_key, map_search_key, map_toc_key,
+    map_url_key,
 };
 use super::layout::{self, Layout, ScrollState};
 use super::query::DocumentQuery;
@@ -166,10 +167,13 @@ impl TestHarness {
                 }
                 None => vec![],
             },
-            ViewerMode::Log(_) => {
-                // TODO: handle log mode keys (Task 4)
-                vec![]
-            }
+            ViewerMode::Log(ls) => match map_log_key(key) {
+                Some(a) => {
+                    let visible_count = (self.layout.status_row - 1) as usize;
+                    super::mode_log::handle(a, ls, visible_count)
+                }
+                None => vec![],
+            },
         };
 
         let ctx = ViewContext {
