@@ -78,11 +78,18 @@ pub(super) fn handle(action: LogAction, state: &mut LogState, visible_count: usi
         }
         LogAction::Backspace => {
             if state.search_mode {
-                state.search_query.pop();
-                recompute_matches(state);
-                if let Some(&idx) = state.search_matches.first() {
-                    state.scroll_offset = idx;
+                if state.search_query.is_empty() {
+                    // Empty query + Backspace → exit search (like command mode)
+                    state.search_mode = false;
+                    state.search_matches.clear();
                     state.search_index = 0;
+                } else {
+                    state.search_query.pop();
+                    recompute_matches(state);
+                    if let Some(&idx) = state.search_matches.first() {
+                        state.scroll_offset = idx;
+                        state.search_index = 0;
+                    }
                 }
                 vec![Effect::RedrawLog]
             } else {
@@ -321,6 +328,29 @@ mod tests {
         assert_eq!(state.search_matches.len(), 2);
         assert_eq!(state.search_matches[0], 2);
         assert_eq!(state.search_matches[1], 4);
+    }
+
+    #[test]
+    fn backspace_empty_query_exits_search() {
+        let mut state = make_state(3);
+        handle(LogAction::EnterSearch, &mut state, 10);
+        assert!(state.search_mode);
+        // Backspace on empty query → exit search mode
+        let effects = handle(LogAction::Backspace, &mut state, 10);
+        assert!(!state.search_mode);
+        assert!(effects.iter().any(|e| matches!(e, Effect::RedrawLog)));
+    }
+
+    #[test]
+    fn backspace_non_empty_query_pops() {
+        let mut state = make_state(3);
+        handle(LogAction::EnterSearch, &mut state, 10);
+        handle(LogAction::Type('a'), &mut state, 10);
+        handle(LogAction::Type('b'), &mut state, 10);
+        assert_eq!(state.search_query, "ab");
+        handle(LogAction::Backspace, &mut state, 10);
+        assert_eq!(state.search_query, "a");
+        assert!(state.search_mode); // still in search
     }
 
     #[test]
