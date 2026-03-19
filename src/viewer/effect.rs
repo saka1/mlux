@@ -34,13 +34,21 @@ pub(super) enum ExitReason {
     GoBack,
 }
 
-/// Viewer mode: normal (tile display), search (picker UI), command (`:` prompt), or URL picker.
+/// Placeholder state for log viewer mode (full impl in mode_log.rs, Task 4).
+#[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
+pub(super) struct LogState {
+    pub scroll_offset: usize,
+}
+
+/// Viewer mode: normal (tile display), search (picker UI), command (`:` prompt), URL picker, or log viewer.
 pub(super) enum ViewerMode {
     Normal,
     Search(SearchState),
     Command(CommandState),
     UrlPicker(UrlPickerState),
     Toc(TocState),
+    #[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
+    Log(LogState),
 }
 
 /// Side-effect descriptors produced by mode handlers.
@@ -56,6 +64,8 @@ pub(super) enum Effect {
     RedrawCommandBar,
     RedrawUrlPicker,
     RedrawToc,
+    #[allow(dead_code)] // Used once mode_log handler is wired (Task 4+5)
+    RedrawLog,
     Yank(String),
     OpenUrl(String),
     SetMode(ViewerMode),
@@ -175,6 +185,11 @@ impl Viewport {
                     ops.push(RenderOp::DrawModeScreen);
                 }
             }
+            Effect::RedrawLog => {
+                if matches!(self.mode, ViewerMode::Log(_)) {
+                    ops.push(RenderOp::DrawModeScreen);
+                }
+            }
             Effect::Yank(text) => {
                 ops.push(RenderOp::CopyToClipboard(text));
             }
@@ -192,7 +207,8 @@ impl Viewport {
                     ViewerMode::Search(_)
                     | ViewerMode::Command(_)
                     | ViewerMode::UrlPicker(_)
-                    | ViewerMode::Toc(_) => {
+                    | ViewerMode::Toc(_)
+                    | ViewerMode::Log(_) => {
                         ops.push(RenderOp::DrawModeScreen);
                     }
                     ViewerMode::Normal => {
@@ -402,6 +418,9 @@ pub(super) fn execute_render_ops(
                 }
                 ViewerMode::Toc(ts) => {
                     mode_toc::draw_toc_screen(ctx.layout, ts)?;
+                }
+                ViewerMode::Log(_) => {
+                    // TODO: draw_log_screen (Task 4)
                 }
                 ViewerMode::Normal => {}
             },

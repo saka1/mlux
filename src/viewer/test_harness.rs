@@ -164,6 +164,10 @@ impl TestHarness {
                 }
                 None => vec![],
             },
+            ViewerMode::Log(_) => {
+                // TODO: handle log mode keys (Task 4)
+                vec![]
+            }
         };
 
         let ctx = ViewContext {
