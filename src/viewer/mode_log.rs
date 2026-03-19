@@ -168,6 +168,10 @@ pub(super) fn draw_log_screen(layout: &Layout, state: &LogState) -> io::Result<(
     let list_end_row = layout.status_row;
     let visible_count = (list_end_row - list_start_row) as usize;
 
+    let match_set: std::collections::HashSet<usize> =
+        state.search_matches.iter().copied().collect();
+    let current_match = state.search_matches.get(state.search_index).copied();
+
     for i in 0..visible_count {
         let entry_idx = state.scroll_offset + i;
         let row = list_start_row + i as u16;
@@ -183,9 +187,8 @@ pub(super) fn draw_log_screen(layout: &Layout, state: &LogState) -> io::Result<(
         let display: String = formatted.chars().take(total_cols).collect();
         let pad = total_cols.saturating_sub(display.len());
 
-        let is_match = state.search_matches.contains(&entry_idx);
-        let is_current =
-            is_match && state.search_matches.get(state.search_index) == Some(&entry_idx);
+        let is_match = match_set.contains(&entry_idx);
+        let is_current = current_match == Some(entry_idx);
 
         // Color by level, highlight matches
         if is_current {
