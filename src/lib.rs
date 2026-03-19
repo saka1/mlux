@@ -5,6 +5,7 @@ pub mod fork_sandbox;
 pub mod highlight;
 pub mod image;
 pub mod input_source;
+pub mod log;
 pub mod pipeline;
 pub mod theme;
 pub mod tile;

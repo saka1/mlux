@@ -101,15 +101,13 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
 
-    if let Some(log_path) = &cli.log {
+    let log_file: Option<Box<dyn std::io::Write + Send>> = if let Some(log_path) = &cli.log {
         let file = std::fs::File::create(log_path).expect("failed to open log file");
-        env_logger::Builder::from_default_env()
-            .target(env_logger::Target::Pipe(Box::new(file)))
-            .init();
-    } else if cli.command.is_some() {
-        env_logger::init();
-    }
-    // viewer mode + no --log → logger not initialized (no log output)
+        Some(Box::new(file))
+    } else {
+        None
+    };
+    let _log_buffer = mlux::log::init(false, log_file);
 
     // Load config file and merge CLI overrides
     let mut cfg = match config::load_config() {
