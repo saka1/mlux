@@ -67,6 +67,10 @@ struct Cli {
     /// Log output file path (enables logging when specified)
     #[arg(long, global = true)]
     log: Option<PathBuf>,
+
+    /// Enable debug-level logging (default is info level)
+    #[arg(long, global = true)]
+    debug: bool,
 }
 
 #[derive(Subcommand)]
@@ -107,7 +111,7 @@ fn main() {
     } else {
         None
     };
-    let _log_buffer = mlux::log::init(false, log_file);
+    let log_buffer = mlux::log::init(cli.debug, log_file);
 
     // Load config file and merge CLI overrides
     let mut cfg = match config::load_config() {
@@ -181,7 +185,7 @@ fn main() {
         Some(Command::Render { output, dump, .. }) => {
             cmd_render(app, input_source, output, dump, cli.no_sandbox)
         }
-        None => mlux::viewer::run(app, input_source, !cli.no_watch, cli.no_sandbox),
+        None => mlux::viewer::run(app, input_source, !cli.no_watch, cli.no_sandbox, log_buffer),
     };
 
     if let Err(e) = result {
