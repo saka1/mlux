@@ -276,6 +276,8 @@ pub(super) struct Session {
     pub scroll_carry: u32,
     pub pending_flash: Option<String>,
     pub watch: bool,
+    #[allow(dead_code)] // Used by log viewer mode (Task 3+)
+    pub log_buffer: crate::log::LogBuffer,
 }
 
 impl Session {

@@ -71,6 +71,7 @@ pub fn run(
     input: InputSource,
     watch: bool,
     no_sandbox: bool,
+    log_buffer: crate::log::LogBuffer,
 ) -> anyhow::Result<()> {
     terminal::check_tty()?;
 
@@ -113,6 +114,7 @@ pub fn run(
         scroll_carry: 0,
         pending_flash: None,
         watch,
+        log_buffer,
     };
 
     // Stdin buffer and EOF flag (stdin mode only)
