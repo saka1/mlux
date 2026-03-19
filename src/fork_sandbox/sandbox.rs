@@ -93,6 +93,14 @@ pub fn enforce_sandbox(read_base: Option<&Path>, font_dirs: &[PathBuf]) -> Resul
         read_scopes.push(dir.as_path());
     }
 
+    log::info!(
+        "sandbox: read scopes: {:?}",
+        read_scopes
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    );
+
     match imp::enforce(&read_scopes) {
         Ok(()) => Ok(()),
         Err(e) => {
