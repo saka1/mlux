@@ -22,6 +22,7 @@ mod effect;
 mod keymap;
 mod layout;
 mod mode_command;
+mod mode_log;
 mod mode_normal;
 mod mode_search;
 mod mode_toc;
@@ -52,7 +53,8 @@ use crate::watch::FileWatcher;
 use display_state::{DisplayState, ForkHandle};
 use effect::{Effect, ExitReason, Session, ViewContext, ViewerMode, Viewport};
 use keymap::{
-    InputAccumulator, map_command_key, map_key_event, map_search_key, map_toc_key, map_url_key,
+    InputAccumulator, map_command_key, map_key_event, map_log_key, map_search_key, map_toc_key,
+    map_url_key,
 };
 use layout::ScrollState;
 use query::DocumentQuery;
@@ -372,10 +374,14 @@ pub fn run(
                                     }
                                     None => vec![],
                                 },
-                                ViewerMode::Log(_) => {
-                                    // TODO: handle log mode keys (Task 4)
-                                    vec![]
-                                }
+                                ViewerMode::Log(ls) => match map_log_key(key_event) {
+                                    Some(a) => {
+                                        let visible_count =
+                                            (session.layout.status_row - 1) as usize;
+                                        mode_log::handle(a, ls, visible_count)
+                                    }
+                                    None => vec![],
+                                },
                             };
 
                             let ctx = ViewContext {
