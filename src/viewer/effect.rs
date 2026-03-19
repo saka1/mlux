@@ -42,7 +42,6 @@ pub(super) enum ViewerMode {
     Command(CommandState),
     UrlPicker(UrlPickerState),
     Toc(TocState),
-    #[allow(dead_code)] // Constructed in Task 5 when log mode entry is wired
     Log(LogState),
 }
 
@@ -68,6 +67,7 @@ pub(super) enum Effect {
     /// Clear overlay rects cache so they're recomputed with new active_ranges.
     InvalidateOverlays,
     EnterUrlPickerAll,
+    EnterLog,
     GoBack,
     Exit(ExitReason),
 }
@@ -123,6 +123,7 @@ pub(super) struct ViewContext<'a> {
     pub filename: &'a str,
     pub jump_stack: &'a [JumpEntry],
     pub doc: &'a DocumentQuery<'a>,
+    pub log_buffer: &'a crate::log::LogBuffer,
 }
 
 impl Viewport {
@@ -253,6 +254,11 @@ impl Viewport {
                     ops.push(RenderOp::DrawModeScreen);
                 }
             }
+            Effect::EnterLog => {
+                let ls = LogState::new(ctx.log_buffer);
+                self.mode = ViewerMode::Log(ls);
+                ops.push(RenderOp::DrawModeScreen);
+            }
             Effect::GoBack => {
                 if ctx.jump_stack.is_empty() {
                     self.flash = Some("No previous file".into());
@@ -286,7 +292,6 @@ pub(super) struct Session {
     pub scroll_carry: u32,
     pub pending_flash: Option<String>,
     pub watch: bool,
-    #[allow(dead_code)] // Used by log viewer mode (Task 3+)
     pub log_buffer: crate::log::LogBuffer,
 }
 

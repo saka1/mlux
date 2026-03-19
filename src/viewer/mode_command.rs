@@ -35,6 +35,7 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
                 "q" | "quit" => vec![Effect::Exit(ExitReason::Quit)],
                 "back" | "b" => vec![Effect::Exit(ExitReason::GoBack)],
                 "open" => vec![Effect::EnterUrlPickerAll],
+                "log" => vec![Effect::EnterLog],
                 _ => vec![
                     Effect::SetMode(ViewerMode::Normal),
                     Effect::Flash(format!("Unknown command: {cmd}")),
@@ -95,6 +96,15 @@ mod tests {
         let mut cs = CommandState { input: "q".into() };
         let effects = handle(CommandAction::Execute, &mut cs);
         assert!(matches!(effects[0], Effect::Exit(ExitReason::Quit)));
+    }
+
+    #[test]
+    fn execute_log() {
+        let mut cs = CommandState {
+            input: "log".into(),
+        };
+        let effects = handle(CommandAction::Execute, &mut cs);
+        assert!(effects.iter().any(|e| matches!(e, Effect::EnterLog)));
     }
 
     #[test]

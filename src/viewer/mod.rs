@@ -391,6 +391,7 @@ pub fn run(
                                 filename: &session.filename,
                                 jump_stack: &session.jump_stack,
                                 doc: &doc,
+                                log_buffer: &session.log_buffer,
                             };
                             for effect in effects {
                                 let mut render_ops = Vec::new();

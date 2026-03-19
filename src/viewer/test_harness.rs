@@ -35,6 +35,7 @@ pub(super) struct TestHarness {
     render_ops: Vec<RenderOp>,
     scroll_step: u32,
     half_page: u32,
+    log_buffer: crate::log::LogBuffer,
 }
 
 #[allow(dead_code)]
@@ -101,6 +102,7 @@ impl TestHarness {
             render_ops: Vec::new(),
             scroll_step,
             half_page,
+            log_buffer: crate::log::LogBuffer::new(16),
         }
     }
 
@@ -177,6 +179,7 @@ impl TestHarness {
             filename: &self.filename,
             jump_stack: &[],
             doc: &doc,
+            log_buffer: &self.log_buffer,
         };
 
         let mut ops = Vec::new();
