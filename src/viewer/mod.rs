@@ -314,37 +314,29 @@ pub fn run(
                                 meta.content_offset,
                             );
 
-                            let effects = match &mut vp.mode {
-                                ViewerMode::Normal => {
-                                    let had_flash = vp.flash.is_some();
-                                    vp.flash = None;
+                            // Clear flash on any keypress in Normal mode
+                            let had_flash =
+                                matches!(vp.mode, ViewerMode::Normal) && vp.flash.take().is_some();
 
-                                    match map_key_event(key_event, &mut acc) {
-                                        Some(action) => {
-                                            let mut ctx = mode_normal::NormalCtx {
-                                                scroll: &vp.scroll,
-                                                doc: &doc,
-                                                max_scroll: max_y,
-                                                scroll_step: app.config.viewer.scroll_step
-                                                    * session.layout.cell_h as u32,
-                                                half_page: (session.layout.image_rows as u32 / 2)
-                                                    .max(1)
-                                                    * session.layout.cell_h as u32,
-                                                last_search: &mut vp.last_search,
-                                                current_file: session.current_file_path(),
-                                            };
-                                            mode_normal::handle(action, &mut ctx)
-                                        }
-                                        None => {
-                                            if acc.is_active() || had_flash {
-                                                acc.reset();
-                                                vec![Effect::RedrawStatusBar]
-                                            } else {
-                                                vec![]
-                                            }
-                                        }
+                            let mut effects = match &mut vp.mode {
+                                ViewerMode::Normal => match map_key_event(key_event, &mut acc) {
+                                    Some(a) => {
+                                        let mut ctx = mode_normal::NormalCtx {
+                                            scroll: &vp.scroll,
+                                            doc: &doc,
+                                            max_scroll: max_y,
+                                            scroll_step: app.config.viewer.scroll_step
+                                                * session.layout.cell_h as u32,
+                                            half_page: (session.layout.image_rows as u32 / 2)
+                                                .max(1)
+                                                * session.layout.cell_h as u32,
+                                            last_search: &mut vp.last_search,
+                                            current_file: session.current_file_path(),
+                                        };
+                                        mode_normal::handle(a, &mut ctx)
                                     }
-                                }
+                                    None => vec![],
+                                },
                                 ViewerMode::Search(ss) => match map_search_key(key_event) {
                                     Some(a) => {
                                         let visible_count =
@@ -393,6 +385,11 @@ pub fn run(
                                     None => vec![],
                                 },
                             };
+
+                            // Post: if flash was just cleared, ensure redraw
+                            if had_flash && effects.is_empty() {
+                                effects.push(Effect::RedrawStatusBar);
+                            }
 
                             let ctx = ViewContext {
                                 layout: &session.layout,

@@ -112,33 +112,26 @@ impl TestHarness {
             self.meta.content_offset,
         );
 
-        let effects = match &mut self.viewport.mode {
-            ViewerMode::Normal => {
-                let had_flash = self.viewport.flash.is_some();
-                self.viewport.flash = None;
-                match map_key_event(key, &mut self.acc) {
-                    Some(action) => {
-                        let mut ctx = super::mode_normal::NormalCtx {
-                            scroll: &self.viewport.scroll,
-                            doc: &doc,
-                            max_scroll: max_y,
-                            scroll_step: self.scroll_step,
-                            half_page: self.half_page,
-                            last_search: &mut self.viewport.last_search,
-                            current_file: None,
-                        };
-                        super::mode_normal::handle(action, &mut ctx)
-                    }
-                    None => {
-                        if self.acc.is_active() || had_flash {
-                            self.acc.reset();
-                            vec![Effect::RedrawStatusBar]
-                        } else {
-                            vec![]
-                        }
-                    }
+        // Clear flash on any keypress in Normal mode
+        let had_flash = matches!(self.viewport.mode, ViewerMode::Normal)
+            && self.viewport.flash.take().is_some();
+
+        let mut effects = match &mut self.viewport.mode {
+            ViewerMode::Normal => match map_key_event(key, &mut self.acc) {
+                Some(action) => {
+                    let mut ctx = super::mode_normal::NormalCtx {
+                        scroll: &self.viewport.scroll,
+                        doc: &doc,
+                        max_scroll: max_y,
+                        scroll_step: self.scroll_step,
+                        half_page: self.half_page,
+                        last_search: &mut self.viewport.last_search,
+                        current_file: None,
+                    };
+                    super::mode_normal::handle(action, &mut ctx)
                 }
-            }
+                None => vec![],
+            },
             ViewerMode::Search(ss) => match map_search_key(key) {
                 Some(a) => {
                     let visible_count = (self.layout.status_row - 1) as usize;
@@ -172,6 +165,11 @@ impl TestHarness {
                 None => vec![],
             },
         };
+
+        // Post: if flash was just cleared, ensure redraw
+        if had_flash && effects.is_empty() {
+            effects.push(Effect::RedrawStatusBar);
+        }
 
         let ctx = ViewContext {
             layout: &self.layout,

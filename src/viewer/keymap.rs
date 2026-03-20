@@ -79,7 +79,7 @@ pub(super) enum Action {
 
 /// Map a key event to an `Action`, consuming/updating the accumulator as needed.
 ///
-/// Returns `None` for unknown keys (caller should reset accumulator).
+/// Returns `None` when the key is unrecognized and no accumulator is active.
 pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option<Action> {
     let KeyEvent {
         code, modifiers, ..
@@ -190,7 +190,14 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             Some(Action::SearchPrevMatch)
         }
 
-        _ => None,
+        _ => {
+            if acc.is_active() {
+                acc.reset();
+                Some(Action::CancelInput)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -419,6 +426,16 @@ mod tests {
         let mut acc = InputAccumulator::new();
         let a = map_key_event(simple_key(KeyCode::Char('x')), &mut acc);
         assert!(a.is_none());
+    }
+
+    #[test]
+    fn test_unknown_key_with_accumulator_cancels_input() {
+        let mut acc = InputAccumulator::new();
+        map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
+        assert!(acc.is_active());
+        let a = map_key_event(simple_key(KeyCode::Char('x')), &mut acc);
+        assert!(matches!(a, Some(Action::CancelInput)));
+        assert!(!acc.is_active());
     }
 
     #[test]
