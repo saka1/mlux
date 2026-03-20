@@ -104,13 +104,19 @@ applicable. This happens in `AppContext::build_params()`, which already receives
 markdown string. The method runs prescan internally (or receives `Prescan` as argument)
 and, when `!has_cjk`, looks up the `-latin` variant of the current theme.
 
+The caller is responsible for running prescan and passing `has_cjk` to `build_params()`.
+`build_params()` itself does not run prescan — it only assembles parameters.
+
 ```rust
-// src/app_context.rs — build_params() updated
-pub fn build_params(&self, markdown: String, ...) -> BuildParams {
-    let prescan = crate::pipeline::prescan(&markdown);
+// Caller (e.g. build_tiled_document, usecase.rs):
+let prescan = crate::pipeline::prescan(&markdown);
+let params = app.build_params(markdown, prescan.has_cjk, ...);
+// prescan.image_paths used separately for image loading
+
+// src/app_context.rs — build_params() receives has_cjk
+pub fn build_params(&self, markdown: String, has_cjk: bool, ...) -> BuildParams {
     let (theme_name, theme_text, data_files) =
-        if !prescan.has_cjk && self.theme_is_auto_resolved() {
-            // Try latin variant (only for auto/dark/light aliases)
+        if !has_cjk && self.theme_is_auto_resolved() {
             theme::resolve_latin_variant(&self.theme.name)
                 .unwrap_or((self.theme.name.clone(), self.theme.text, self.theme.data_files))
         } else {
@@ -176,8 +182,8 @@ and embeds all `.ttf` files in `fonts/`.
 |------|--------|
 | `src/pipeline/markup.rs` | `extract_image_paths` → `prescan`, add `Prescan` struct |
 | `src/pipeline/mod.rs` | Update re-exports |
-| `src/pipeline/build.rs` | Use `prescan()`, pass prescan results through pipeline |
-| `src/app_context.rs` | `build_params()` runs prescan, applies latin variant |
+| `src/pipeline/build.rs` | Use `prescan()`, pass `has_cjk` to `build_params()` |
+| `src/app_context.rs` | `build_params()` receives `has_cjk`, applies latin variant |
 | `src/usecase.rs` | Update fork sandbox call to use `prescan()` |
 | `src/theme.rs` | Add latin `ThemeEntry`s, add `resolve_latin_variant()`, `LATIN_VARIANTS` |
 | `themes/catppuccin-latin.typ` | New: Inter-based dark theme |
