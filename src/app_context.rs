@@ -20,6 +20,7 @@ pub struct AppContext {
     pub config: Config,
     pub cli_overrides: CliOverrides,
     pub detected_light: bool,
+    pub has_cjk: bool,
     pub theme: ResolvedTheme,
 }
 
@@ -61,6 +62,7 @@ pub struct AppContextBuilder {
     cli_overrides: CliOverrides,
     font_cache: Option<&'static FontCache>,
     detected_light: Option<bool>,
+    has_cjk: Option<bool>,
 }
 
 impl AppContextBuilder {
@@ -71,6 +73,7 @@ impl AppContextBuilder {
             cli_overrides,
             font_cache: None,
             detected_light: None,
+            has_cjk: None,
         }
     }
 
@@ -88,6 +91,7 @@ impl AppContextBuilder {
             cli_overrides: new_cli_overrides,
             font_cache: Some(old.font_cache),
             detected_light: Some(old.detected_light),
+            has_cjk: Some(old.has_cjk),
         }
     }
 
@@ -106,6 +110,16 @@ impl AppContextBuilder {
         self
     }
 
+    /// Set CJK detection result.
+    ///
+    /// When `true`, CJK theme (Noto Sans JP) is used.
+    /// When `false`, latin theme (Inter) is used for alias resolution.
+    /// Defaults to `true` (CJK mode) if not called.
+    pub fn set_has_cjk(mut self, has_cjk: bool) -> Self {
+        self.has_cjk = Some(has_cjk);
+        self
+    }
+
     /// Consume the builder and produce an immutable `AppContext`.
     ///
     /// Resolves the theme internally based on `config.theme` + `detected_light`.
@@ -116,9 +130,10 @@ impl AppContextBuilder {
             .font_cache
             .expect("load_fonts() must be called before build()");
         let detected_light = self.detected_light.unwrap_or(false);
+        let has_cjk = self.has_cjk.unwrap_or(true);
 
         let resolved_name =
-            theme::resolve_theme_name(&self.config.theme, detected_light).to_string();
+            theme::resolve_theme_name(&self.config.theme, detected_light, has_cjk).to_string();
         let text = theme::get(&resolved_name)
             .ok_or_else(|| anyhow::anyhow!("unknown theme '{resolved_name}'"))?;
         let data_files = theme::data_files(&resolved_name);
@@ -128,6 +143,7 @@ impl AppContextBuilder {
             config: self.config,
             cli_overrides: self.cli_overrides,
             detected_light,
+            has_cjk,
             theme: ResolvedTheme {
                 name: resolved_name,
                 text,

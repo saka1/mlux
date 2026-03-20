@@ -46,10 +46,28 @@ enum Container {
 
 const MAX_BLOCKQUOTE_DEPTH: usize = 10;
 
-/// Extract image paths from Markdown source.
+/// Information collected from a lightweight pre-scan of the Markdown source.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Prescan {
+    /// Image paths referenced in the document (deduplicated).
+    pub image_paths: Vec<String>,
+    /// Whether the document contains any CJK characters.
+    pub has_cjk: bool,
+}
+
+/// Check if a character is CJK (Chinese, Japanese, Korean).
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{3000}'..='\u{9FFF}'   // CJK Unified + Hiragana, Katakana, symbols
+        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+        | '\u{FF00}'..='\u{FFEF}' // Halfwidth/Fullwidth Forms
+    )
+}
+
+/// Pre-scan Markdown source to collect metadata without full conversion.
 ///
-/// Lightweight parse that collects `dest_url` from all `![alt](dest_url)` images.
-pub fn extract_image_paths(markdown: &str) -> Vec<String> {
+/// Collects image paths and detects CJK content in a single pass.
+pub fn prescan(markdown: &str) -> Prescan {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -58,6 +76,7 @@ pub fn extract_image_paths(markdown: &str) -> Vec<String> {
 
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
+    let mut has_cjk = false;
     for event in parser {
         match event {
             Event::Start(Tag::Image { dest_url, .. }) => {
@@ -67,16 +86,27 @@ pub fn extract_image_paths(markdown: &str) -> Vec<String> {
                 }
             }
             Event::Html(html) | Event::InlineHtml(html) => {
+                if !has_cjk && html.chars().any(is_cjk) {
+                    has_cjk = true;
+                }
                 for src in super::markup_html::extract_img_srcs(&html) {
                     if seen.insert(src.clone()) {
                         paths.push(src);
                     }
                 }
             }
+            Event::Text(text) | Event::Code(text) => {
+                if !has_cjk && text.chars().any(is_cjk) {
+                    has_cjk = true;
+                }
+            }
             _ => {}
         }
     }
-    paths
+    Prescan {
+        image_paths: paths,
+        has_cjk,
+    }
 }
 
 /// Convert Markdown text to Typst markup.
@@ -1575,18 +1605,65 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_image_paths() {
+    fn test_prescan_image_paths() {
         let md = "![a](img1.png)\n\n![b](img2.jpg)\n\n![c](img1.png)";
-        let paths = extract_image_paths(md);
-        assert_eq!(paths.len(), 2, "should deduplicate: {paths:?}");
-        assert!(paths.contains(&"img1.png".to_string()));
-        assert!(paths.contains(&"img2.jpg".to_string()));
+        let result = prescan(md);
+        assert_eq!(
+            result.image_paths.len(),
+            2,
+            "should deduplicate: {:?}",
+            result.image_paths
+        );
+        assert!(result.image_paths.contains(&"img1.png".to_string()));
+        assert!(result.image_paths.contains(&"img2.jpg".to_string()));
+        assert!(!result.has_cjk);
     }
 
     #[test]
-    fn test_extract_image_paths_empty() {
+    fn test_prescan_empty() {
         let md = "No images here.";
-        let paths = extract_image_paths(md);
-        assert!(paths.is_empty());
+        let result = prescan(md);
+        assert!(result.image_paths.is_empty());
+        assert!(!result.has_cjk);
+    }
+
+    #[test]
+    fn test_prescan_has_cjk_japanese() {
+        let md = "# こんにちは\n\nHello world";
+        let result = prescan(md);
+        assert!(result.has_cjk);
+    }
+
+    #[test]
+    fn test_prescan_has_cjk_chinese() {
+        let md = "这是中文";
+        let result = prescan(md);
+        assert!(result.has_cjk);
+    }
+
+    #[test]
+    fn test_prescan_latin_only() {
+        let md = "# Hello World\n\nThis is a **test** with `code` and *emphasis*.";
+        let result = prescan(md);
+        assert!(!result.has_cjk);
+    }
+
+    #[test]
+    fn test_prescan_cjk_in_code() {
+        let md = "Some text with `日本語コード` inline";
+        let result = prescan(md);
+        assert!(result.has_cjk);
+    }
+
+    #[test]
+    fn test_is_cjk() {
+        assert!(is_cjk('あ')); // Hiragana
+        assert!(is_cjk('ア')); // Katakana
+        assert!(is_cjk('漢')); // CJK Unified
+        assert!(is_cjk('　')); // Ideographic space U+3000
+        assert!(is_cjk('Ａ')); // Fullwidth Latin A U+FF21
+        assert!(!is_cjk('A'));
+        assert!(!is_cjk('é'));
+        assert!(!is_cjk(' '));
     }
 }

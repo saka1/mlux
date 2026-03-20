@@ -171,14 +171,15 @@ impl TileRenderer {
 fn prepare_remote_images(
     params: &BuildParams,
     no_sandbox: bool,
-) -> Result<(Vec<String>, LoadedImages)> {
+) -> Result<(crate::pipeline::Prescan, LoadedImages)> {
     use crate::fork_sandbox::fork_compute;
 
-    // Fork 1: extract image paths under sandbox (no FS, no network)
-    let paths = fork_compute(None, &[], no_sandbox, {
+    // Fork 1: prescan under sandbox (no FS, no network)
+    let prescan_result = fork_compute(None, &[], no_sandbox, {
         let md = params.markdown.clone();
-        move || crate::pipeline::extract_image_paths(&md)
+        move || crate::pipeline::prescan(&md)
     })?;
+    let paths = &prescan_result.image_paths;
 
     // Parent: fetch remote images (trusted side)
     let remote_images = if params.allow_remote_images {
@@ -200,7 +201,7 @@ fn prepare_remote_images(
         LoadedImages::default()
     };
 
-    Ok((paths, remote_images))
+    Ok((prescan_result, remote_images))
 }
 
 /// Derive the sandbox read base path from BuildParams.
@@ -220,13 +221,13 @@ pub fn build_renderer(
     params: &BuildParams,
     no_sandbox: bool,
 ) -> Result<(TileRenderer, ChildProcess)> {
-    let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let (prescan_result, remote_images) = prepare_remote_images(params, no_sandbox)?;
     let read_base = sandbox_read_base(params);
     let font_dirs = params.fonts.font_dirs();
 
     let params = params.clone();
     let read_base = read_base.map(|p| p.to_path_buf());
-    let image_paths_owned = image_paths;
+    let image_paths_owned = prescan_result.image_paths;
 
     let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
         move |mut req_rx: process::TypedReader<Request>,
@@ -327,7 +328,8 @@ pub fn build_renderer_blocking(
 /// The child compiles the document and writes the generated Typst source
 /// and frame tree to stderr, then exits.
 pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess> {
-    let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let (prescan_result, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let image_paths = prescan_result.image_paths;
     let read_base = sandbox_read_base(params);
     let font_dirs = params.fonts.font_dirs();
 

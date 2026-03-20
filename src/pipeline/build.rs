@@ -74,7 +74,7 @@ fn compile_content(
 
 /// Compile the document and dump the generated Typst source and frame tree to stderr.
 pub fn build_and_dump(params: &BuildParams) -> Result<()> {
-    let image_paths = super::markup::extract_image_paths(&params.markdown);
+    let image_paths = super::markup::prescan(&params.markdown).image_paths;
     let (images, errors) = crate::image::load_images(
         &image_paths,
         params.base_dir.as_deref(),
@@ -113,7 +113,7 @@ pub fn compile_and_dump(
 /// Convenience wrapper that loads images internally then delegates to
 /// [`compile_and_tile`]. Used by tests and non-fork code paths.
 pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
-    let image_paths = super::markup::extract_image_paths(&params.markdown);
+    let image_paths = super::markup::prescan(&params.markdown).image_paths;
     let (images, errors) = crate::image::load_images(
         &image_paths,
         params.base_dir.as_deref(),

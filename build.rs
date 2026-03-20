@@ -41,7 +41,7 @@ fn main() {
 /// Collect font files from fonts/, compress each with zstd, and write to OUT_DIR.
 /// Returns the list of compressed file paths (empty if the feature is disabled or no fonts found).
 fn compress_fonts(out_dir: &str) -> Vec<String> {
-    if env::var("CARGO_FEATURE_EMBED_NOTO_FONTS").is_err() {
+    if env::var("CARGO_FEATURE_EMBED_FONTS").is_err() {
         return Vec::new();
     }
 

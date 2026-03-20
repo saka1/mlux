@@ -39,6 +39,12 @@ pub struct ThemeEntry {
     pub mermaid: MermaidColors,
 }
 
+/// Mapping from base theme names to their latin variants.
+const LATIN_VARIANTS: &[(&str, &str)] = &[
+    ("catppuccin", "catppuccin-latin"),
+    ("catppuccin-latte", "catppuccin-latte-latin"),
+];
+
 /// Built-in themes, embedded at compile time.
 pub const THEMES: &[ThemeEntry] = &[
     ThemeEntry {
@@ -101,16 +107,78 @@ pub const THEMES: &[ThemeEntry] = &[
             sequence_activation_border: "#94A3B8",
         },
     },
+    ThemeEntry {
+        name: "catppuccin-latin",
+        source: include_str!("../themes/catppuccin-latin.typ"),
+        data_files: &[(
+            "catppuccin-mocha.tmTheme",
+            include_bytes!("../themes/catppuccin-mocha.tmTheme"),
+        )],
+        sidebar_bg: "#1e1e2e",
+        sidebar_fg: "#6c7086",
+        mermaid: MermaidColors {
+            background: "#1e1e2e",
+            primary_color: "#313244",
+            secondary_color: "#45475a",
+            tertiary_color: "#585b70",
+            primary_text_color: "#cdd6f4",
+            text_color: "#cdd6f4",
+            primary_border_color: "#585b70",
+            line_color: "#a6adc8",
+            edge_label_background: "#1e1e2e",
+            cluster_background: "#313244",
+            cluster_border: "#585b70",
+            sequence_actor_fill: "#313244",
+            sequence_actor_border: "#585b70",
+            sequence_actor_line: "#a6adc8",
+            sequence_note_fill: "#45475a",
+            sequence_note_border: "#f5c2e7",
+            sequence_activation_fill: "#45475a",
+            sequence_activation_border: "#585b70",
+        },
+    },
+    ThemeEntry {
+        name: "catppuccin-latte-latin",
+        source: include_str!("../themes/catppuccin-latte-latin.typ"),
+        data_files: &[(
+            "catppuccin-latte.tmTheme",
+            include_bytes!("../themes/catppuccin-latte.tmTheme"),
+        )],
+        sidebar_bg: "#e6e9ef",
+        sidebar_fg: "#8c8fa1",
+        mermaid: MermaidColors {
+            background: "#FFFFFF",
+            primary_color: "#F8FAFC",
+            secondary_color: "#E2E8F0",
+            tertiary_color: "#FFFFFF",
+            primary_text_color: "#0F172A",
+            text_color: "#0F172A",
+            primary_border_color: "#94A3B8",
+            line_color: "#64748B",
+            edge_label_background: "#FFFFFF",
+            cluster_background: "#F1F5F9",
+            cluster_border: "#CBD5E1",
+            sequence_actor_fill: "#F8FAFC",
+            sequence_actor_border: "#94A3B8",
+            sequence_actor_line: "#64748B",
+            sequence_note_fill: "#FFF7ED",
+            sequence_note_border: "#FDBA74",
+            sequence_activation_fill: "#E2E8F0",
+            sequence_activation_border: "#94A3B8",
+        },
+    },
 ];
 
 /// Default theme name.
 pub const DEFAULT_THEME: &str = "auto";
 
-/// Resolve theme name aliases based on terminal brightness.
+/// Resolve theme name aliases based on terminal brightness and CJK content.
 ///
 /// Supported aliases: `"auto"` (detect), `"dark"`, `"light"`.
-pub fn resolve_theme_name(name: &str, is_light: bool) -> &str {
-    match name {
+/// For alias names, applies latin variant when `!has_cjk`.
+/// Explicit theme names are returned as-is.
+pub fn resolve_theme_name(name: &str, is_light: bool, has_cjk: bool) -> &str {
+    let base = match name {
         "auto" => {
             if is_light {
                 "catppuccin-latte"
@@ -120,8 +188,14 @@ pub fn resolve_theme_name(name: &str, is_light: bool) -> &str {
         }
         "dark" => "catppuccin",
         "light" => "catppuccin-latte",
-        _ => name,
+        _ => return name,
+    };
+    if !has_cjk
+        && let Some((_, latin)) = LATIN_VARIANTS.iter().find(|(b, _)| *b == base)
+    {
+        return latin;
     }
+    base
 }
 
 fn find(name: &str) -> Option<&'static ThemeEntry> {
@@ -207,32 +281,73 @@ mod tests {
 
     #[test]
     fn resolve_auto_dark() {
-        assert_eq!(resolve_theme_name("auto", false), "catppuccin");
+        assert_eq!(resolve_theme_name("auto", false, true), "catppuccin");
     }
 
     #[test]
     fn resolve_auto_light() {
-        assert_eq!(resolve_theme_name("auto", true), "catppuccin-latte");
+        assert_eq!(resolve_theme_name("auto", true, true), "catppuccin-latte");
     }
 
     #[test]
     fn resolve_explicit_theme() {
-        assert_eq!(resolve_theme_name("catppuccin", true), "catppuccin");
+        assert_eq!(resolve_theme_name("catppuccin", true, true), "catppuccin");
         assert_eq!(
-            resolve_theme_name("catppuccin-latte", false),
+            resolve_theme_name("catppuccin-latte", false, true),
             "catppuccin-latte"
         );
     }
 
     #[test]
     fn resolve_dark_alias() {
-        assert_eq!(resolve_theme_name("dark", false), "catppuccin");
-        assert_eq!(resolve_theme_name("dark", true), "catppuccin");
+        assert_eq!(resolve_theme_name("dark", false, true), "catppuccin");
+        assert_eq!(resolve_theme_name("dark", true, true), "catppuccin");
     }
 
     #[test]
     fn resolve_light_alias() {
-        assert_eq!(resolve_theme_name("light", false), "catppuccin-latte");
-        assert_eq!(resolve_theme_name("light", true), "catppuccin-latte");
+        assert_eq!(resolve_theme_name("light", false, true), "catppuccin-latte");
+        assert_eq!(resolve_theme_name("light", true, true), "catppuccin-latte");
+    }
+
+    #[test]
+    fn resolve_auto_dark_latin() {
+        assert_eq!(resolve_theme_name("auto", false, false), "catppuccin-latin");
+    }
+
+    #[test]
+    fn resolve_auto_light_latin() {
+        assert_eq!(
+            resolve_theme_name("auto", true, false),
+            "catppuccin-latte-latin"
+        );
+    }
+
+    #[test]
+    fn resolve_dark_alias_latin() {
+        assert_eq!(resolve_theme_name("dark", false, false), "catppuccin-latin");
+    }
+
+    #[test]
+    fn resolve_light_alias_latin() {
+        assert_eq!(
+            resolve_theme_name("light", false, false),
+            "catppuccin-latte-latin"
+        );
+    }
+
+    #[test]
+    fn resolve_explicit_theme_ignores_has_cjk() {
+        assert_eq!(resolve_theme_name("catppuccin", true, false), "catppuccin");
+        assert_eq!(
+            resolve_theme_name("catppuccin-latin", false, true),
+            "catppuccin-latin"
+        );
+    }
+
+    #[test]
+    fn latin_theme_entries_exist() {
+        assert!(get("catppuccin-latin").is_some());
+        assert!(get("catppuccin-latte-latin").is_some());
     }
 }
