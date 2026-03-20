@@ -88,24 +88,64 @@ their CJK counterpart. The differences are:
   (or keep Noto as distant fallback — TBD based on output quality)
 - Italic: Typst's font matching selects Inter-Italic automatically for `#emph`
 
-### Theme resolution
+### Two-phase theme resolution
 
-`resolve_theme_name()` gains a `has_cjk: bool` parameter:
+Theme resolution is split into two phases to handle the sequencing constraint:
+`has_cjk` is not available when `AppContext` is built (before markdown is read).
+
+**Phase 1 — dark/light axis** (`AppContext` build time, unchanged):
+`resolve_theme_name()` resolves `auto`/`dark`/`light` aliases to a base theme name
+(e.g. `catppuccin` or `catppuccin-latte`). This happens in `app_context.rs` and
+`viewer/mod.rs` (config reload path). No changes to this phase.
+
+**Phase 2 — latin axis** (`build_params()` or build pipeline):
+After prescan produces `has_cjk`, the theme is re-resolved to its latin variant if
+applicable. This happens in `AppContext::build_params()`, which already receives the
+markdown string. The method runs prescan internally (or receives `Prescan` as argument)
+and, when `!has_cjk`, looks up the `-latin` variant of the current theme.
 
 ```rust
-pub fn resolve_theme_name(name: &str, is_light: bool, has_cjk: bool) -> &str
+// src/app_context.rs — build_params() updated
+pub fn build_params(&self, markdown: String, ...) -> BuildParams {
+    let prescan = crate::pipeline::prescan(&markdown);
+    let (theme_name, theme_text, data_files) =
+        if !prescan.has_cjk && self.theme_is_auto_resolved() {
+            // Try latin variant (only for auto/dark/light aliases)
+            theme::resolve_latin_variant(&self.theme.name)
+                .unwrap_or((self.theme.name.clone(), self.theme.text, self.theme.data_files))
+        } else {
+            (self.theme.name.clone(), self.theme.text, self.theme.data_files)
+        };
+    BuildParams { theme_name, theme_text, data_files, markdown, ... }
+}
 ```
 
-Behavior:
-- **Alias names** (`auto`, `dark`, `light`): auto-select latin variant when `!has_cjk`
-- **Explicit theme names** (`catppuccin`, `catppuccin-latin`, etc.): passed through
-  unchanged — user intent is respected
+A new helper `theme::resolve_latin_variant(base_name) -> Option<(String, &str, DataFiles)>`
+maps a base theme to its latin variant (e.g. `"catppuccin"` → `"catppuccin-latin"`).
+Returns `None` if no latin variant exists.
+
+**Distinguishing auto vs explicit themes:** Latin auto-switching only activates when
+the theme was resolved from an alias (`auto`, `dark`, `light`). This is determined by
+comparing `self.config.theme` (the raw user/config value) against the known alias list.
+If a user explicitly writes `--theme catppuccin`, Phase 2 does not switch to
+`catppuccin-latin` — the user's explicit choice is respected.
 
 ### ThemeEntry additions
 
 Latin variants are added as flat entries in the `THEMES` array, each with their own
 `ThemeEntry`. The `sidebar_bg`, `sidebar_fg`, and `mermaid` fields are identical to
 the base theme.
+
+### Latin variant mapping
+
+A static mapping connects base themes to their latin variants:
+
+```rust
+const LATIN_VARIANTS: &[(&str, &str)] = &[
+    ("catppuccin", "catppuccin-latin"),
+    ("catppuccin-latte", "catppuccin-latte-latin"),
+];
+```
 
 ## Feature rename
 
@@ -136,9 +176,10 @@ and embeds all `.ttf` files in `fonts/`.
 |------|--------|
 | `src/pipeline/markup.rs` | `extract_image_paths` → `prescan`, add `Prescan` struct |
 | `src/pipeline/mod.rs` | Update re-exports |
-| `src/pipeline/build.rs` | Use `prescan()`, pass `has_cjk` to theme resolution |
+| `src/pipeline/build.rs` | Use `prescan()`, pass prescan results through pipeline |
+| `src/app_context.rs` | `build_params()` runs prescan, applies latin variant |
 | `src/usecase.rs` | Update fork sandbox call to use `prescan()` |
-| `src/theme.rs` | Extend `resolve_theme_name` signature, add latin `ThemeEntry`s |
+| `src/theme.rs` | Add latin `ThemeEntry`s, add `resolve_latin_variant()`, `LATIN_VARIANTS` |
 | `themes/catppuccin-latin.typ` | New: Inter-based dark theme |
 | `themes/catppuccin-latte-latin.typ` | New: Inter-based light theme |
 | `Cargo.toml` | Rename feature `embed-noto-fonts` → `embed-fonts` |
@@ -149,6 +190,7 @@ and embeds all `.ttf` files in `fonts/`.
 
 - `src/config.rs` — no new config fields (auto-detection, no user setting needed)
 - `src/pipeline/world.rs` / `FontCache` — font loading unchanged
+- `src/viewer/mod.rs` — `resolve_theme_name()` call unchanged (Phase 1 only)
 - CLI arguments — no additions
 
 ## Open questions
