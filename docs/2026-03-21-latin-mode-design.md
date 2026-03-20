@@ -20,52 +20,32 @@ Currently AppContext is constructed before markdown is read, and the theme is fu
 resolved at that point. Latin mode breaks this assumption: the theme depends on
 document content (`has_cjk`). This requires reordering the initialization sequence.
 
-### Current flow
+### Design decision: prescan once, fixed for process lifetime
+
+Prescan runs **once at startup**. The `has_cjk` result is fixed for the entire process
+lifetime — even if the file changes on disk and the viewer reloads, the CJK/latin
+determination does not change. This dramatically simplifies the design:
+
+- No fork topology questions (prescan runs inline before AppContext, not in fork sandbox)
+- No viewer reload propagation (the value never changes)
+- No re-resolution of theme on rebuild
+
+pulldown-cmark parsing is lightweight and processes trusted local input, so running it
+outside a fork sandbox is acceptable.
+
+### New initialization flow
 
 ```
 main.rs:
-  config → AppContextBuilder → AppContext (theme fully resolved)
-  input_source
-  cmd_render(app, input) / viewer::run(app, input)
-
-cmd_render():
-  markdown = input.read_all()
-  app.build_params(markdown, ...) → BuildParams
-
-usecase.rs (fork path):
-  Fork 1: extract_image_paths(markdown)   [sandboxed]
-  Parent:  fetch remote images
-  Fork 2:  compile + render               [sandboxed]
-```
-
-### New flow
-
-```
-main.rs:
-  config, cli_overrides, fonts, detected_light   ← prepare, but don't build AppContext yet
+  config, cli_overrides, fonts, detected_light
   input_source → markdown = read_all()
-  Fork 0: prescan(markdown)                      [sandboxed, lightweight]
-  AppContextBuilder + has_cjk → AppContext        (theme resolved with latin knowledge)
-  cmd_render(app, markdown) / viewer::run(app, markdown)
-
-usecase.rs (fork path):
-  Fork 1: prescan(markdown)  → Prescan           [sandboxed — replaces extract_image_paths]
-  Parent:  fetch remote images using prescan.image_paths
-  Fork 2:  compile + render                      [sandboxed]
+  prescan(&markdown) → Prescan { image_paths, has_cjk }
+  AppContextBuilder + has_cjk → AppContext (theme resolved including latin)
+  cmd_render(app, input) / viewer::run(app, input)
 ```
 
-Note: in the non-fork code paths (`build_tiled_document`, `build_and_dump`), prescan
-runs directly (no fork) since these are used in tests and simple render mode.
-
-### Viewer reload path
-
-When the viewer reloads (file change or `:reload`), the markdown is re-read and the
-document is rebuilt. Prescan must run on the new markdown content. If `has_cjk` changes
-(e.g. user removed all Japanese text), the theme must be re-resolved.
-
-The viewer's outer loop already re-reads markdown and rebuilds the document. The prescan
-result feeds into theme re-resolution at this point. `resolve_theme_name()` in
-`viewer/mod.rs` (config reload path) gains `has_cjk` awareness.
+Compared to the current flow, the only structural change is: markdown is read and
+prescanned before `AppContextBuilder::build()`.
 
 ## Detection: Prescan phase
 
@@ -79,7 +59,6 @@ pulldown-cmark parse to collect image URLs. This function is reframed as a gener
 // src/pipeline/markup.rs
 
 /// Information collected from a lightweight pre-scan of the Markdown source.
-#[derive(Serialize, Deserialize)]
 pub struct Prescan {
     /// Image paths referenced in the document (deduplicated).
     pub image_paths: Vec<String>,
@@ -94,6 +73,9 @@ pub fn prescan(markdown: &str) -> Prescan {
     // - Text events: check for CJK characters
 }
 ```
+
+`Prescan` derives `Serialize`/`Deserialize` for the fork sandbox boundary in
+`usecase.rs` (Fork 1 still runs prescan for its image path extraction role).
 
 ### CJK detection algorithm
 
@@ -113,6 +95,9 @@ The check runs on `Text` events during the prescan pulldown-cmark walk. Once a C
 character is found, `has_cjk` is set to `true` and further text scanning is skipped
 (short-circuit).
 
+Known limitation: `\u{3000}` (ideographic space) and other CJK punctuation in the
+range will trigger CJK mode. Acceptable for v1.
+
 ## Theme variant system
 
 ### Approach: separate theme files
@@ -124,8 +109,9 @@ Each built-in theme gets a `-latin` variant as an independent `.typ` file.
 | Catppuccin Mocha (dark) | `catppuccin.typ` | `catppuccin-latin.typ` |
 | Catppuccin Latte (light) | `catppuccin-latte.typ` | `catppuccin-latte-latin.typ` |
 
-Latin variants share all color definitions, sidebar colors, and mermaid colors with
-their CJK counterpart. The differences are:
+Latin variants share all color definitions, sidebar colors, mermaid colors, and
+`data_files` (`.tmTheme` for syntax highlighting) with their CJK counterpart.
+The differences are:
 
 - Body font: `"Noto Sans JP"` → `"Inter"`
 - Code font fallback: `("DejaVu Sans Mono", "Noto Sans JP")` → `"DejaVu Sans Mono"`
@@ -151,8 +137,8 @@ Behavior:
 ### ThemeEntry additions
 
 Latin variants are added as flat entries in the `THEMES` array, each with their own
-`ThemeEntry`. The `sidebar_bg`, `sidebar_fg`, and `mermaid` fields are identical to
-the base theme.
+`ThemeEntry`. The `sidebar_bg`, `sidebar_fg`, `mermaid`, and `data_files` fields are
+identical to the base theme.
 
 ### Latin variant mapping
 
@@ -169,40 +155,43 @@ const LATIN_VARIANTS: &[(&str, &str)] = &[
 
 ### `main.rs`
 
-Current:
 ```
-AppContextBuilder::new(config, cli_overrides).load_fonts().set_detected_light(...).build()
-→ cmd_render(app, input_source) / viewer::run(app, input_source)
+// Before (current):
+let app = AppContextBuilder::new(config, cli_overrides)
+    .load_fonts().set_detected_light(detected_light).build()?;
+let input_source = build_input_source(...);
+cmd_render(app, input_source, ...) / viewer::run(app, input_source, ...)
+
+// After:
+let mut input_source = build_input_source(...);
+let markdown = input_source.read_all()?;        // read once, early
+let prescan = pipeline::prescan(&markdown);      // inline, no fork
+let app = AppContextBuilder::new(config, cli_overrides)
+    .load_fonts().set_detected_light(detected_light)
+    .set_has_cjk(prescan.has_cjk)               // new
+    .build()?;
+cmd_render(app, markdown, ...) / viewer::run(app, markdown, ...)
 ```
 
-New:
-```
-let partial = AppContextBuilder::new(config, cli_overrides).load_fonts().set_detected_light(...);
-let markdown = input_source.read_all();   // read markdown before AppContext
-let prescan = prescan(&markdown);         // or fork_compute(prescan) for sandbox
-let app = partial.set_has_cjk(prescan.has_cjk).build();
-→ cmd_render(app, markdown, prescan) / viewer::run(app, markdown, prescan)
-```
+`AppContextBuilder` gains `set_has_cjk(bool)`. Default is `true` (CJK mode = current
+behavior) if not set.
 
-`AppContextBuilder` gains a `set_has_cjk(bool)` method. `build()` uses it in
-`resolve_theme_name()`. Default is `true` (CJK mode = current behavior) if not set.
-
-### `cmd_render()`
-
-Receives `markdown: String` and `prescan: Prescan` instead of reading markdown itself.
-Uses `prescan.image_paths` for image loading (replaces `extract_image_paths` call).
-
-### Viewer
-
-The viewer reads markdown in its outer loop. On each iteration (initial + reload),
-prescan runs on the fresh markdown. If `has_cjk` differs from the previous build,
-the theme is re-resolved.
+Markdown is read once in `main.rs` and passed as `String` to `cmd_render` / `viewer::run`.
+These functions no longer call `input.read_all()` themselves. For the viewer, the initial
+markdown is passed in; subsequent reloads read from the file path (stdin input does not
+support reload).
 
 ### `usecase.rs` fork path
 
-Fork 1 changes from `extract_image_paths` to `prescan`, returning `Prescan`
-(which implements `Serialize`/`Deserialize`). The parent uses both `image_paths`
-and `has_cjk` from the result.
+Fork 1 changes from `extract_image_paths` to `prescan`, returning `Prescan`.
+The parent uses `prescan.image_paths` for image loading. `prescan.has_cjk` is
+available but not used here (the startup prescan already determined the theme).
+
+### Viewer reload
+
+No changes needed for `has_cjk`. The theme was resolved at startup and remains
+fixed. The viewer's config reload path (`resolve_theme_name` in `viewer/mod.rs`)
+gains the `has_cjk` parameter, sourced from `app.has_cjk` (a new field on `AppContext`).
 
 ## Feature rename
 
@@ -231,13 +220,13 @@ and embeds all `.ttf` files in `fonts/`.
 
 | File | Change |
 |------|--------|
-| `src/main.rs` | Reorder: read markdown + prescan before AppContext build |
-| `src/app_context.rs` | `AppContextBuilder::set_has_cjk()`, pass to `resolve_theme_name` |
+| `src/main.rs` | Read markdown + prescan before AppContext; pass markdown to cmd_render/viewer |
+| `src/app_context.rs` | `AppContextBuilder::set_has_cjk()`, store `has_cjk` on `AppContext` |
 | `src/pipeline/markup.rs` | `extract_image_paths` → `prescan`, add `Prescan` struct |
 | `src/pipeline/mod.rs` | Update re-exports |
 | `src/pipeline/build.rs` | Use `prescan()` in non-fork paths |
 | `src/usecase.rs` | Fork 1: `prescan()` instead of `extract_image_paths()` |
-| `src/viewer/mod.rs` | Prescan on each rebuild, re-resolve theme if `has_cjk` changes |
+| `src/viewer/mod.rs` | Pass `app.has_cjk` to `resolve_theme_name` in config reload |
 | `src/theme.rs` | `resolve_theme_name` gains `has_cjk`, add latin `ThemeEntry`s, `LATIN_VARIANTS` |
 | `themes/catppuccin-latin.typ` | New: Inter-based dark theme |
 | `themes/catppuccin-latte-latin.typ` | New: Inter-based light theme |
