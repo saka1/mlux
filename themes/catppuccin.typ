@@ -40,8 +40,8 @@
 // 強調（bold）: 本文と同色、太さのみ変える
 #show strong: set text(fill: rgb("#cdd6f4"))
 
-// 斜体: Pink
-#show emph: set text(fill: rgb("#f5c2e7"))
+// 斜体: Teal（寒色で「退く」印象 — italic の控えめな強調に対応）
+#show emph: set text(fill: rgb("#94e2d5"))
 
 // 打ち消し線: Subtext 1 のストローク
 #show strike: set strike(stroke: 1pt + rgb("#a6adc8"))
