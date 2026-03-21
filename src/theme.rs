@@ -190,9 +190,7 @@ pub fn resolve_theme_name(name: &str, is_light: bool, has_cjk: bool) -> &str {
         "light" => "catppuccin-latte",
         _ => return name,
     };
-    if !has_cjk
-        && let Some((_, latin)) = LATIN_VARIANTS.iter().find(|(b, _)| *b == base)
-    {
+    if !has_cjk && let Some((_, latin)) = LATIN_VARIANTS.iter().find(|(b, _)| *b == base) {
         return latin;
     }
     base
