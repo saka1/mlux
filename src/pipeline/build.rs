@@ -34,16 +34,16 @@ struct CompiledContent {
     content_index: ContentIndex,
 }
 
-/// Shared build steps: prescan, theme resolution, diagram rendering,
+/// Shared build steps: theme resolution, diagram rendering,
 /// markdown→typst, world construction, and compilation.
 ///
-/// Image loading is the caller's responsibility — pass pre-loaded images via `image_files`.
+/// Prescan and image loading are the caller's responsibility.
 fn compile_content(
     params: &BuildParams,
+    prescan: &super::markup::Prescan,
     mut image_files: crate::image::LoadedImages,
 ) -> Result<CompiledContent> {
-    // 0. Prescan for CJK detection → theme resolution
-    let prescan = super::markup::prescan(&params.markdown);
+    // 0. Theme resolution (from prescan CJK detection)
     let theme_name = crate::theme::resolve_theme_name(
         &params.theme_spec,
         params.detected_light,
@@ -86,25 +86,25 @@ fn compile_content(
 
 /// Compile the document and dump the generated Typst source and frame tree to stderr.
 pub fn build_and_dump(params: &BuildParams) -> Result<()> {
-    // Prescan for image paths; CJK detection is repeated inside compile_content (~1ms, acceptable).
-    let image_paths = super::markup::prescan(&params.markdown).image_paths;
+    let prescan = super::markup::prescan(&params.markdown);
     let (images, errors) = crate::image::load_images(
-        &image_paths,
+        &prescan.image_paths,
         params.base_dir.as_deref(),
         params.allow_remote_images,
     );
     for err in &errors {
         log::warn!("{err}");
     }
-    compile_and_dump(params, images)
+    compile_and_dump(params, &prescan, images)
 }
 
 /// Compile from pre-loaded images and dump the generated Typst source and frame tree to stderr.
 pub fn compile_and_dump(
     params: &BuildParams,
+    prescan: &super::markup::Prescan,
     image_files: crate::image::LoadedImages,
 ) -> Result<()> {
-    let compiled = compile_content(params, image_files)?;
+    let compiled = compile_content(params, prescan, image_files)?;
 
     // Print generated main.typ to stderr
     let source_text = compiled.world.main_source().text();
@@ -126,17 +126,16 @@ pub fn compile_and_dump(
 /// Convenience wrapper that loads images internally then delegates to
 /// [`compile_and_tile`]. Used by tests and non-fork code paths.
 pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
-    // Prescan for image paths; CJK detection is repeated inside compile_content (~1ms, acceptable).
-    let image_paths = super::markup::prescan(&params.markdown).image_paths;
+    let prescan = super::markup::prescan(&params.markdown);
     let (images, errors) = crate::image::load_images(
-        &image_paths,
+        &prescan.image_paths,
         params.base_dir.as_deref(),
         params.allow_remote_images,
     );
     for err in &errors {
         log::warn!("{err}");
     }
-    compile_and_tile(params, images)
+    compile_and_tile(params, &prescan, images)
 }
 
 /// Compile from pre-loaded images and build a TiledDocument.
@@ -146,6 +145,7 @@ pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
 /// and tile assembly.
 pub fn compile_and_tile(
     params: &BuildParams,
+    prescan: &super::markup::Prescan,
     image_files: crate::image::LoadedImages,
 ) -> Result<TiledDocument> {
     let start = Instant::now();
@@ -155,7 +155,7 @@ pub fn compile_and_tile(
         world: content_world,
         document,
         content_index,
-    } = compile_content(params, image_files)?;
+    } = compile_content(params, prescan, image_files)?;
 
     // 4. Extract visual lines with source mapping
     let bound_index = BoundIndex::new(
