@@ -222,6 +222,11 @@ pub fn mermaid_colors(name: &str) -> &'static MermaidColors {
     find(name).map(|t| &t.mermaid).unwrap_or(&THEMES[0].mermaid)
 }
 
+/// Check if a theme specifier is valid (alias or known theme name).
+pub fn is_valid_theme_spec(name: &str) -> bool {
+    matches!(name, "auto" | "dark" | "light") || find(name).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

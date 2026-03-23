@@ -494,13 +494,8 @@ pub fn run(
         if matches!(&exit, ExitReason::ConfigReload) {
             match crate::config::reload_config(&app.cli_overrides) {
                 Ok(new_config) => {
-                    // Validate theme before consuming AppContext
-                    let resolved = crate::theme::resolve_theme_name(
-                        &new_config.theme,
-                        app.detected_light,
-                        app.has_cjk,
-                    );
-                    if crate::theme::get(resolved).is_none() {
+                    // Validate theme spec (alias or known name)
+                    if !crate::theme::is_valid_theme_spec(&new_config.theme) {
                         session.pending_flash = Some(format!(
                             "Reload failed: unknown theme '{}'",
                             new_config.theme
@@ -526,7 +521,7 @@ pub fn run(
                         let new_overrides = app.cli_overrides.clone();
                         app = AppContextBuilder::from_existing(new_config, new_overrides, &app)
                             .build()
-                            .expect("theme validated above");
+                            .expect("theme spec validated above");
                         session.pending_flash = Some("Config reloaded".into());
                     }
                 }

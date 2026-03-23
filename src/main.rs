@@ -161,7 +161,7 @@ fn main() {
         false
     };
 
-    // Build InputSource and read markdown before AppContext (prescan needs it)
+    // Build InputSource and read markdown
     let render_input_path = cli
         .command
         .as_ref()
@@ -176,14 +176,11 @@ fn main() {
         }
     };
 
-    // Prescan: detect CJK content and image paths (lightweight, runs inline)
-    let prescan = mlux::pipeline::prescan(&markdown);
-
-    // Build AppContext: shared initialization for both modes
+    // Build AppContext: shared initialization for both modes.
+    // Theme resolution is deferred to the build pipeline (prescan → CJK → theme).
     let app = match AppContextBuilder::new(config, cli_overrides)
         .load_fonts()
         .set_detected_light(detected_light)
-        .set_has_cjk(prescan.has_cjk)
         .build()
     {
         Ok(app) => app,

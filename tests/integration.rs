@@ -1066,12 +1066,10 @@ use mlux::tile_cache::{TileCache, TilePngs};
 
 /// Build a TiledDocument from markdown, returning metadata with hashes.
 fn build_hashes(md: &str) -> Vec<TilePairHash> {
-    let theme = load_theme();
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let params = mlux::pipeline::BuildParams {
-        theme_name: "catppuccin".into(),
-        theme_text: theme.into(),
-        data_files: mlux::theme::data_files("catppuccin"),
+        theme_spec: "catppuccin".into(),
+        detected_light: false,
         markdown: md.into(),
         base_dir: None,
         width_pt: WIDTH_PT,
