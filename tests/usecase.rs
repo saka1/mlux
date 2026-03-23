@@ -96,7 +96,9 @@ fn test_fork_render_metadata_methods() {
 }
 
 fn make_failing_params(font_cache: &'static FontCache) -> BuildParams {
-    // Use a nonexistent theme name to trigger "unknown theme" error in compile_content
+    // Trigger a build error via unknown theme to test child→parent error propagation.
+    // The specific error type (theme resolution vs. Typst compilation) doesn't matter —
+    // both follow the same Response::Error → IPC path.
     BuildParams {
         theme_spec: "nonexistent-theme-for-test".into(),
         detected_light: false,

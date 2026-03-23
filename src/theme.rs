@@ -223,8 +223,13 @@ pub fn mermaid_colors(name: &str) -> &'static MermaidColors {
 }
 
 /// Check if a theme specifier is valid (alias or known theme name).
+///
+/// Delegates to [`resolve_theme_name`] so that adding a new alias
+/// automatically makes it pass validation — no separate list to sync.
 pub fn is_valid_theme_spec(name: &str) -> bool {
-    matches!(name, "auto" | "dark" | "light") || find(name).is_some()
+    // Resolve with has_cjk=true to get a base theme (all Latin variants also exist).
+    let resolved = resolve_theme_name(name, false, true);
+    find(resolved).is_some()
 }
 
 #[cfg(test)]
