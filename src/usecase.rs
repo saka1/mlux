@@ -171,14 +171,15 @@ impl TileRenderer {
 fn prepare_remote_images(
     params: &BuildParams,
     no_sandbox: bool,
-) -> Result<(Vec<String>, LoadedImages)> {
+) -> Result<(crate::pipeline::Prescan, LoadedImages)> {
     use crate::fork_sandbox::fork_compute;
 
-    // Fork 1: extract image paths under sandbox (no FS, no network)
-    let paths = fork_compute(None, &[], no_sandbox, {
+    // Fork 1: prescan under sandbox (no FS, no network)
+    let prescan_result = fork_compute(None, &[], no_sandbox, {
         let md = params.markdown.clone();
-        move || crate::pipeline::extract_image_paths(&md)
+        move || crate::pipeline::prescan(&md)
     })?;
+    let paths = &prescan_result.image_paths;
 
     // Parent: fetch remote images (trusted side)
     let remote_images = if params.allow_remote_images {
@@ -200,7 +201,7 @@ fn prepare_remote_images(
         LoadedImages::default()
     };
 
-    Ok((paths, remote_images))
+    Ok((prescan_result, remote_images))
 }
 
 /// Derive the sandbox read base path from BuildParams.
@@ -220,13 +221,12 @@ pub fn build_renderer(
     params: &BuildParams,
     no_sandbox: bool,
 ) -> Result<(TileRenderer, ChildProcess)> {
-    let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let (prescan, remote_images) = prepare_remote_images(params, no_sandbox)?;
     let read_base = sandbox_read_base(params);
     let font_dirs = params.fonts.font_dirs();
 
     let params = params.clone();
     let read_base = read_base.map(|p| p.to_path_buf());
-    let image_paths_owned = image_paths;
 
     let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
         move |mut req_rx: process::TypedReader<Request>,
@@ -240,7 +240,7 @@ pub fn build_renderer(
 
             // Load local images (Landlock read scope allows git root)
             let (mut images, errors) =
-                crate::image::load_images(&image_paths_owned, params.base_dir.as_deref(), false);
+                crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
             for err in &errors {
                 log::warn!("{err}");
             }
@@ -249,7 +249,7 @@ pub fn build_renderer(
             images.extend(remote_images);
 
             // Font cache inherited from parent via fork COW (static lifetime)
-            let doc = match compile_and_tile(&params, images) {
+            let doc = match compile_and_tile(&params, &prescan, images) {
                 Ok(doc) => doc,
                 Err(e) => {
                     log::error!("child: build failed: {e:#}");
@@ -327,7 +327,7 @@ pub fn build_renderer_blocking(
 /// The child compiles the document and writes the generated Typst source
 /// and frame tree to stderr, then exits.
 pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess> {
-    let (image_paths, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let (prescan, remote_images) = prepare_remote_images(params, no_sandbox)?;
     let read_base = sandbox_read_base(params);
     let font_dirs = params.fonts.font_dirs();
 
@@ -341,7 +341,7 @@ pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess
 
         // Load local images (Landlock read scope allows git root)
         let (mut images, errors) =
-            crate::image::load_images(&image_paths, params.base_dir.as_deref(), false);
+            crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
         for err in &errors {
             log::warn!("{err}");
         }
@@ -350,7 +350,7 @@ pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess
         images.extend(remote_images);
 
         // Font cache inherited from parent via fork COW (static lifetime)
-        if let Err(e) = compile_and_dump(&params, images) {
+        if let Err(e) = compile_and_dump(&params, &prescan, images) {
             eprintln!("{e:#}");
             unsafe { nix::libc::_exit(1) }
         }

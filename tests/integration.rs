@@ -834,7 +834,7 @@ fn test_image_renders() {
 
     // Load images (same flow as cmd_render)
     let base_dir = std::path::Path::new("tests/fixtures");
-    let image_paths = mlux::pipeline::extract_image_paths(&markdown);
+    let image_paths = mlux::pipeline::prescan(&markdown).image_paths;
     let (image_files, errors) = mlux::image::load_images(&image_paths, Some(base_dir), false);
     assert!(errors.is_empty(), "image load errors: {errors:?}");
     assert!(
@@ -1066,12 +1066,10 @@ use mlux::tile_cache::{TileCache, TilePngs};
 
 /// Build a TiledDocument from markdown, returning metadata with hashes.
 fn build_hashes(md: &str) -> Vec<TilePairHash> {
-    let theme = load_theme();
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let params = mlux::pipeline::BuildParams {
-        theme_name: "catppuccin".into(),
-        theme_text: theme.into(),
-        data_files: mlux::theme::data_files("catppuccin"),
+        theme_spec: "catppuccin".into(),
+        detected_light: false,
         markdown: md.into(),
         base_dir: None,
         width_pt: WIDTH_PT,

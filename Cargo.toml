@@ -12,8 +12,8 @@ categories = ["command-line-utilities"]
 exclude = ["docs/", "fuzz/", "tests/", "fonts/", "CLAUDE.md"]
 
 [features]
-default = ["embed-noto-fonts"]
-embed-noto-fonts = []
+default = ["embed-fonts"]
+embed-fonts = []
 
 [dependencies]
 typst = "0.14"

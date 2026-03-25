@@ -10,19 +10,13 @@ use mlux::usecase::{build_dump, build_renderer, build_renderer_blocking};
 
 const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 
-fn load_theme() -> &'static str {
-    mlux::theme::get("catppuccin").expect("built-in theme should exist")
-}
-
 fn test_fork_render_matches_local() {
     let md = "# Hello\n\nSome **bold** text.\n\n- Item 1\n- Item 2\n";
-    let theme_text = load_theme();
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
 
     let params = BuildParams {
-        theme_name: "catppuccin".into(),
-        theme_text: theme_text.into(),
-        data_files: mlux::theme::data_files("catppuccin"),
+        theme_spec: "catppuccin".into(),
+        detected_light: false,
         markdown: md.into(),
         base_dir: None,
         width_pt: 400.0,
@@ -66,13 +60,11 @@ fn test_fork_render_matches_local() {
 
 fn test_fork_render_metadata_methods() {
     let md = "# Title\n\nParagraph.\n";
-    let theme_text = load_theme();
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
 
     let params = BuildParams {
-        theme_name: "catppuccin".into(),
-        theme_text: theme_text.into(),
-        data_files: mlux::theme::data_files("catppuccin"),
+        theme_spec: "catppuccin".into(),
+        detected_light: false,
         markdown: md.into(),
         base_dir: None,
         width_pt: 400.0,
@@ -104,11 +96,12 @@ fn test_fork_render_metadata_methods() {
 }
 
 fn make_failing_params(font_cache: &'static FontCache) -> BuildParams {
-    // Invalid typst in theme_text causes compilation failure in the child
+    // Trigger a build error via unknown theme to test child→parent error propagation.
+    // The specific error type (theme resolution vs. Typst compilation) doesn't matter —
+    // both follow the same Response::Error → IPC path.
     BuildParams {
-        theme_name: "catppuccin".into(),
-        theme_text: "#invalid-typst-syntax{{{{".into(),
-        data_files: &[],
+        theme_spec: "nonexistent-theme-for-test".into(),
+        detected_light: false,
         markdown: "# Hello\n".into(),
         base_dir: None,
         width_pt: 400.0,

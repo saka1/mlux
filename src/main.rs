@@ -161,7 +161,23 @@ fn main() {
         false
     };
 
-    // Build AppContext: shared initialization for both modes
+    // Build InputSource and read markdown
+    let render_input_path = cli
+        .command
+        .as_ref()
+        .map(|Command::Render { input, .. }| input.clone());
+    let mut input_source = build_input_source(cli.input.or(render_input_path));
+
+    let markdown = match input_source.read_all() {
+        Ok(md) => md,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
+    };
+
+    // Build AppContext: shared initialization for both modes.
+    // Theme resolution is deferred to the build pipeline (prescan → CJK → theme).
     let app = match AppContextBuilder::new(config, cli_overrides)
         .load_fonts()
         .set_detected_light(detected_light)
@@ -174,18 +190,29 @@ fn main() {
         }
     };
 
-    // Build InputSource: shared for both modes
-    let render_input_path = cli
-        .command
-        .as_ref()
-        .map(|Command::Render { input, .. }| input.clone());
-    let input_source = build_input_source(cli.input.or(render_input_path));
+    let base_dir = match &input_source {
+        InputSource::File(path) => path.parent().map(|d| d.to_path_buf()),
+        InputSource::Stdin(_) => None,
+    };
 
     let result = match cli.command {
-        Some(Command::Render { output, dump, .. }) => {
-            cmd_render(app, input_source, output, dump, cli.no_sandbox)
-        }
-        None => mlux::viewer::run(app, input_source, !cli.no_watch, cli.no_sandbox, log_buffer),
+        Some(Command::Render { output, dump, .. }) => cmd_render(
+            app,
+            &input_source,
+            markdown,
+            base_dir,
+            output,
+            dump,
+            cli.no_sandbox,
+        ),
+        None => mlux::viewer::run(
+            app,
+            input_source,
+            markdown,
+            !cli.no_watch,
+            cli.no_sandbox,
+            log_buffer,
+        ),
     };
 
     if let Err(e) = result {
@@ -221,27 +248,22 @@ fn build_input_source(input: Option<PathBuf>) -> InputSource {
 
 fn cmd_render(
     app: AppContext,
-    mut input: InputSource,
+    input: &InputSource,
+    markdown: String,
+    base_dir: Option<PathBuf>,
     output: PathBuf,
     dump: bool,
     no_sandbox: bool,
 ) -> Result<()> {
     let pipeline_start = Instant::now();
 
-    let markdown = input.read_all()?;
-
     if markdown.trim().is_empty() {
         anyhow::bail!("input file is empty or contains only whitespace");
     }
 
-    let read_base = match &input {
-        InputSource::File(path) => path.parent().map(|d| d.to_path_buf()),
-        InputSource::Stdin(_) => None,
-    };
-
     let params = app.build_params(
         markdown.clone(),
-        read_base.clone(),
+        base_dir,
         app.config.width,
         DEFAULT_SIDEBAR_WIDTH_PT,
         app.config.viewer.tile_height,

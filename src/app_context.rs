@@ -2,32 +2,26 @@ use std::path::PathBuf;
 
 use crate::config::{CliOverrides, Config};
 use crate::pipeline::{BuildParams, FontCache};
-use crate::theme::{self, DataFiles};
-
-/// Resolved theme: name, source text, and data files.
-pub struct ResolvedTheme {
-    pub name: String,
-    pub text: &'static str,
-    pub data_files: DataFiles,
-}
+use crate::theme;
 
 /// Immutable application context shared by render and viewer modes.
 ///
 /// Created via `AppContextBuilder`. Owns the expensive, reusable state
-/// (FontCache, Config, resolved theme) that both modes need.
+/// (FontCache, Config) that both modes need.
+/// Does NOT depend on document content — theme resolution happens at build time.
 pub struct AppContext {
     pub font_cache: &'static FontCache,
     pub config: Config,
     pub cli_overrides: CliOverrides,
     pub detected_light: bool,
-    pub theme: ResolvedTheme,
 }
 
 impl AppContext {
     /// Construct `BuildParams` from this context plus mode-specific dimensions.
     ///
     /// Render provides fixed width from CLI; viewer computes from terminal size.
-    /// Fields `ppi`, `allow_remote_images`, theme, and fonts come from `self`.
+    /// Fields `ppi`, `allow_remote_images`, and fonts come from `self`.
+    /// Theme resolution is deferred to the build pipeline.
     pub fn build_params(
         &self,
         markdown: String,
@@ -37,9 +31,8 @@ impl AppContext {
         tile_height_pt: f64,
     ) -> BuildParams {
         BuildParams {
-            theme_name: self.theme.name.clone(),
-            theme_text: self.theme.text.to_string(),
-            data_files: self.theme.data_files,
+            theme_spec: self.config.theme.clone(),
+            detected_light: self.detected_light,
             markdown,
             base_dir,
             width_pt,
@@ -77,7 +70,6 @@ impl AppContextBuilder {
     /// Rebuild from an existing `AppContext` on config reload.
     ///
     /// Consumes the old context to reclaim `FontCache` and `detected_light`.
-    /// Only theme resolution will be re-executed on `.build()`.
     pub fn from_existing(
         new_config: Config,
         new_cli_overrides: CliOverrides,
@@ -108,8 +100,8 @@ impl AppContextBuilder {
 
     /// Consume the builder and produce an immutable `AppContext`.
     ///
-    /// Resolves the theme internally based on `config.theme` + `detected_light`.
-    /// Returns `Err` if the resolved theme name is unknown.
+    /// Validates that the theme specifier is known (alias or built-in name).
+    /// Returns `Err` if the theme spec is invalid.
     /// Panics if `load_fonts()` was not called.
     pub fn build(self) -> anyhow::Result<AppContext> {
         let font_cache = self
@@ -117,22 +109,15 @@ impl AppContextBuilder {
             .expect("load_fonts() must be called before build()");
         let detected_light = self.detected_light.unwrap_or(false);
 
-        let resolved_name =
-            theme::resolve_theme_name(&self.config.theme, detected_light).to_string();
-        let text = theme::get(&resolved_name)
-            .ok_or_else(|| anyhow::anyhow!("unknown theme '{resolved_name}'"))?;
-        let data_files = theme::data_files(&resolved_name);
+        if !theme::is_valid_theme_spec(&self.config.theme) {
+            anyhow::bail!("unknown theme '{}'", self.config.theme);
+        }
 
         Ok(AppContext {
             font_cache,
             config: self.config,
             cli_overrides: self.cli_overrides,
             detected_light,
-            theme: ResolvedTheme {
-                name: resolved_name,
-                text,
-                data_files,
-            },
         })
     }
 }
@@ -163,9 +148,8 @@ mod tests {
             .load_fonts()
             .build()
             .unwrap();
-        // Default config theme is "auto", detected_light defaults to false → "catppuccin"
-        assert_eq!(app.theme.name, "catppuccin");
-        assert!(!app.theme.text.is_empty());
+        // Default config theme is "auto"
+        assert_eq!(app.config.theme, "auto");
         assert!(!app.detected_light);
     }
 
@@ -176,8 +160,7 @@ mod tests {
             .set_detected_light(true)
             .build()
             .unwrap();
-        // auto + light → catppuccin-latte
-        assert_eq!(app.theme.name, "catppuccin-latte");
+        assert!(app.detected_light);
     }
 
     #[test]
@@ -188,7 +171,7 @@ mod tests {
             .load_fonts()
             .build()
             .unwrap();
-        assert_eq!(app.theme.name, "catppuccin-latte");
+        assert_eq!(app.config.theme, "catppuccin-latte");
     }
 
     #[test]
@@ -224,6 +207,6 @@ mod tests {
             .unwrap();
 
         assert!(app2.detected_light); // preserved
-        assert_eq!(app2.theme.name, "catppuccin-latte"); // re-resolved
+        assert_eq!(app2.config.theme, "catppuccin-latte");
     }
 }

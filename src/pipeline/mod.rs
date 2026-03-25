@@ -12,6 +12,6 @@ pub use build::{
 pub use content_index::{
     BlockMapping, BoundIndex, ContentIndex, MdPosition, SpanKind, TextSpan, rendered_to_source_byte,
 };
-pub use markup::{extract_image_paths, markdown_to_typst};
+pub use markup::{Prescan, markdown_to_typst, prescan};
 pub use render::{compile_document, dump_document, render_frame_to_png};
 pub use world::{FontCache, MluxWorld};

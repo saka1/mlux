@@ -75,6 +75,7 @@ const FAST_THRESHOLD: Duration = Duration::from_millis(100);
 pub fn run(
     mut app: AppContext,
     input: InputSource,
+    initial_markdown: String,
     watch: bool,
     no_sandbox: bool,
     log_buffer: crate::log::LogBuffer,
@@ -127,24 +128,38 @@ pub fn run(
     let mut stdin_buf = String::new();
     let mut stdin_eof = false;
 
+    // Initial markdown from main.rs prescan (used on first iteration only)
+    let mut cached_markdown: Option<String> = Some(initial_markdown);
+
     // Content-addressed tile cache for merge across rebuilds
     let mut tile_cache = TileCache::new();
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
         // 5a. Read markdown (re-read on each iteration for reload support)
-        // For stdin mode, drain any available data first
-        if let InputSource::Stdin(ref reader) = session.input {
-            stdin_eof |= reader.drain_into(&mut stdin_buf).eof;
-        }
-        let markdown = match &session.input {
-            InputSource::File(path) => std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?,
-            InputSource::Stdin(_) => {
-                if stdin_buf.trim().is_empty() {
-                    "*(waiting for input...)*".into()
-                } else {
-                    stdin_buf.clone()
+        // First iteration uses cached_markdown from prescan; subsequent iterations re-read.
+        let markdown = if let Some(md) = cached_markdown.take() {
+            // First iteration: also seed stdin_buf if stdin mode
+            if let InputSource::Stdin(ref reader) = session.input {
+                stdin_buf = md.clone();
+                stdin_eof |= reader.drain_into(&mut stdin_buf).eof;
+                stdin_buf.clone()
+            } else {
+                md
+            }
+        } else {
+            if let InputSource::Stdin(ref reader) = session.input {
+                stdin_eof |= reader.drain_into(&mut stdin_buf).eof;
+            }
+            match &session.input {
+                InputSource::File(path) => std::fs::read_to_string(path)
+                    .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?,
+                InputSource::Stdin(_) => {
+                    if stdin_buf.trim().is_empty() {
+                        "*(waiting for input...)*".into()
+                    } else {
+                        stdin_buf.clone()
+                    }
                 }
             }
         };
@@ -479,10 +494,8 @@ pub fn run(
         if matches!(&exit, ExitReason::ConfigReload) {
             match crate::config::reload_config(&app.cli_overrides) {
                 Ok(new_config) => {
-                    // Validate theme before consuming AppContext
-                    let resolved =
-                        crate::theme::resolve_theme_name(&new_config.theme, app.detected_light);
-                    if crate::theme::get(resolved).is_none() {
+                    // Validate theme spec (alias or known name)
+                    if !crate::theme::is_valid_theme_spec(&new_config.theme) {
                         session.pending_flash = Some(format!(
                             "Reload failed: unknown theme '{}'",
                             new_config.theme
@@ -508,7 +521,7 @@ pub fn run(
                         let new_overrides = app.cli_overrides.clone();
                         app = AppContextBuilder::from_existing(new_config, new_overrides, &app)
                             .build()
-                            .expect("theme validated above");
+                            .expect("theme spec validated above");
                         session.pending_flash = Some("Config reloaded".into());
                     }
                 }

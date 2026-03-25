@@ -14,9 +14,8 @@ use crate::visual_line::{VisualLine, extract_visual_lines_with_map};
 /// Parameters for [`build_tiled_document`].
 #[derive(Clone)]
 pub struct BuildParams {
-    pub theme_name: String,
-    pub theme_text: String,
-    pub data_files: crate::theme::DataFiles,
+    pub theme_spec: String,
+    pub detected_light: bool,
     pub markdown: String,
     pub base_dir: Option<PathBuf>,
     pub width_pt: f64,
@@ -29,22 +28,34 @@ pub struct BuildParams {
 
 /// Result of the shared compilation pipeline (steps 1-4).
 struct CompiledContent {
+    theme_name: String,
     world: MluxWorld,
     document: PagedDocument,
     content_index: ContentIndex,
 }
 
-/// Shared build steps: diagram rendering, markdown→typst,
-/// world construction, and compilation.
+/// Shared build steps: theme resolution, diagram rendering,
+/// markdown→typst, world construction, and compilation.
 ///
-/// Image loading is the caller's responsibility — pass pre-loaded images via `image_files`.
+/// Prescan and image loading are the caller's responsibility.
 fn compile_content(
     params: &BuildParams,
+    prescan: &super::markup::Prescan,
     mut image_files: crate::image::LoadedImages,
 ) -> Result<CompiledContent> {
+    // 0. Theme resolution (from prescan CJK detection)
+    let theme_name = crate::theme::resolve_theme_name(
+        &params.theme_spec,
+        params.detected_light,
+        prescan.has_cjk,
+    );
+    let theme_text = crate::theme::get(theme_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown theme '{theme_name}'"))?;
+    let data_files = crate::theme::data_files(theme_name);
+
     // 1. Diagram pipeline
     let diagrams = crate::diagram::extract_diagrams(&params.markdown);
-    let mermaid_colors = crate::theme::mermaid_colors(&params.theme_name);
+    let mermaid_colors = crate::theme::mermaid_colors(theme_name);
     for (key, svg) in crate::diagram::render_diagrams(&diagrams, mermaid_colors) {
         image_files.insert(key, svg);
     }
@@ -56,8 +67,8 @@ fn compile_content(
 
     // 3. Compile content document
     let world = MluxWorld::new(
-        &params.theme_text,
-        params.data_files,
+        theme_text,
+        data_files,
         &content_text,
         params.width_pt,
         params.fonts,
@@ -66,6 +77,7 @@ fn compile_content(
     let document = super::render::compile_document(&world)?;
 
     Ok(CompiledContent {
+        theme_name: theme_name.to_string(),
         world,
         document,
         content_index,
@@ -74,24 +86,25 @@ fn compile_content(
 
 /// Compile the document and dump the generated Typst source and frame tree to stderr.
 pub fn build_and_dump(params: &BuildParams) -> Result<()> {
-    let image_paths = super::markup::extract_image_paths(&params.markdown);
+    let prescan = super::markup::prescan(&params.markdown);
     let (images, errors) = crate::image::load_images(
-        &image_paths,
+        &prescan.image_paths,
         params.base_dir.as_deref(),
         params.allow_remote_images,
     );
     for err in &errors {
         log::warn!("{err}");
     }
-    compile_and_dump(params, images)
+    compile_and_dump(params, &prescan, images)
 }
 
 /// Compile from pre-loaded images and dump the generated Typst source and frame tree to stderr.
 pub fn compile_and_dump(
     params: &BuildParams,
+    prescan: &super::markup::Prescan,
     image_files: crate::image::LoadedImages,
 ) -> Result<()> {
-    let compiled = compile_content(params, image_files)?;
+    let compiled = compile_content(params, prescan, image_files)?;
 
     // Print generated main.typ to stderr
     let source_text = compiled.world.main_source().text();
@@ -113,16 +126,16 @@ pub fn compile_and_dump(
 /// Convenience wrapper that loads images internally then delegates to
 /// [`compile_and_tile`]. Used by tests and non-fork code paths.
 pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
-    let image_paths = super::markup::extract_image_paths(&params.markdown);
+    let prescan = super::markup::prescan(&params.markdown);
     let (images, errors) = crate::image::load_images(
-        &image_paths,
+        &prescan.image_paths,
         params.base_dir.as_deref(),
         params.allow_remote_images,
     );
     for err in &errors {
         log::warn!("{err}");
     }
-    compile_and_tile(params, images)
+    compile_and_tile(params, &prescan, images)
 }
 
 /// Compile from pre-loaded images and build a TiledDocument.
@@ -132,15 +145,17 @@ pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
 /// and tile assembly.
 pub fn compile_and_tile(
     params: &BuildParams,
+    prescan: &super::markup::Prescan,
     image_files: crate::image::LoadedImages,
 ) -> Result<TiledDocument> {
     let start = Instant::now();
 
     let CompiledContent {
+        theme_name,
         world: content_world,
         document,
         content_index,
-    } = compile_content(params, image_files)?;
+    } = compile_content(params, prescan, image_files)?;
 
     // 4. Extract visual lines with source mapping
     let bound_index = BoundIndex::new(
@@ -161,7 +176,7 @@ pub fn compile_and_tile(
         &visual_lines,
         params.sidebar_width_pt,
         page_height_pt,
-        &params.theme_name,
+        &theme_name,
     );
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
     let sidebar_doc = super::render::compile_document(&sidebar_world)?;
