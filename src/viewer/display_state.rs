@@ -7,9 +7,9 @@ use std::io;
 use super::layout::{Layout, ScrollState};
 use super::terminal;
 use crate::highlight::{HighlightRect, HighlightSpec};
+use crate::renderer::{TileRenderer, TileResponse};
 use crate::tile::{DocumentMeta, VisibleTiles};
 use crate::tile_cache::TileCache;
-use crate::usecase::{TileRenderer, TileResponse};
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display

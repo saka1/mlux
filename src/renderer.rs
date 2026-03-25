@@ -1,8 +1,8 @@
-//! Domain-specific orchestration layer.
+//! Sandboxed tile renderer.
 //!
 //! Provides high-level APIs that combine image preparation (Fork 1) with
-//! sandboxed rendering (Fork 2). Callers supply `BuildParams` and get back
-//! a renderer or dump result — all fork/sandbox/IPC details are hidden.
+//! sandboxed rendering (Fork 2). Callers supply [`BuildParams`] and get back
+//! a [`TileRenderer`] or dump result — all fork/sandbox/IPC details are hidden.
 
 use std::path::Path;
 

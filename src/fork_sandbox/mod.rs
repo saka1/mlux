@@ -1,7 +1,7 @@
 //! Fork-based sandboxed primitives.
 //!
 //! Provides generic fork+sandbox+IPC building blocks used by the
-//! [`crate::usecase`] orchestration layer. This module contains no
+//! [`crate::renderer`] orchestration layer. This module contains no
 //! domain-specific logic (no Markdown, no Typst, no tile rendering).
 
 pub(crate) mod process;

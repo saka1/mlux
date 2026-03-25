@@ -74,7 +74,7 @@ fn compile_content(
         params.fonts,
         image_files,
     );
-    let document = super::render::compile_document(&world)?;
+    let document = super::typst_compile::compile_document(&world)?;
 
     Ok(CompiledContent {
         theme_name: theme_name.to_string(),
@@ -84,22 +84,8 @@ fn compile_content(
     })
 }
 
-/// Compile the document and dump the generated Typst source and frame tree to stderr.
-pub fn build_and_dump(params: &BuildParams) -> Result<()> {
-    let prescan = super::markup::prescan(&params.markdown);
-    let (images, errors) = crate::image::load_images(
-        &prescan.image_paths,
-        params.base_dir.as_deref(),
-        params.allow_remote_images,
-    );
-    for err in &errors {
-        log::warn!("{err}");
-    }
-    compile_and_dump(params, &prescan, images)
-}
-
 /// Compile from pre-loaded images and dump the generated Typst source and frame tree to stderr.
-pub fn compile_and_dump(
+pub(crate) fn compile_and_dump(
     params: &BuildParams,
     prescan: &super::markup::Prescan,
     image_files: crate::image::LoadedImages,
@@ -117,14 +103,14 @@ pub fn compile_and_dump(
     }
     eprintln!();
 
-    super::render::dump_document(&compiled.document);
+    super::typst_compile::dump_document(&compiled.document);
     Ok(())
 }
 
-/// Build a TiledDocument from Markdown source.
+/// Build a TiledDocument from Markdown source (test-only convenience).
 ///
 /// Convenience wrapper that loads images internally then delegates to
-/// [`compile_and_tile`]. Used by tests and non-fork code paths.
+/// [`compile_and_tile`]. Production code uses [`crate::renderer::build_renderer`] instead.
 pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
     let prescan = super::markup::prescan(&params.markdown);
     let (images, errors) = crate::image::load_images(
@@ -143,7 +129,9 @@ pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
 /// Core pipeline: diagram rendering, Markdown→Typst conversion,
 /// Typst compilation, visual line extraction, sidebar generation,
 /// and tile assembly.
-pub fn compile_and_tile(
+///
+/// Called from the forked child process in [`crate::renderer`].
+pub(crate) fn compile_and_tile(
     params: &BuildParams,
     prescan: &super::markup::Prescan,
     image_files: crate::image::LoadedImages,
@@ -179,7 +167,7 @@ pub fn compile_and_tile(
         &theme_name,
     );
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
-    let sidebar_doc = super::render::compile_document(&sidebar_world)?;
+    let sidebar_doc = super::typst_compile::compile_document(&sidebar_world)?;
 
     // 7. Build TiledDocument with both content + sidebar
     let tiled_doc = TiledDocument::new(

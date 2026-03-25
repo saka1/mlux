@@ -270,7 +270,7 @@ fn cmd_render(
     );
 
     if dump {
-        let mut child = mlux::usecase::build_dump(&params, no_sandbox)?;
+        let mut child = mlux::renderer::build_dump(&params, no_sandbox)?;
         let code = child.wait()?;
         if code != 0 {
             anyhow::bail!("dump failed (child exited with code {code})");
@@ -293,7 +293,7 @@ fn cmd_render(
         .to_string();
 
     let (meta, mut renderer, mut _child) =
-        mlux::usecase::build_renderer_blocking(&params, no_sandbox)?;
+        mlux::renderer::build_renderer_blocking(&params, no_sandbox)?;
 
     let mut files = Vec::new();
     for i in 0..meta.tile_count {
