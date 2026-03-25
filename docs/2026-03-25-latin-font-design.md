@@ -108,6 +108,12 @@ image placeholder, syntax highlight theme.
 
 No changes.
 
+### Sidebar font
+
+`src/pipeline/build.rs` のサイドバー行番号フォントを `"DejaVu Sans Mono"` →
+`"Fira Mono"` に変更する。Fira Mono はバイナリに常に埋め込まれるため、
+latin/CJK どちらのモードでも利用可能。視覚的統一感が向上する。
+
 ## Files changed
 
 | File | Change |
@@ -118,13 +124,13 @@ No changes.
 | `fonts/OFL-FiraMono.txt` | New: license |
 | `themes/catppuccin-latin.typ` | Font names + emph rule |
 | `themes/catppuccin-latte-latin.typ` | Font names + emph rule |
+| `src/pipeline/build.rs` | Sidebar font: DejaVu Sans Mono → Fira Mono |
 | `Cargo.toml` | `exclude` pattern change |
 
 ## Files NOT changed
 
 - `build.rs` -- auto-detects `.ttf` files in `fonts/`
 - `src/theme.rs` -- ThemeEntry definitions unchanged
-- `src/pipeline/` -- no pipeline changes
 - `themes/catppuccin.typ`, `themes/catppuccin-latte.typ` -- CJK themes untouched
 - Tests -- existing tests run in CJK mode, unaffected
 
