@@ -13,7 +13,7 @@ use crate::fork_sandbox::process;
 use crate::fork_sandbox::sandbox;
 use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::image::LoadedImages;
-use crate::log::{LogBuffer, LogEntry, WireLogEntry};
+use crate::log::{LogBuffer, LogEntry};
 use crate::pipeline::{BuildParams, compile_and_dump, compile_and_tile};
 use crate::tile::DocumentMeta;
 use crate::tile_cache::TilePngs;
@@ -54,7 +54,7 @@ enum Response {
 #[derive(Serialize, Deserialize)]
 struct ChildMessage {
     response: Response,
-    logs: Vec<WireLogEntry>,
+    logs: Vec<LogEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ impl TileRenderer {
     fn recv_and_ingest(&mut self) -> Result<Response> {
         let msg = self.rx.recv()?;
         for entry in msg.logs {
-            self.log_buffer.push(LogEntry::from(entry));
+            self.log_buffer.push(entry);
         }
         Ok(msg.response)
     }
@@ -187,11 +187,7 @@ fn send_with_logs(
     response: Response,
     log_buf: &LogBuffer,
 ) -> Result<()> {
-    let logs = log_buf
-        .drain()
-        .into_iter()
-        .map(WireLogEntry::from)
-        .collect();
+    let logs = log_buf.drain();
     tx.send(&ChildMessage { response, logs })
 }
 
@@ -467,9 +463,9 @@ mod tests {
     fn child_message_serde_roundtrip() {
         let msg = ChildMessage {
             response: Response::Error("oops".into()),
-            logs: vec![WireLogEntry {
-                timestamp_ms: 1234567890,
-                level: 2,
+            logs: vec![LogEntry {
+                timestamp: std::time::SystemTime::now(),
+                level: log::Level::Warn,
                 target: "mlux::test".into(),
                 message: "warning".into(),
             }],
@@ -478,7 +474,7 @@ mod tests {
         let (decoded, _): (ChildMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(decoded.logs.len(), 1);
-        assert_eq!(decoded.logs[0].level, 2);
+        assert_eq!(decoded.logs[0].level, log::Level::Warn);
         assert_eq!(decoded.logs[0].message, "warning");
         match decoded.response {
             Response::Error(e) => assert_eq!(e, "oops"),

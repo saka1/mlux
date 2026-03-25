@@ -1,15 +1,26 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_CAPACITY: usize = 1024;
 
-#[derive(Clone)]
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "log::Level")]
+enum LevelSerde {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub timestamp: SystemTime,
+    #[serde(with = "LevelSerde")]
     pub level: log::Level,
     pub target: String,
     pub message: String,
@@ -35,56 +46,6 @@ impl LogEntry {
             target = self.target,
             message = self.message,
         )
-    }
-}
-
-/// Serializable log entry for IPC transport across fork boundaries.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct WireLogEntry {
-    /// Milliseconds since UNIX epoch.
-    pub timestamp_ms: u64,
-    /// `log::Level` as `u8` (Error=1, Warn=2, Info=3, Debug=4, Trace=5).
-    pub level: u8,
-    pub target: String,
-    pub message: String,
-}
-
-impl From<LogEntry> for WireLogEntry {
-    fn from(entry: LogEntry) -> Self {
-        let dur = entry
-            .timestamp
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        Self {
-            timestamp_ms: dur.as_millis() as u64,
-            level: entry.level as u8,
-            target: entry.target,
-            message: entry.message,
-        }
-    }
-}
-
-impl From<WireLogEntry> for LogEntry {
-    fn from(wire: WireLogEntry) -> Self {
-        let timestamp = UNIX_EPOCH + Duration::from_millis(wire.timestamp_ms);
-        debug_assert!(
-            (1..=5).contains(&wire.level),
-            "unexpected log level: {}",
-            wire.level
-        );
-        let level = match wire.level {
-            1 => log::Level::Error,
-            2 => log::Level::Warn,
-            3 => log::Level::Info,
-            4 => log::Level::Debug,
-            _ => log::Level::Trace,
-        };
-        Self {
-            timestamp,
-            level,
-            target: wire.target,
-            message: wire.message,
-        }
     }
 }
 
@@ -124,8 +85,11 @@ impl LogBuffer {
     }
 
     /// Remove and return all entries, leaving the buffer empty.
+    ///
+    /// Tolerates a poisoned mutex so that logs can still be recovered
+    /// after a panic (e.g. in a forked child process).
     pub fn drain(&self) -> Vec<LogEntry> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.entries.drain(..).collect()
     }
 }
@@ -195,6 +159,8 @@ pub fn init(debug: bool, log_file: Option<Box<dyn Write + Send>>) -> LogBuffer {
 
 #[cfg(test)]
 mod tests {
+    use std::time::UNIX_EPOCH;
+
     use super::*;
 
     #[test]
@@ -256,31 +222,31 @@ mod tests {
     }
 
     #[test]
-    fn wire_log_entry_roundtrip() {
+    fn log_entry_serde_roundtrip() {
         let original = LogEntry {
             timestamp: SystemTime::now(),
             level: log::Level::Warn,
             target: "mlux::test".into(),
             message: "hello".into(),
         };
-        let wire = WireLogEntry::from(original.clone());
-        assert_eq!(wire.level, 2); // Warn
-        let restored = LogEntry::from(wire);
+        let encoded =
+            bincode::serde::encode_to_vec(&original, bincode::config::standard()).unwrap();
+        let (restored, _): (LogEntry, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(restored.level, log::Level::Warn);
         assert_eq!(restored.target, "mlux::test");
         assert_eq!(restored.message, "hello");
-        // Timestamp within 1ms (millisecond truncation)
-        let orig_ms = original
+        let orig_ns = original
             .timestamp
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis();
-        let rest_ms = restored
+            .as_nanos();
+        let rest_ns = restored
             .timestamp
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_millis();
-        assert_eq!(orig_ms, rest_ms);
+            .as_nanos();
+        assert_eq!(orig_ns, rest_ns);
     }
 
     #[test]

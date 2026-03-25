@@ -12,22 +12,32 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::log::{LogBuffer, LogEntry, WireLogEntry};
+use crate::log::{LogBuffer, LogEntry};
 
-/// Wrapper for fork_compute results that includes child-process log entries.
+/// Result from a forked child: either a computed value or a panic notification.
+/// Both variants carry the child's log entries for forwarding to the parent.
 #[derive(Serialize, Deserialize)]
-struct ComputeResult<T> {
-    value: T,
-    logs: Vec<WireLogEntry>,
+enum ComputeResult<T> {
+    Ok { value: T, logs: Vec<LogEntry> },
+    Panicked { logs: Vec<LogEntry> },
 }
 
 pub use process::ChildProcess;
 
+/// Convenience wrapper for tests: `fork_compute` with no sandbox.
+#[cfg(test)]
+fn fork_compute_nosandbox<T, F>(log_buffer: &LogBuffer, f: F) -> Result<T>
+where
+    T: Serialize + DeserializeOwned,
+    F: FnOnce() -> T,
+{
+    fork_compute(None, &[], true, log_buffer, f)
+}
+
 /// Fork a sandboxed child that computes a value and returns it.
 ///
 /// The child applies Landlock, runs `f()`, sends the result via IPC, and exits.
-/// Panics in `f` are caught and converted to an error on the parent side
-/// (child exits, pipe closes, parent recv fails).
+/// Panics in `f` are caught; child log entries are forwarded in both cases.
 pub fn fork_compute<T, F>(
     sandbox_read_base: Option<&Path>,
     font_dirs: &[PathBuf],
@@ -51,25 +61,56 @@ where
             }
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
                 Ok(value) => {
-                    let logs = log_buf
-                        .drain()
-                        .into_iter()
-                        .map(WireLogEntry::from)
-                        .collect();
-                    let _ = resp_tx.send(&ComputeResult { value, logs });
+                    let logs = log_buf.drain();
+                    let _ = resp_tx.send(&ComputeResult::Ok { value, logs });
                 }
                 Err(_) => {
                     log::error!("child: fork_compute panicked");
-                    // Logs are lost here: we cannot send ComputeResult without
-                    // a value (T has no Default), and the pipe close signals the
-                    // error to the parent. Accepted trade-off per design doc.
+                    let logs = log_buf.drain();
+                    let _ = resp_tx.send(&ComputeResult::<T>::Panicked { logs });
                 }
             }
         })?;
     let result = rx.recv().context("fork_compute: child failed")?;
-    for entry in result.logs {
-        log_buffer.push(LogEntry::from(entry));
+    match result {
+        ComputeResult::Ok { value, logs } => {
+            for entry in logs {
+                log_buffer.push(entry);
+            }
+            child.wait()?;
+            Ok(value)
+        }
+        ComputeResult::Panicked { logs } => {
+            for entry in logs {
+                log_buffer.push(entry);
+            }
+            child.wait()?;
+            anyhow::bail!("fork_compute: child panicked")
+        }
     }
-    child.wait()?;
-    Ok(result.value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fork_compute_ok_returns_value() {
+        let log_buf = LogBuffer::new(16);
+        let result = fork_compute_nosandbox(&log_buf, || 42u64);
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn fork_compute_panic_returns_error() {
+        let log_buf = LogBuffer::new(16);
+        let result = fork_compute_nosandbox::<String, _>(&log_buf, || {
+            panic!("deliberate test panic");
+        });
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("panicked"),
+            "expected panic error, got: {err:#}"
+        );
+    }
 }
