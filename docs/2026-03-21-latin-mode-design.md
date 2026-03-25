@@ -2,15 +2,17 @@
 
 ## Overview
 
-Automatic detection of CJK content in Markdown documents, switching to an optimized
-Latin/European font theme (Inter) when no CJK characters are present. This enables
-true italic rendering and better typographic quality for English/European-language documents.
+Automatic detection of CJK content in Markdown documents, switching to a dedicated
+Latin/European theme variant when no CJK characters are present. This enables
+independent typographic tuning (font, italic, spacing) for Latin-only documents.
 
 ## Motivation
 
 - Noto Sans JP has no true italic variant; Japanese fonts generally lack italic styles
-- Inter provides Regular, Italic, Bold, BoldItalic — full typographic coverage for Latin text
-- Documents without CJK content should benefit from a dedicated Latin font automatically
+- Latin-only documents should benefit from dedicated typographic settings automatically
+- Separate theme files allow CJK and Latin themes to evolve independently
+  (font choice, italic support, letter-spacing, line-height, etc.)
+- Font selection for the latin theme is deferred to a future PR
 
 ## Key architectural insight
 
@@ -113,10 +115,8 @@ Latin variants share all color definitions, sidebar colors, mermaid colors, and
 `data_files` (`.tmTheme` for syntax highlighting) with their CJK counterpart.
 The differences are:
 
-- Body font: `"Noto Sans JP"` → `"Inter"`
-- Code font fallback: `("DejaVu Sans Mono", "Noto Sans JP")` → `"DejaVu Sans Mono"`
-  (or keep Noto as distant fallback — TBD based on output quality)
-- Italic: Typst's font matching selects Inter-Italic automatically for `#emph`
+- Body font: currently `"Noto Sans JP"` (placeholder — dedicated Latin font TBD in future PR)
+- Latin themes exist as independent files that can diverge from CJK themes over time
 
 ### Theme resolution
 
@@ -197,24 +197,9 @@ gains the `has_cjk` parameter, sourced from `app.has_cjk` (a new field on `AppCo
 
 `embed-noto-fonts` → `embed-fonts`
 
-The feature gates embedding of all fonts in `fonts/` (currently: Noto Sans JP, Inter,
-STIX Two Math). The old name implied only Noto was embedded.
-
-Changes:
-- `Cargo.toml`: rename feature and update `default`
-- `build.rs`: `CARGO_FEATURE_EMBED_NOTO_FONTS` → `CARGO_FEATURE_EMBED_FONTS`
-
-## Inter font embedding
-
-The four Inter font files are already in `fonts/`:
-- `Inter-Regular.ttf`
-- `Inter-Italic.ttf`
-- `Inter-Bold.ttf`
-- `Inter-BoldItalic.ttf`
-
-License: SIL Open Font License 1.1 (`fonts/OFL-Inter.txt`). Permits bundling and
-redistribution with software. No changes to `build.rs` needed — it already compresses
-and embeds all `.ttf` files in `fonts/`.
+The feature gates embedding of all fonts in `fonts/` (currently: Noto Sans JP,
+STIX Two Math). The old name implied only Noto was embedded; the generic name
+accommodates future font additions.
 
 ## Files changed
 
@@ -228,8 +213,8 @@ and embeds all `.ttf` files in `fonts/`.
 | `src/usecase.rs` | Fork 1: `prescan()` instead of `extract_image_paths()` |
 | `src/viewer/mod.rs` | Pass `app.has_cjk` to `resolve_theme_name` in config reload |
 | `src/theme.rs` | `resolve_theme_name` gains `has_cjk`, add latin `ThemeEntry`s, `LATIN_VARIANTS` |
-| `themes/catppuccin-latin.typ` | New: Inter-based dark theme |
-| `themes/catppuccin-latte-latin.typ` | New: Inter-based light theme |
+| `themes/catppuccin-latin.typ` | New: Latin variant dark theme |
+| `themes/catppuccin-latte-latin.typ` | New: Latin variant light theme |
 | `Cargo.toml` | Rename feature `embed-noto-fonts` → `embed-fonts` |
 | `build.rs` | Update feature gate env var |
 | `tests/integration.rs` | Update `extract_image_paths` calls |
@@ -242,7 +227,7 @@ and embeds all `.ttf` files in `fonts/`.
 
 ## Open questions
 
-- Code block font in latin mode: drop Noto Sans JP fallback entirely, or keep as
-  distant fallback? (Decide based on output quality inspection)
-- Italic rendering: verify Typst auto-selects Inter-Italic for `#emph`. If not,
-  add explicit `#show emph: set text(style: "italic")`
+- Latin font selection: choose a dedicated Latin font (e.g. Inter, Libertinus)
+  and embed it. Currently using Noto Sans JP as placeholder.
+- Italic rendering: once a Latin font with italic variant is selected, verify
+  Typst auto-selects it for `#emph`

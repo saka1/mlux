@@ -1,5 +1,5 @@
 #set page(width: 660pt, height: auto, margin: 40pt, fill: rgb("#eff1f5"))
-#set text(font: "Inter", size: 12pt, fill: rgb("#4c4f69"))
+#set text(font: "Noto Sans JP", size: 12pt, fill: rgb("#4c4f69"))
 #set par(leading: 1em, justify: true, first-line-indent: 0pt)
 
 // 見出し
