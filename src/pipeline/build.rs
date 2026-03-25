@@ -44,10 +44,19 @@ fn compile_content(
     mut image_files: crate::image::LoadedImages,
 ) -> Result<CompiledContent> {
     // 0. Theme resolution (from prescan CJK detection)
+    info!(
+        "prescan: has_cjk={}, image_paths={}",
+        prescan.has_cjk,
+        prescan.image_paths.len(),
+    );
     let theme_name = crate::theme::resolve_theme_name(
         &params.theme_spec,
         params.detected_light,
         prescan.has_cjk,
+    );
+    info!(
+        "theme: spec={:?} → resolved={:?}",
+        params.theme_spec, theme_name
     );
     let theme_text = crate::theme::get(theme_name)
         .ok_or_else(|| anyhow::anyhow!("unknown theme '{theme_name}'"))?;
