@@ -390,7 +390,10 @@ pub fn run(
                                     Some(a) => {
                                         let visible_count =
                                             (session.layout.status_row - 1) as usize;
-                                        mode_log::handle(a, ls, visible_count)
+                                        let total_cols = (session.layout.sidebar_cols
+                                            + session.layout.image_cols)
+                                            as usize;
+                                        mode_log::handle(a, ls, visible_count, total_cols)
                                     }
                                     None => vec![],
                                 },

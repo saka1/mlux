@@ -155,7 +155,8 @@ impl TestHarness {
             ViewerMode::Log(ls) => match map_log_key(key) {
                 Some(a) => {
                     let visible_count = (self.layout.status_row - 1) as usize;
-                    super::mode_log::handle(a, ls, visible_count)
+                    let total_cols = (self.layout.sidebar_cols + self.layout.image_cols) as usize;
+                    super::mode_log::handle(a, ls, visible_count, total_cols)
                 }
                 None => vec![],
             },
