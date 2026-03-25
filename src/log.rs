@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 
 const DEFAULT_CAPACITY: usize = 1024;
 
@@ -33,6 +35,56 @@ impl LogEntry {
             target = self.target,
             message = self.message,
         )
+    }
+}
+
+/// Serializable log entry for IPC transport across fork boundaries.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WireLogEntry {
+    /// Milliseconds since UNIX epoch.
+    pub timestamp_ms: u64,
+    /// `log::Level` as `u8` (Error=1, Warn=2, Info=3, Debug=4, Trace=5).
+    pub level: u8,
+    pub target: String,
+    pub message: String,
+}
+
+impl From<LogEntry> for WireLogEntry {
+    fn from(entry: LogEntry) -> Self {
+        let dur = entry
+            .timestamp
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        Self {
+            timestamp_ms: dur.as_millis() as u64,
+            level: entry.level as u8,
+            target: entry.target,
+            message: entry.message,
+        }
+    }
+}
+
+impl From<WireLogEntry> for LogEntry {
+    fn from(wire: WireLogEntry) -> Self {
+        let timestamp = UNIX_EPOCH + Duration::from_millis(wire.timestamp_ms);
+        debug_assert!(
+            (1..=5).contains(&wire.level),
+            "unexpected log level: {}",
+            wire.level
+        );
+        let level = match wire.level {
+            1 => log::Level::Error,
+            2 => log::Level::Warn,
+            3 => log::Level::Info,
+            4 => log::Level::Debug,
+            _ => log::Level::Trace,
+        };
+        Self {
+            timestamp,
+            level,
+            target: wire.target,
+            message: wire.message,
+        }
     }
 }
 
@@ -69,6 +121,12 @@ impl LogBuffer {
     pub fn entries(&self) -> Vec<LogEntry> {
         let inner = self.inner.lock().unwrap();
         inner.entries.iter().cloned().collect()
+    }
+
+    /// Remove and return all entries, leaving the buffer empty.
+    pub fn drain(&self) -> Vec<LogEntry> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.entries.drain(..).collect()
     }
 }
 
@@ -173,6 +231,56 @@ mod tests {
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].message, "b"); // oldest dropped
         assert_eq!(entries[2].message, "d");
+    }
+
+    #[test]
+    fn drain_clears_buffer() {
+        let buf = LogBuffer::new(16);
+        buf.push(LogEntry {
+            timestamp: SystemTime::now(),
+            level: log::Level::Info,
+            target: "t".into(),
+            message: "a".into(),
+        });
+        buf.push(LogEntry {
+            timestamp: SystemTime::now(),
+            level: log::Level::Warn,
+            target: "t".into(),
+            message: "b".into(),
+        });
+        let drained = buf.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].message, "a");
+        assert_eq!(drained[1].message, "b");
+        assert!(buf.entries().is_empty());
+    }
+
+    #[test]
+    fn wire_log_entry_roundtrip() {
+        let original = LogEntry {
+            timestamp: SystemTime::now(),
+            level: log::Level::Warn,
+            target: "mlux::test".into(),
+            message: "hello".into(),
+        };
+        let wire = WireLogEntry::from(original.clone());
+        assert_eq!(wire.level, 2); // Warn
+        let restored = LogEntry::from(wire);
+        assert_eq!(restored.level, log::Level::Warn);
+        assert_eq!(restored.target, "mlux::test");
+        assert_eq!(restored.message, "hello");
+        // Timestamp within 1ms (millisecond truncation)
+        let orig_ms = original
+            .timestamp
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let rest_ms = restored
+            .timestamp
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        assert_eq!(orig_ms, rest_ms);
     }
 
     #[test]

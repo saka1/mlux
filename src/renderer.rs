@@ -13,6 +13,7 @@ use crate::fork_sandbox::process;
 use crate::fork_sandbox::sandbox;
 use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::image::LoadedImages;
+use crate::log::{LogBuffer, LogEntry, WireLogEntry};
 use crate::pipeline::{BuildParams, compile_and_dump, compile_and_tile};
 use crate::tile::DocumentMeta;
 use crate::tile_cache::TilePngs;
@@ -49,6 +50,13 @@ enum Response {
     Error(String),
 }
 
+/// Wire-level wrapper: every child→parent message carries piggyback log entries.
+#[derive(Serialize, Deserialize)]
+struct ChildMessage {
+    response: Response,
+    logs: Vec<WireLogEntry>,
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -69,7 +77,8 @@ pub enum TileResponse {
 /// Tile renderer communicating with a forked child process via typed IPC.
 pub struct TileRenderer {
     tx: process::TypedWriter<Request>,
-    rx: process::TypedReader<Response>,
+    rx: process::TypedReader<ChildMessage>,
+    log_buffer: LogBuffer,
 }
 
 impl TileRenderer {
@@ -78,8 +87,7 @@ impl TileRenderer {
     /// Must be called exactly once as the first operation after [`build_renderer`].
     pub fn wait_for_meta(&mut self) -> Result<DocumentMeta> {
         match self
-            .rx
-            .recv()
+            .recv_and_ingest()
             .context("failed to receive metadata from child")?
         {
             Response::Meta(m) => Ok(m),
@@ -111,12 +119,21 @@ impl TileRenderer {
 
     /// Blocking receive. Waits for the next response from the child.
     pub fn recv(&mut self) -> Result<TileResponse> {
-        match self.rx.recv()? {
+        match self.recv_and_ingest()? {
             Response::Tile { idx, pngs } => Ok(TileResponse::Tile { idx, pngs }),
             Response::Rects { idx, rects } => Ok(TileResponse::Rects { idx, rects }),
             Response::Error(e) => anyhow::bail!("{e}"),
             Response::Meta(_) => anyhow::bail!("unexpected Meta response"),
         }
+    }
+
+    /// Receive a `ChildMessage`, ingest piggybacked logs, return the `Response`.
+    fn recv_and_ingest(&mut self) -> Result<Response> {
+        let msg = self.rx.recv()?;
+        for entry in msg.logs {
+            self.log_buffer.push(LogEntry::from(entry));
+        }
+        Ok(msg.response)
     }
 
     /// Request a tile pair (content + sidebar) from the child.
@@ -164,6 +181,20 @@ impl TileRenderer {
 // Private helpers
 // ---------------------------------------------------------------------------
 
+/// Drain child-local log buffer and send a response wrapped in `ChildMessage`.
+fn send_with_logs(
+    tx: &mut process::TypedWriter<ChildMessage>,
+    response: Response,
+    log_buf: &LogBuffer,
+) -> Result<()> {
+    let logs = log_buf
+        .drain()
+        .into_iter()
+        .map(WireLogEntry::from)
+        .collect();
+    tx.send(&ChildMessage { response, logs })
+}
+
 /// Extract image paths (Fork 1, sandboxed) and fetch remote images (parent).
 ///
 /// Fork 1 runs pulldown-cmark under a sandbox with no FS access and TCP denied.
@@ -171,11 +202,12 @@ impl TileRenderer {
 fn prepare_remote_images(
     params: &BuildParams,
     no_sandbox: bool,
+    log_buffer: &LogBuffer,
 ) -> Result<(crate::pipeline::Prescan, LoadedImages)> {
     use crate::fork_sandbox::fork_compute;
 
     // Fork 1: prescan under sandbox (no FS, no network)
-    let prescan_result = fork_compute(None, &[], no_sandbox, {
+    let prescan_result = fork_compute(None, &[], no_sandbox, log_buffer, {
         let md = params.markdown.clone();
         move || crate::pipeline::prescan(&md)
     })?;
@@ -220,17 +252,19 @@ fn sandbox_read_base(params: &BuildParams) -> Option<&Path> {
 pub fn build_renderer(
     params: &BuildParams,
     no_sandbox: bool,
+    log_buffer: &LogBuffer,
 ) -> Result<(TileRenderer, ChildProcess)> {
-    let (prescan, remote_images) = prepare_remote_images(params, no_sandbox)?;
+    let (prescan, remote_images) = prepare_remote_images(params, no_sandbox, log_buffer)?;
     let read_base = sandbox_read_base(params);
     let font_dirs = params.fonts.font_dirs();
 
     let params = params.clone();
     let read_base = read_base.map(|p| p.to_path_buf());
 
-    let (tx, rx, child) = process::fork_with_channels::<Request, Response, _>(
+    let log_buf = log_buffer.clone();
+    let (tx, rx, child) = process::fork_with_channels::<Request, ChildMessage, _>(
         move |mut req_rx: process::TypedReader<Request>,
-              mut resp_tx: process::TypedWriter<Response>| {
+              mut resp_tx: process::TypedWriter<ChildMessage>| {
             // SECURITY: Fork 2 applies sandbox immediately.
             if !no_sandbox
                 && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), &font_dirs)
@@ -253,14 +287,15 @@ pub fn build_renderer(
                 Ok(doc) => doc,
                 Err(e) => {
                     log::error!("child: build failed: {e:#}");
-                    let _ = resp_tx.send(&Response::Error(format!("{e:#}")));
+                    let _ =
+                        send_with_logs(&mut resp_tx, Response::Error(format!("{e:#}")), &log_buf);
                     return;
                 }
             };
 
             // Send metadata as first response
             let meta = doc.metadata();
-            if resp_tx.send(&Response::Meta(meta)).is_err() {
+            if send_with_logs(&mut resp_tx, Response::Meta(meta), &log_buf).is_err() {
                 return;
             }
 
@@ -280,7 +315,7 @@ pub fn build_renderer(
                                 Ok(Err(e)) => Response::Error(format!("render tile {idx}: {e:#}")),
                                 Err(_) => Response::Error(format!("render tile {idx}: panic")),
                             };
-                        if resp_tx.send(&resp).is_err() {
+                        if send_with_logs(&mut resp_tx, resp, &log_buf).is_err() {
                             break;
                         }
                     }
@@ -294,7 +329,7 @@ pub fn build_renderer(
                                     "find highlight rects tile {idx}: panic"
                                 )),
                             };
-                        if resp_tx.send(&resp).is_err() {
+                        if send_with_logs(&mut resp_tx, resp, &log_buf).is_err() {
                             break;
                         }
                     }
@@ -304,7 +339,14 @@ pub fn build_renderer(
         },
     )?;
 
-    Ok((TileRenderer { tx, rx }, child))
+    Ok((
+        TileRenderer {
+            tx,
+            rx,
+            log_buffer: log_buffer.clone(),
+        },
+        child,
+    ))
 }
 
 /// Build a sandboxed renderer and wait for metadata.
@@ -316,8 +358,9 @@ pub fn build_renderer(
 pub fn build_renderer_blocking(
     params: &BuildParams,
     no_sandbox: bool,
+    log_buffer: &LogBuffer,
 ) -> Result<(DocumentMeta, TileRenderer, ChildProcess)> {
-    let (mut renderer, child) = build_renderer(params, no_sandbox)?;
+    let (mut renderer, child) = build_renderer(params, no_sandbox, log_buffer)?;
     let meta = renderer.wait_for_meta()?;
     Ok((meta, renderer, child))
 }
@@ -326,14 +369,21 @@ pub fn build_renderer_blocking(
 ///
 /// The child compiles the document and writes the generated Typst source
 /// and frame tree to stderr, then exits.
-pub fn build_dump(params: &BuildParams, no_sandbox: bool) -> Result<ChildProcess> {
-    let (prescan, remote_images) = prepare_remote_images(params, no_sandbox)?;
+pub fn build_dump(
+    params: &BuildParams,
+    no_sandbox: bool,
+    log_buffer: &LogBuffer,
+) -> Result<ChildProcess> {
+    let (prescan, remote_images) = prepare_remote_images(params, no_sandbox, log_buffer)?;
     let read_base = sandbox_read_base(params);
     let font_dirs = params.fonts.font_dirs();
 
     let params = params.clone();
     let read_base = read_base.map(|p| p.to_path_buf());
 
+    // Fork 2 for dump: no IPC responses to piggyback logs on. Child writes to
+    // stderr and exits immediately, so Fork 2 logs are not forwarded. Fork 1
+    // logs (via prepare_remote_images) are still forwarded.
     let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
         if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), &font_dirs) {
             log::warn!("child: sandbox failed: {e:#}");
@@ -409,6 +459,29 @@ mod tests {
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         match decoded {
             Response::Error(msg) => assert_eq!(msg, "test error"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn child_message_serde_roundtrip() {
+        let msg = ChildMessage {
+            response: Response::Error("oops".into()),
+            logs: vec![WireLogEntry {
+                timestamp_ms: 1234567890,
+                level: 2,
+                target: "mlux::test".into(),
+                message: "warning".into(),
+            }],
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ChildMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(decoded.logs.len(), 1);
+        assert_eq!(decoded.logs[0].level, 2);
+        assert_eq!(decoded.logs[0].message, "warning");
+        match decoded.response {
+            Response::Error(e) => assert_eq!(e, "oops"),
             _ => panic!("wrong variant"),
         }
     }

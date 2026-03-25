@@ -201,7 +201,8 @@ pub fn run(
             );
             // Fork 1 (image extraction) + Fork 2 (renderer) before any threads.
             // The child starts building immediately; we wait for meta below.
-            let (mut renderer, child) = crate::renderer::build_renderer(&params, no_sandbox)?;
+            let (mut renderer, child) =
+                crate::renderer::build_renderer(&params, no_sandbox, &session.log_buffer)?;
             _fork_child = Some(child);
 
             // Wait for metadata from child, polling for quit/resize events.

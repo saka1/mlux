@@ -4,6 +4,7 @@
 //! processes. We use `harness = false` to avoid the test runner's thread pool
 //! and run each test sequentially in a single thread.
 
+use mlux::log::LogBuffer;
 use mlux::pipeline::{BuildParams, FontCache, build_tiled_document};
 use mlux::renderer::{build_dump, build_renderer, build_renderer_blocking};
 use mlux::tile::VisibleTiles;
@@ -31,8 +32,10 @@ fn test_fork_render_matches_local() {
     let local_doc = build_tiled_document(&params).unwrap();
     let local_meta = local_doc.metadata();
 
-    // Fork render
-    let (fork_meta, mut renderer, mut _child) = build_renderer_blocking(&params, true).unwrap();
+    // Fork render (throwaway log buffer -- forwarded logs not inspected here)
+    let log_buf = LogBuffer::new(1024);
+    let (fork_meta, mut renderer, mut _child) =
+        build_renderer_blocking(&params, true, &log_buf).unwrap();
 
     // Metadata should match
     assert_eq!(fork_meta.tile_count, local_meta.tile_count);
@@ -75,7 +78,9 @@ fn test_fork_render_metadata_methods() {
         allow_remote_images: false,
     };
 
-    let (meta, _renderer, mut _child) = build_renderer_blocking(&params, true).unwrap();
+    // Throwaway log buffer -- forwarded logs not inspected here
+    let log_buf = LogBuffer::new(1024);
+    let (meta, _renderer, mut _child) = build_renderer_blocking(&params, true, &log_buf).unwrap();
 
     // DocumentMeta methods should work
     assert!(meta.tile_count > 0);
@@ -117,7 +122,9 @@ fn test_fork_renderer_build_error_propagated() {
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let params = make_failing_params(font_cache);
 
-    let (mut renderer, mut _child) = build_renderer(&params, true).unwrap();
+    // Throwaway log buffer -- forwarded logs not inspected here
+    let log_buf = LogBuffer::new(1024);
+    let (mut renderer, mut _child) = build_renderer(&params, true, &log_buf).unwrap();
     match renderer.wait_for_meta() {
         Ok(_) => panic!("expected build error, got Ok"),
         Err(err) => {
@@ -134,12 +141,56 @@ fn test_fork_dump_build_error_exit_code() {
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let params = make_failing_params(font_cache);
 
-    let mut child = build_dump(&params, true).unwrap();
+    // Throwaway log buffer -- forwarded logs not inspected here
+    let log_buf = LogBuffer::new(1024);
+    let mut child = build_dump(&params, true, &log_buf).unwrap();
     let code = child.wait().unwrap();
     assert_ne!(code, 0, "fork_dump should exit non-zero on build failure");
 }
 
+fn test_fork_renderer_logs_forwarded(log_buf: &LogBuffer) {
+    let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
+
+    // Include a broken image reference to ensure the child emits a log::warn
+    // during image loading (the file won't exist → warning logged).
+    let params = BuildParams {
+        theme_spec: "catppuccin".into(),
+        detected_light: false,
+        markdown: "# Hello\n\n![broken](nonexistent.png)\n".into(),
+        base_dir: Some(std::path::PathBuf::from(".")),
+        width_pt: 400.0,
+        sidebar_width_pt: DEFAULT_SIDEBAR_WIDTH_PT,
+        tile_height_pt: 500.0,
+        ppi: 144.0,
+        fonts: font_cache,
+        allow_remote_images: false,
+    };
+
+    // Drain any pre-existing entries so we only check what this test produces.
+    log_buf.drain();
+
+    let (meta, mut renderer, mut _child) = build_renderer_blocking(&params, true, log_buf).unwrap();
+
+    // Render a tile to trigger more IPC exchanges
+    assert!(meta.tile_count > 0);
+    let _pngs = renderer.render_tile_pair(0).unwrap();
+    renderer.shutdown();
+
+    // The child process produces log entries during pipeline init (theme
+    // resolution, font setup, compilation). Verify they were forwarded.
+    let entries = log_buf.entries();
+    assert!(
+        !entries.is_empty(),
+        "expected child logs to be forwarded to parent LogBuffer"
+    );
+}
+
 fn main() {
+    // Initialize the global logger so that child processes inherit it via fork
+    // COW. The returned LogBuffer shares the same Arc as RingLog's internal
+    // buffer, which is required for log forwarding to work.
+    let log_buffer = mlux::log::init(true, None);
+
     eprint!("test usecase::test_fork_render_matches_local ... ");
     test_fork_render_matches_local();
     eprintln!("ok");
@@ -154,5 +205,9 @@ fn main() {
 
     eprint!("test usecase::test_fork_dump_build_error_exit_code ... ");
     test_fork_dump_build_error_exit_code();
+    eprintln!("ok");
+
+    eprint!("test usecase::test_fork_renderer_logs_forwarded ... ");
+    test_fork_renderer_logs_forwarded(&log_buffer);
     eprintln!("ok");
 }

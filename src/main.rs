@@ -204,6 +204,7 @@ fn main() {
             output,
             dump,
             cli.no_sandbox,
+            &log_buffer,
         ),
         None => mlux::viewer::run(
             app,
@@ -246,6 +247,7 @@ fn build_input_source(input: Option<PathBuf>) -> InputSource {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_render(
     app: AppContext,
     input: &InputSource,
@@ -254,6 +256,7 @@ fn cmd_render(
     output: PathBuf,
     dump: bool,
     no_sandbox: bool,
+    log_buffer: &mlux::log::LogBuffer,
 ) -> Result<()> {
     let pipeline_start = Instant::now();
 
@@ -270,7 +273,7 @@ fn cmd_render(
     );
 
     if dump {
-        let mut child = mlux::renderer::build_dump(&params, no_sandbox)?;
+        let mut child = mlux::renderer::build_dump(&params, no_sandbox, log_buffer)?;
         let code = child.wait()?;
         if code != 0 {
             anyhow::bail!("dump failed (child exited with code {code})");
@@ -293,7 +296,7 @@ fn cmd_render(
         .to_string();
 
     let (meta, mut renderer, mut _child) =
-        mlux::renderer::build_renderer_blocking(&params, no_sandbox)?;
+        mlux::renderer::build_renderer_blocking(&params, no_sandbox, log_buffer)?;
 
     let mut files = Vec::new();
     for i in 0..meta.tile_count {
