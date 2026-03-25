@@ -74,16 +74,6 @@ enum ComputeResult<T> {
     Panicked { logs: Vec<LogEntry> },
 }
 
-/// Convenience wrapper for tests: `fork_compute` with no sandbox.
-#[cfg(test)]
-fn fork_compute_nosandbox<T, F>(log_buffer: &LogBuffer, f: F) -> Result<T>
-where
-    T: Serialize + DeserializeOwned,
-    F: FnOnce() -> T,
-{
-    fork_compute(SandboxConfig::Disabled, log_buffer, f)
-}
-
 /// Fork a sandboxed child that computes a value and returns it.
 ///
 /// The child applies the sandbox policy, runs `f()`, sends the result via IPC,
@@ -134,6 +124,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Convenience wrapper for tests: `fork_compute` with no sandbox.
+    fn fork_compute_nosandbox<T, F>(log_buffer: &LogBuffer, f: F) -> Result<T>
+    where
+        T: Serialize + DeserializeOwned,
+        F: FnOnce() -> T,
+    {
+        fork_compute(SandboxConfig::Disabled, log_buffer, f)
+    }
 
     #[test]
     fn fork_compute_ok_returns_value() {
