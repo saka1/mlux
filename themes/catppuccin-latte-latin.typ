@@ -1,5 +1,5 @@
 #set page(width: 660pt, height: auto, margin: 40pt, fill: rgb("#eff1f5"))
-#set text(font: "Noto Sans JP", size: 12pt, fill: rgb("#4c4f69"))
+#set text(font: "Fira Sans", size: 12pt, fill: rgb("#4c4f69"))
 #set par(leading: 1em, justify: true, first-line-indent: 0pt)
 
 // 見出し
@@ -13,12 +13,12 @@
 // コードブロック
 #show raw.where(block: true): it => block(
   fill: rgb("#e6e9ef"), inset: 12pt, radius: 6pt, width: 100%,
-  text(font: "DejaVu Sans Mono", size: 10pt, it))
+  text(font: "Fira Mono", size: 10pt, it))
 
 // インラインコード (raw の ShowSet が size: 0.8em を適用するため / 0.8 で補正)
 #show raw.where(block: false): it => box(
   fill: rgb("#e6e9ef"), inset: (x: 0.3em / 0.8), outset: (y: 0.15em / 0.8), radius: 3pt,
-  text(font: "DejaVu Sans Mono", size: 0.85em / 0.8, it))
+  text(font: "Fira Mono", size: 0.85em / 0.8, it))
 
 // リスト
 #set list(marker: ([•], [‣], [–]), indent: 1em, body-indent: 0.7em)
@@ -39,9 +39,6 @@
 
 // 強調（bold）: 本文と同色、太さのみ変える
 #show strong: set text(fill: rgb("#4c4f69"))
-
-// 斜体: Teal（寒色で「退く」印象 — italic の控えめな強調に対応）
-#show emph: set text(fill: rgb("#179299"))
 
 // 打ち消し線: Subtext 1 のストローク
 #show strike: set strike(stroke: 1pt + rgb("#5c5f77"))
