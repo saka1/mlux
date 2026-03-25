@@ -29,6 +29,31 @@ pub(super) struct ScrollState {
     pub vp_h: u32,     // ビューポート高さ（ピクセル）
 }
 
+impl Layout {
+    /// Viewport width in typst points.
+    pub(super) fn viewport_width_pt(&self, ppi: f64) -> f64 {
+        self.image_cols as f64 * self.cell_w as f64 * 72.0 / ppi
+    }
+
+    /// Viewport height in typst points.
+    pub(super) fn viewport_height_pt(&self, ppi: f64) -> f64 {
+        self.image_rows as f64 * self.cell_h as f64 * 72.0 / ppi
+    }
+
+    /// Sidebar width in typst points.
+    pub(super) fn sidebar_width_pt(&self, ppi: f64) -> f64 {
+        self.sidebar_cols as f64 * self.cell_w as f64 * 72.0 / ppi
+    }
+
+    /// Align tile height (pt) to cell_h pixel boundary, ensuring exact 1:1 scaling.
+    pub(super) fn align_tile_height_pt(&self, tile_height_pt: f64, ppi: f64) -> f64 {
+        let raw_px = (tile_height_pt * ppi / 72.0).round() as u32;
+        let cell_h = self.cell_h as u32;
+        let aligned_px = raw_px.div_ceil(cell_h) * cell_h;
+        aligned_px as f64 * 72.0 / ppi
+    }
+}
+
 pub(super) fn compute_layout(
     term_cols: u16,
     term_rows: u16,
@@ -223,5 +248,35 @@ mod tests {
         let (vp_w, vp_h) = vp_dims(&l, 100, 200);
         assert_eq!(vp_w, 100);
         assert_eq!(vp_h, 200);
+    }
+
+    #[test]
+    fn layout_pt_conversions() {
+        // 80x24 terminal, 1280x576 pixels → cell_w=16, cell_h=24
+        // image_cols=74, image_rows=23, sidebar_cols=6
+        let l = compute_layout(80, 24, 1280, 576, 6);
+        let ppi = 144.0;
+
+        // viewport_width_pt: 74 * 16 * 72 / 144 = 1184 * 0.5 = 592.0
+        assert_eq!(l.viewport_width_pt(ppi), 592.0);
+
+        // viewport_height_pt: 23 * 24 * 72 / 144 = 552 * 0.5 = 276.0
+        assert_eq!(l.viewport_height_pt(ppi), 276.0);
+
+        // sidebar_width_pt: 6 * 16 * 72 / 144 = 96 * 0.5 = 48.0
+        assert_eq!(l.sidebar_width_pt(ppi), 48.0);
+    }
+
+    #[test]
+    fn align_tile_height_rounds_up_to_cell_boundary() {
+        let l = compute_layout(80, 24, 1280, 576, 6);
+        let ppi = 144.0;
+        // cell_h = 24px
+
+        // 276pt → 276 * 144 / 72 = 552px → 552 / 24 = 23.0 → already aligned → 552px → 276pt
+        assert_eq!(l.align_tile_height_pt(276.0, ppi), 276.0);
+
+        // 277pt → 277 * 144 / 72 = 554px → div_ceil(554, 24) = 24 → 24*24 = 576px → 288pt
+        assert_eq!(l.align_tile_height_pt(277.0, ppi), 288.0);
     }
 }

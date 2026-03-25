@@ -45,9 +45,8 @@ impl TestHarness {
         let pixel_h = rows * CELL_H;
         let layout = layout::compute_layout(cols, rows, pixel_w, pixel_h, SIDEBAR_COLS);
 
-        let width_pt = layout.image_cols as f64 * layout.cell_w as f64 * 72.0 / PPI as f64;
-        let sidebar_width_pt =
-            layout.sidebar_cols as f64 * layout.cell_w as f64 * 72.0 / PPI as f64;
+        let width_pt = layout.viewport_width_pt(PPI as f64);
+        let sidebar_width_pt = layout.sidebar_width_pt(PPI as f64);
         let tile_height_pt = 500.0_f64;
 
         let params = BuildParams {
