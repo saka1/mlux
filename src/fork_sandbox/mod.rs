@@ -4,15 +4,67 @@
 //! [`crate::renderer`] orchestration layer. This module contains no
 //! domain-specific logic (no Markdown, no Typst, no tile rendering).
 
-pub(crate) mod process;
-pub(crate) mod sandbox;
+mod process;
+mod sandbox;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::log::{LogBuffer, LogEntry};
+
+pub use process::ChildProcess;
+pub(crate) use process::{TypedReader, TypedWriter};
+
+/// Sandbox policy for a forked child.
+pub(crate) enum SandboxConfig {
+    /// No filesystem/network restrictions.
+    Disabled,
+    /// Apply Landlock: restrict filesystem to listed read scopes, deny all network.
+    Enforce {
+        /// Base path for document access (expanded to git root by sandbox layer).
+        read_base: Option<PathBuf>,
+        /// Additional read-allowed directories (e.g. font dirs), used as-is.
+        extra_read_dirs: Vec<PathBuf>,
+    },
+}
+
+impl SandboxConfig {
+    /// Maximum restriction: Landlock with no read scopes allowed.
+    pub(crate) fn deny_all() -> Self {
+        SandboxConfig::Enforce {
+            read_base: None,
+            extra_read_dirs: Vec::new(),
+        }
+    }
+}
+
+/// Fork a child with typed channels, applying sandbox before `child_fn` runs.
+///
+/// This is the general-purpose fork primitive of `fork_sandbox`.
+/// If `sandbox` is `Enforce`, Landlock is applied before `child_fn` runs.
+pub(crate) fn fork_sandboxed<Req, Resp, F>(
+    sandbox: SandboxConfig,
+    child_fn: F,
+) -> Result<(TypedWriter<Req>, TypedReader<Resp>, ChildProcess)>
+where
+    Req: Serialize + DeserializeOwned,
+    Resp: Serialize + DeserializeOwned,
+    F: FnOnce(TypedReader<Req>, TypedWriter<Resp>),
+{
+    process::fork_with_channels(move |req_rx, resp_tx| {
+        if let SandboxConfig::Enforce {
+            ref read_base,
+            ref extra_read_dirs,
+        } = sandbox
+            && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), extra_read_dirs)
+        {
+            log::warn!("child: sandbox failed: {e:#}");
+        }
+        child_fn(req_rx, resp_tx);
+    })
+}
 
 /// Result from a forked child: either a computed value or a panic notification.
 /// Both variants carry the child's log entries for forwarding to the parent.
@@ -22,8 +74,6 @@ enum ComputeResult<T> {
     Panicked { logs: Vec<LogEntry> },
 }
 
-pub use process::ChildProcess;
-
 /// Convenience wrapper for tests: `fork_compute` with no sandbox.
 #[cfg(test)]
 fn fork_compute_nosandbox<T, F>(log_buffer: &LogBuffer, f: F) -> Result<T>
@@ -31,34 +81,21 @@ where
     T: Serialize + DeserializeOwned,
     F: FnOnce() -> T,
 {
-    fork_compute(None, &[], true, log_buffer, f)
+    fork_compute(SandboxConfig::Disabled, log_buffer, f)
 }
 
 /// Fork a sandboxed child that computes a value and returns it.
 ///
-/// The child applies Landlock, runs `f()`, sends the result via IPC, and exits.
-/// Panics in `f` are caught; child log entries are forwarded in both cases.
-pub fn fork_compute<T, F>(
-    sandbox_read_base: Option<&Path>,
-    font_dirs: &[PathBuf],
-    no_sandbox: bool,
-    log_buffer: &LogBuffer,
-    f: F,
-) -> Result<T>
+/// The child applies the sandbox policy, runs `f()`, sends the result via IPC,
+/// and exits. Panics in `f` are caught; child log entries are forwarded in both cases.
+pub(crate) fn fork_compute<T, F>(sandbox: SandboxConfig, log_buffer: &LogBuffer, f: F) -> Result<T>
 where
     T: Serialize + DeserializeOwned,
     F: FnOnce() -> T,
 {
-    let sandbox_base: Option<PathBuf> = sandbox_read_base.map(|p| p.to_path_buf());
-    let font_dirs = font_dirs.to_vec();
     let log_buf = log_buffer.clone();
     let (_, mut rx, mut child) =
-        process::fork_with_channels::<(), ComputeResult<T>, _>(move |_req_rx, mut resp_tx| {
-            if !no_sandbox
-                && let Err(e) = sandbox::enforce_sandbox(sandbox_base.as_deref(), &font_dirs)
-            {
-                log::warn!("child: sandbox failed: {e:#}");
-            }
+        fork_sandboxed::<(), ComputeResult<T>, _>(sandbox, move |_req_rx, mut resp_tx| {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
                 Ok(value) => {
                     let logs = log_buf.drain();

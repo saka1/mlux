@@ -4,13 +4,10 @@
 //! sandboxed rendering (Fork 2). Callers supply [`BuildParams`] and get back
 //! a [`TileRenderer`] or dump result — all fork/sandbox/IPC details are hidden.
 
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::fork_sandbox::process;
-use crate::fork_sandbox::sandbox;
+use crate::fork_sandbox::{SandboxConfig, TypedReader, TypedWriter, fork_sandboxed};
 use crate::highlight::{HighlightRect, HighlightSpec};
 use crate::image::LoadedImages;
 use crate::log::{LogBuffer, LogEntry};
@@ -18,7 +15,7 @@ use crate::pipeline::{BuildParams, compile_and_dump, compile_and_tile};
 use crate::tile::DocumentMeta;
 use crate::tile_cache::TilePngs;
 
-pub use crate::fork_sandbox::process::ChildProcess;
+pub use crate::fork_sandbox::ChildProcess;
 
 // ---------------------------------------------------------------------------
 // IPC protocol types (private)
@@ -76,8 +73,8 @@ pub enum TileResponse {
 
 /// Tile renderer communicating with a forked child process via typed IPC.
 pub struct TileRenderer {
-    tx: process::TypedWriter<Request>,
-    rx: process::TypedReader<ChildMessage>,
+    tx: TypedWriter<Request>,
+    rx: TypedReader<ChildMessage>,
     log_buffer: LogBuffer,
 }
 
@@ -183,7 +180,7 @@ impl TileRenderer {
 
 /// Drain child-local log buffer and send a response wrapped in `ChildMessage`.
 fn send_with_logs(
-    tx: &mut process::TypedWriter<ChildMessage>,
+    tx: &mut TypedWriter<ChildMessage>,
     response: Response,
     log_buf: &LogBuffer,
 ) -> Result<()> {
@@ -202,8 +199,13 @@ fn prepare_remote_images(
 ) -> Result<(crate::pipeline::Prescan, LoadedImages)> {
     use crate::fork_sandbox::fork_compute;
 
-    // Fork 1: prescan under sandbox (no FS, no network)
-    let prescan_result = fork_compute(None, &[], no_sandbox, log_buffer, {
+    // Fork 1: prescan under maximum-restriction sandbox (no FS, no network)
+    let prescan_sandbox = if no_sandbox {
+        SandboxConfig::Disabled
+    } else {
+        SandboxConfig::deny_all()
+    };
+    let prescan_result = fork_compute(prescan_sandbox, log_buffer, {
         let md = params.markdown.clone();
         move || crate::pipeline::prescan(&md)
     })?;
@@ -232,9 +234,15 @@ fn prepare_remote_images(
     Ok((prescan_result, remote_images))
 }
 
-/// Derive the sandbox read base path from BuildParams.
-fn sandbox_read_base(params: &BuildParams) -> Option<&Path> {
-    params.base_dir.as_deref()
+/// Build sandbox config from BuildParams.
+fn build_sandbox(params: &BuildParams, no_sandbox: bool) -> SandboxConfig {
+    if no_sandbox {
+        return SandboxConfig::Disabled;
+    }
+    SandboxConfig::Enforce {
+        read_base: params.base_dir.clone(),
+        extra_read_dirs: params.fonts.font_dirs(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,23 +259,13 @@ pub fn build_renderer(
     log_buffer: &LogBuffer,
 ) -> Result<(TileRenderer, ChildProcess)> {
     let (prescan, remote_images) = prepare_remote_images(params, no_sandbox, log_buffer)?;
-    let read_base = sandbox_read_base(params);
-    let font_dirs = params.fonts.font_dirs();
+    let sandbox = build_sandbox(params, no_sandbox);
 
     let params = params.clone();
-    let read_base = read_base.map(|p| p.to_path_buf());
 
     let log_buf = log_buffer.clone();
-    let (tx, rx, child) = process::fork_with_channels::<Request, ChildMessage, _>(
-        move |mut req_rx: process::TypedReader<Request>,
-              mut resp_tx: process::TypedWriter<ChildMessage>| {
-            // SECURITY: Fork 2 applies sandbox immediately.
-            if !no_sandbox
-                && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), &font_dirs)
-            {
-                log::warn!("child: sandbox failed: {e:#}");
-            }
-
+    let (tx, rx, child) =
+        fork_sandboxed::<Request, ChildMessage, _>(sandbox, move |mut req_rx, mut resp_tx| {
             // Load local images (Landlock read scope allows git root)
             let (mut images, errors) =
                 crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
@@ -332,8 +330,7 @@ pub fn build_renderer(
                     Request::Shutdown => break,
                 }
             }
-        },
-    )?;
+        })?;
 
     Ok((
         TileRenderer {
@@ -371,20 +368,14 @@ pub fn build_dump(
     log_buffer: &LogBuffer,
 ) -> Result<ChildProcess> {
     let (prescan, remote_images) = prepare_remote_images(params, no_sandbox, log_buffer)?;
-    let read_base = sandbox_read_base(params);
-    let font_dirs = params.fonts.font_dirs();
+    let sandbox = build_sandbox(params, no_sandbox);
 
     let params = params.clone();
-    let read_base = read_base.map(|p| p.to_path_buf());
 
     // Fork 2 for dump: no IPC responses to piggyback logs on. Child writes to
     // stderr and exits immediately, so Fork 2 logs are not forwarded. Fork 1
     // logs (via prepare_remote_images) are still forwarded.
-    let (_, _, child) = process::fork_with_channels::<(), (), _>(move |_, _| {
-        if !no_sandbox && let Err(e) = sandbox::enforce_sandbox(read_base.as_deref(), &font_dirs) {
-            log::warn!("child: sandbox failed: {e:#}");
-        }
-
+    let (_, _, child) = fork_sandboxed::<(), (), _>(sandbox, move |_, _| {
         // Load local images (Landlock read scope allows git root)
         let (mut images, errors) =
             crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);

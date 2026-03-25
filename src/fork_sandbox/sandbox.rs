@@ -82,14 +82,14 @@ mod imp {
 /// Filesystem: read-only access to `read_base` (expanded to git root).
 /// Network: all TCP bind/connect denied (Landlock V4).
 /// On V3 kernels, network restriction is silently skipped (graceful degradation).
-pub fn enforce_sandbox(read_base: Option<&Path>, font_dirs: &[PathBuf]) -> Result<()> {
+pub(super) fn enforce_sandbox(read_base: Option<&Path>, extra_read_dirs: &[PathBuf]) -> Result<()> {
     let scope = read_base.map(read_scope);
     let mut read_scopes: Vec<&Path> = Vec::new();
 
     if let Some(ref s) = scope {
         read_scopes.push(s.as_path());
     }
-    for dir in font_dirs {
+    for dir in extra_read_dirs {
         read_scopes.push(dir.as_path());
     }
 

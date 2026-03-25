@@ -118,7 +118,7 @@ impl Drop for ChildProcess {
 ///
 /// # Safety
 /// Uses `fork()` which is unsafe in multi-threaded programs. Call before spawning threads.
-pub fn fork_with_channels<Req, Resp, F>(
+pub(super) fn fork_with_channels<Req, Resp, F>(
     child_fn: F,
 ) -> Result<(TypedWriter<Req>, TypedReader<Resp>, ChildProcess)>
 where
