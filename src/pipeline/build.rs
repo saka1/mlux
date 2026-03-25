@@ -49,6 +49,10 @@ fn compile_content(
         params.detected_light,
         prescan.has_cjk,
     );
+    info!(
+        "document: {}, theme: {theme_name}",
+        if prescan.has_cjk { "CJK" } else { "latin" }
+    );
     let theme_text = crate::theme::get(theme_name)
         .ok_or_else(|| anyhow::anyhow!("unknown theme '{theme_name}'"))?;
     let data_files = crate::theme::data_files(theme_name);
