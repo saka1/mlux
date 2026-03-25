@@ -266,6 +266,9 @@ pub fn build_renderer(
     let log_buf = log_buffer.clone();
     let (tx, rx, child) =
         fork_sandboxed::<Request, ChildMessage, _>(sandbox, move |mut req_rx, mut resp_tx| {
+            // Discard log entries inherited from the parent via fork COW.
+            log_buf.drain();
+
             // Load local images (Landlock read scope allows git root)
             let (mut images, errors) =
                 crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
@@ -376,6 +379,8 @@ pub fn build_dump(
     // stderr and exits immediately, so Fork 2 logs are not forwarded. Fork 1
     // logs (via prepare_remote_images) are still forwarded.
     let (_, _, child) = fork_sandboxed::<(), (), _>(sandbox, move |_, _| {
+        // (No log forwarding in dump mode, but drain for consistency.)
+
         // Load local images (Landlock read scope allows git root)
         let (mut images, errors) =
             crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);

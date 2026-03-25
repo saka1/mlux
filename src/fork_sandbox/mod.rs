@@ -96,6 +96,10 @@ where
     let log_buf = log_buffer.clone();
     let (_, mut rx, mut child) =
         fork_sandboxed::<(), ComputeResult<T>, _>(sandbox, move |_req_rx, mut resp_tx| {
+            // Discard log entries inherited from the parent via fork COW.
+            // Without this, drain() would include pre-fork entries, causing
+            // duplicates when the parent re-ingests them.
+            log_buf.drain();
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
                 Ok(value) => {
                     let logs = log_buf.drain();
