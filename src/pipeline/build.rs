@@ -208,7 +208,7 @@ pub fn generate_sidebar_typst(
     .unwrap();
     writeln!(
         src,
-        "#set text(font: \"DejaVu Sans Mono\", size: 8pt, fill: rgb(\"{fg}\"))"
+        "#set text(font: \"Fira Mono\", size: 8pt, fill: rgb(\"{fg}\"))"
     )
     .unwrap();
 
