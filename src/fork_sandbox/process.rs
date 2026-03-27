@@ -47,9 +47,9 @@ impl<T: Serialize> TypedWriter<T> {
     }
 }
 
-impl<T> std::os::fd::AsRawFd for TypedReader<T> {
-    fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        std::os::fd::AsRawFd::as_raw_fd(&self.file)
+impl<T> std::os::fd::AsFd for TypedReader<T> {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.file.as_fd()
     }
 }
 

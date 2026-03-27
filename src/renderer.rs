@@ -157,15 +157,18 @@ impl TileRenderer {
 
     /// Check if the child has sent data (non-blocking).
     pub fn has_pending_data(&self) -> bool {
-        use std::os::fd::AsRawFd;
-        let fd = self.rx.as_raw_fd();
-        let mut pfd = nix::libc::pollfd {
-            fd,
-            events: nix::libc::POLLIN,
-            revents: 0,
-        };
-        let ret = unsafe { nix::libc::poll(&mut pfd, 1, 0) };
-        ret > 0 && (pfd.revents & nix::libc::POLLIN) != 0
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+        use std::os::fd::AsFd;
+        let mut fds = [PollFd::new(self.rx.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, PollTimeout::ZERO) {
+            Ok(n) => {
+                n > 0
+                    && fds[0]
+                        .revents()
+                        .is_some_and(|r| r.contains(PollFlags::POLLIN))
+            }
+            Err(_) => false,
+        }
     }
 
     /// Send shutdown request to the child.
