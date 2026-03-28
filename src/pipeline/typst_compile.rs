@@ -60,12 +60,9 @@ pub fn compile_document(world: &MluxWorld) -> Result<PagedDocument> {
     let warned = typst::compile::<PagedDocument>(world);
 
     for warning in &warned.warnings {
-        // テーマ (catppuccin.typ) はフォールバックチェーンとして複数フォントを
-        // 宣言している (例: "IPAGothic", "Noto Sans CJK JP", "Noto Sans")。
-        // システムにないフォールバックフォントごとに Typst が "unknown font family"
-        // 警告を出すが、プライマリフォントが使えていれば実害はなく、毎回表示
-        // されるだけのノイズになる。CJK フォントが一切ない場合の警告は
-        // world.rs の FontCache::new() が別途出す。
+        // Typst warns for every font in the theme that isn't installed.
+        // This is cosmetic, not fatal — demote to debug log.
+        // Missing CJK fonts are reported separately by FontCache::new().
         if warning.message.as_str().contains("unknown font family") {
             log::debug!("suppressed typst warning: {}", warning.message);
             continue;
