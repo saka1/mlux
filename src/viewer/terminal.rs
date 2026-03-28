@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use super::display_state::DisplayState;
 use super::layout::{Layout, ScrollState};
-use crate::tile::VisibleTiles;
+use crate::frame::VisibleTiles;
 
 const CHUNK_SIZE: usize = 4096;
 
@@ -340,11 +340,11 @@ struct TileRegion {
 /// transparency pattern covers the overflow.
 fn place_rects_in_region(
     out: &mut impl Write,
-    rects: &[crate::highlight::HighlightRect],
+    rects: &[crate::frame::HighlightRect],
     imgs: &super::display_state::HighlightImages,
     rgn: &TileRegion,
 ) -> io::Result<()> {
-    use crate::highlight::{
+    use crate::frame::{
         HIGHLIGHT_PNG_HEIGHT, HIGHLIGHT_PNG_WIDTH, PATTERN_HEIGHT, PATTERN_WIDTH, PartialPattern,
         select_overflow_pattern,
     };

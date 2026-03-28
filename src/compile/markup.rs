@@ -417,7 +417,7 @@ pub fn markdown_to_typst(
                 in_code_block = false;
                 if code_block_lang == "mermaid" {
                     // Emit as image reference; diagram rendering happens later
-                    let key = crate::diagram::diagram_key(&code_block_buf);
+                    let key = super::diagram::diagram_key(&code_block_buf);
                     let is_available = available_images.is_some_and(|set| set.contains(&key));
                     if is_available {
                         if cell_buf.is_none() {

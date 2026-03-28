@@ -9,9 +9,9 @@ use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::Source;
 use typst::visualize::{Geometry, Paint};
 
-use crate::pipeline::ContentIndex;
-use crate::tile_cache::TilePngs;
-use crate::visual_line::{VisualLine, pt_to_px};
+use super::tile_cache::TilePngs;
+use super::visual_line::{VisualLine, pt_to_px};
+use crate::compile::ContentIndex;
 
 // ---------------------------------------------------------------------------
 // Frame splitting — split a tall frame into vertical tiles
@@ -254,7 +254,7 @@ pub struct ContentMapping {
 /// A document split into renderable tiles for lazy, bounded-memory rendering.
 ///
 /// All methods take `&self` — rendering is pure (no internal caching).
-/// Use [`crate::tile_cache::TileCache`] separately for caching rendered PNGs.
+/// Use [`super::tile_cache::TileCache`] separately for caching rendered PNGs.
 pub struct TiledDocument {
     tiles: Vec<Frame>,
     sidebar_tiles: Vec<Frame>,
@@ -361,7 +361,7 @@ impl TiledDocument {
     ) -> Result<Vec<u8>> {
         assert!(idx < tiles.len(), "{label} tile index out of bounds");
         trace!("rendering {label} tile {idx}");
-        crate::pipeline::render_frame_to_png(&tiles[idx], fill, self.ppi)
+        super::render_png::render_frame_to_png(&tiles[idx], fill, self.ppi)
     }
 
     /// Compute content hashes for all tile pairs.
@@ -411,9 +411,9 @@ impl TiledDocument {
     pub fn find_tile_highlight_rects(
         &self,
         idx: usize,
-        spec: &crate::highlight::HighlightSpec,
-    ) -> Vec<crate::highlight::HighlightRect> {
-        crate::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi, &self.source)
+        spec: &super::highlight::HighlightSpec,
+    ) -> Vec<super::highlight::HighlightRect> {
+        super::highlight::find_highlight_rects(&self.tiles[idx], spec, self.ppi, &self.source)
     }
 }
 

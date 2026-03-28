@@ -14,7 +14,7 @@ use typst::layout::{Frame, FrameItem, Point};
 use typst::syntax::Source;
 use typst::text::TextItem;
 
-use crate::pipeline::rendered_to_source_byte;
+use crate::compile::rendered_to_source_byte;
 
 /// Specification for what to highlight, sent via IPC to the fork child.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -256,10 +256,10 @@ impl GlyphRun {
 /// Width is large enough for any highlight span. KGP source-rectangle `w`
 /// crops to the exact highlight width; the native height already matches the
 /// text line height, so KGP placement with `r=1` requires minimal scaling.
-pub const HIGHLIGHT_PNG: &[u8] = include_bytes!("../assets/highlight.png");
+pub const HIGHLIGHT_PNG: &[u8] = include_bytes!("../../assets/highlight.png");
 
 /// 2048×24 semi-transparent orange PNG (RGBA 255, 140, 0, 120) for the active match.
-pub const HIGHLIGHT_ACTIVE_PNG: &[u8] = include_bytes!("../assets/highlight_active.png");
+pub const HIGHLIGHT_ACTIVE_PNG: &[u8] = include_bytes!("../../assets/highlight_active.png");
 
 /// Native width of [`HIGHLIGHT_PNG`] in pixels.
 pub const HIGHLIGHT_PNG_WIDTH: u32 = 2048;

@@ -6,10 +6,8 @@ use std::io;
 
 use super::layout::{Layout, ScrollState};
 use super::terminal;
-use crate::highlight::{HighlightRect, HighlightSpec};
+use crate::frame::{DocumentMeta, HighlightRect, HighlightSpec, TileCache, VisibleTiles};
 use crate::renderer::{TileRenderer, TileResponse};
-use crate::tile::{DocumentMeta, VisibleTiles};
-use crate::tile_cache::TileCache;
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
@@ -190,14 +188,14 @@ impl DisplayState {
         let base = self.next_id;
         self.next_id += 8;
 
-        use crate::highlight::{PATTERN_HEIGHT, PATTERN_WIDTH};
+        use crate::frame::{PATTERN_HEIGHT, PATTERN_WIDTH};
 
         // Yellow (non-active) images
-        terminal::send_image(crate::highlight::HIGHLIGHT_PNG, base)?;
+        terminal::send_image(crate::frame::HIGHLIGHT_PNG, base)?;
         for (i, pattern) in [
-            &crate::highlight::PATTERN_P75,
-            &crate::highlight::PATTERN_P50,
-            &crate::highlight::PATTERN_P25,
+            &crate::frame::PATTERN_P75,
+            &crate::frame::PATTERN_P50,
+            &crate::frame::PATTERN_P25,
         ]
         .iter()
         .enumerate()
@@ -206,11 +204,11 @@ impl DisplayState {
         }
 
         // Orange (active) images
-        terminal::send_image(crate::highlight::HIGHLIGHT_ACTIVE_PNG, base + 4)?;
+        terminal::send_image(crate::frame::HIGHLIGHT_ACTIVE_PNG, base + 4)?;
         for (i, pattern) in [
-            &crate::highlight::PATTERN_ACTIVE_P75,
-            &crate::highlight::PATTERN_ACTIVE_P50,
-            &crate::highlight::PATTERN_ACTIVE_P25,
+            &crate::frame::PATTERN_ACTIVE_P75,
+            &crate::frame::PATTERN_ACTIVE_P50,
+            &crate::frame::PATTERN_ACTIVE_P25,
         ]
         .iter()
         .enumerate()
@@ -285,7 +283,7 @@ fn delete_placements_for_ids(ids: &[u32]) -> io::Result<()> {
 }
 
 /// Execute the I/O for a load action: send images to the terminal and evict distant tiles.
-fn execute_load(action: &LoadAction, pngs: &crate::tile_cache::TilePngs) -> anyhow::Result<()> {
+fn execute_load(action: &LoadAction, pngs: &crate::frame::TilePngs) -> anyhow::Result<()> {
     terminal::send_image(&pngs.content, action.content_id)?;
     terminal::send_image(&pngs.sidebar, action.sidebar_id)?;
     for (_, ids) in &action.evict {

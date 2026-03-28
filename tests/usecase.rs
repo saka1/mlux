@@ -4,10 +4,11 @@
 //! processes. We use `harness = false` to avoid the test runner's thread pool
 //! and run each test sequentially in a single thread.
 
+use mlux::compile::FontCache;
+use mlux::frame::VisibleTiles;
 use mlux::log::LogBuffer;
-use mlux::pipeline::{BuildParams, FontCache, build_tiled_document};
+use mlux::pipeline::{BuildParams, build_tiled_document};
 use mlux::renderer::{build_dump, build_renderer, build_renderer_blocking};
-use mlux::tile::VisibleTiles;
 
 const DEFAULT_SIDEBAR_WIDTH_PT: f64 = 40.0;
 

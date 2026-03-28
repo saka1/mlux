@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use log::info;
-use mlux::pipeline::{FontCache, MluxWorld, compile_document, markdown_to_typst, render_frame_to_png};
-use mlux::tile::split_frame;
+use mlux::compile::{FontCache, LoadedImages, MluxWorld, compile_document, markdown_to_typst};
+use mlux::frame::{render_frame_to_png, split_frame};
 
 static THEME: &str = include_str!("../../themes/catppuccin.typ");
 
@@ -46,7 +46,7 @@ fn main() {
             &typst_content,
             660.0,
             &font_cache,
-            mlux::image::LoadedImages::default(),
+            LoadedImages::default(),
         );
 
         let document = match compile_document(&world) {

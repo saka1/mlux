@@ -95,13 +95,13 @@ impl LastSearch {
     }
 
     /// Build a highlight spec with `active_ranges` set to the current match.
-    pub(super) fn highlight_spec(&self) -> crate::highlight::HighlightSpec {
+    pub(super) fn highlight_spec(&self) -> crate::frame::HighlightSpec {
         let active_ranges = self
             .per_match_ranges
             .get(self.current_idx)
             .cloned()
             .unwrap_or_default();
-        crate::highlight::HighlightSpec {
+        crate::frame::HighlightSpec {
             target_ranges: self.target_ranges.clone(),
             active_ranges,
         }

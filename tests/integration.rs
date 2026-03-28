@@ -1,13 +1,14 @@
 use std::fs;
 
-use mlux::image::LoadedImages;
-use mlux::pipeline::{
-    BoundIndex, ContentIndex, FontCache, MluxWorld, SpanKind, compile_document, markdown_to_typst,
-    render_frame_to_png,
+use mlux::compile::{
+    BoundIndex, ContentIndex, FontCache, LoadedImages, MluxWorld, SpanKind, compile_document,
+    markdown_to_typst,
 };
-use mlux::tile::split_frame;
+use mlux::frame::{
+    VisualLine, byte_offset_to_line, extract_visual_lines_with_map, render_frame_to_png,
+    split_frame,
+};
 use mlux::viewer::query::DocumentQuery;
-use mlux::visual_line::{VisualLine, byte_offset_to_line, extract_visual_lines_with_map};
 
 fn yank_exact(md: &str, vlines: &[VisualLine], idx: usize) -> String {
     let ci = ContentIndex::new(vec![], vec![]);
@@ -135,7 +136,7 @@ const WIDTH_PT: f64 = 400.0;
 /// Run the full source mapping pipeline for a given Markdown string.
 ///
 /// Returns visual_lines with byte-based source mapping via BoundIndex.
-fn source_map_pipeline(md: &str) -> Vec<mlux::visual_line::VisualLine> {
+fn source_map_pipeline(md: &str) -> Vec<mlux::frame::VisualLine> {
     let theme = load_theme();
     let (content, content_index) = markdown_to_typst(md, None);
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
@@ -686,7 +687,7 @@ fn test_list_items_are_individual_visual_lines() {
     let md = "- Apple\n- Banana\n- Cherry\n- Date\n";
     let vlines = source_map_pipeline(md);
 
-    let list_vls: Vec<&mlux::visual_line::VisualLine> = vlines
+    let list_vls: Vec<&mlux::frame::VisualLine> = vlines
         .iter()
         .filter(|vl| vl.md_block_range.is_some())
         .collect();
@@ -703,7 +704,7 @@ fn test_table_rows_are_individual_visual_lines() {
     let md = "| H1 | H2 |\n|---|---|\n| A | B |\n| C | D |\n| E | F |\n";
     let vlines = source_map_pipeline(md);
 
-    let table_vls: Vec<&mlux::visual_line::VisualLine> = vlines
+    let table_vls: Vec<&mlux::frame::VisualLine> = vlines
         .iter()
         .filter(|vl| vl.md_block_range.is_some())
         .collect();
@@ -722,7 +723,7 @@ fn test_nested_blockquote_known_limitation() {
     let md = "> Outer\n> > Inner\n> > More inner\n";
     let vlines = source_map_pipeline(md);
 
-    let quote_vls: Vec<&mlux::visual_line::VisualLine> = vlines
+    let quote_vls: Vec<&mlux::frame::VisualLine> = vlines
         .iter()
         .filter(|vl| vl.md_block_range.is_some())
         .collect();
@@ -834,8 +835,8 @@ fn test_image_renders() {
 
     // Load images (same flow as cmd_render)
     let base_dir = std::path::Path::new("tests/fixtures");
-    let image_paths = mlux::pipeline::prescan(&markdown).image_paths;
-    let (image_files, errors) = mlux::image::load_images(&image_paths, Some(base_dir), false);
+    let image_paths = mlux::compile::prescan(&markdown).image_paths;
+    let (image_files, errors) = mlux::compile::load_images(&image_paths, Some(base_dir), false);
     assert!(errors.is_empty(), "image load errors: {errors:?}");
     assert!(
         image_files.get("test_image.png").is_some(),
@@ -885,11 +886,11 @@ fn test_mermaid_diagram_renders() {
     let theme = load_theme();
 
     // Extract and render diagrams
-    let diagrams = mlux::diagram::extract_diagrams(md);
+    let diagrams = mlux::compile::extract_diagrams(md);
     assert_eq!(diagrams.len(), 1, "should extract 1 mermaid diagram");
 
     let rendered =
-        mlux::diagram::render_diagrams(&diagrams, mlux::theme::mermaid_colors("catppuccin"));
+        mlux::compile::render_diagrams(&diagrams, mlux::theme::mermaid_colors("catppuccin"));
     assert_eq!(rendered.len(), 1, "should render 1 diagram to SVG");
 
     // Build image set with rendered diagrams
@@ -945,7 +946,7 @@ fn test_mermaid_fixture_renders() {
     let theme = load_theme();
 
     // Full pipeline: extract diagrams, render, convert, compile
-    let diagrams = mlux::diagram::extract_diagrams(&markdown);
+    let diagrams = mlux::compile::extract_diagrams(&markdown);
     assert!(
         diagrams.len() >= 3,
         "fixture should have at least 3 mermaid blocks, got {}",
@@ -953,7 +954,7 @@ fn test_mermaid_fixture_renders() {
     );
 
     let rendered =
-        mlux::diagram::render_diagrams(&diagrams, mlux::theme::mermaid_colors("catppuccin"));
+        mlux::compile::render_diagrams(&diagrams, mlux::theme::mermaid_colors("catppuccin"));
     assert_eq!(
         rendered.len(),
         diagrams.len(),
@@ -1060,9 +1061,8 @@ fn test_inline_code_no_line_overlap() {
 // Content-addressed tile hash / merge tests
 // ---------------------------------------------------------------------------
 
+use mlux::frame::{TileCache, TilePairHash, TilePngs};
 use mlux::pipeline::build_tiled_document;
-use mlux::tile::TilePairHash;
-use mlux::tile_cache::{TileCache, TilePngs};
 
 /// Build a TiledDocument from markdown, returning metadata with hashes.
 fn build_hashes(md: &str) -> Vec<TilePairHash> {

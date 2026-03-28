@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use mlux::pipeline::markdown_to_typst;
+use mlux::compile::markdown_to_typst;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(markdown) = std::str::from_utf8(data) else {

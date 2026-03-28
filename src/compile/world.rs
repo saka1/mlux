@@ -128,7 +128,7 @@ pub struct MluxWorld {
     /// Additional virtual files served by this world (e.g. tmTheme files).
     data_files: crate::theme::DataFiles,
     /// Pre-loaded image files (path → bytes), served via `World::file()`.
-    image_files: crate::image::LoadedImages,
+    image_files: super::image::LoadedImages,
 }
 
 impl MluxWorld {
@@ -145,7 +145,7 @@ impl MluxWorld {
         content_text: &str,
         width: f64,
         fonts: &'static FontCache,
-        image_files: crate::image::LoadedImages,
+        image_files: super::image::LoadedImages,
     ) -> Self {
         let start = Instant::now();
         // Inline theme + mitex compat shims + width override + content into a single source
@@ -193,7 +193,7 @@ impl MluxWorld {
             main_source,
             content_offset: 0,
             data_files: &[],
-            image_files: crate::image::LoadedImages::default(),
+            image_files: super::image::LoadedImages::default(),
         }
     }
 }

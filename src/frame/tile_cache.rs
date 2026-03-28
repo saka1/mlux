@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use log::trace;
 use serde::{Deserialize, Serialize};
 
-use crate::tile::TilePairHash;
+use super::tile::TilePairHash;
 
 /// A pair of rendered PNGs: content + sidebar for the same tile index.
 #[derive(Debug, Serialize, Deserialize)]
@@ -12,7 +12,7 @@ pub struct TilePngs {
     pub sidebar: Vec<u8>,
 }
 
-/// Cache for rendered tile PNGs, separated from [`crate::tile::TiledDocument`]
+/// Cache for rendered tile PNGs, separated from [`super::tile::TiledDocument`]
 /// to allow concurrent `&TiledDocument` access (e.g., from a prefetch worker
 /// thread) while the main thread owns `&mut TileCache`.
 struct TiledDocumentCache {
@@ -148,7 +148,7 @@ impl TileCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tile::TileHash;
+    use crate::frame::TileHash;
 
     fn make_hash(v: u8) -> TilePairHash {
         TilePairHash {

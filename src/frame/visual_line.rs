@@ -7,7 +7,7 @@ use typst::introspection::Tag;
 use typst::layout::{Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::Span;
 
-use crate::pipeline::BoundIndex;
+use crate::compile::BoundIndex;
 
 /// Compute pixel size matching typst_render's formula exactly.
 ///

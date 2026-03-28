@@ -1,8 +1,8 @@
 //! Test harness for scenario-based viewer testing without a terminal.
 
-use crate::highlight::HighlightRect;
-use crate::pipeline::{BuildParams, FontCache, build_tiled_document};
-use crate::tile::{DocumentMeta, TiledDocument, VisibleTiles};
+use crate::compile::FontCache;
+use crate::frame::{DocumentMeta, HighlightRect, TiledDocument, VisibleTiles};
+use crate::pipeline::{BuildParams, build_tiled_document};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::display_state::DisplayState;

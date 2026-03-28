@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
+use crate::compile::FontCache;
 use crate::config::{CliOverrides, Config};
-use crate::pipeline::{BuildParams, FontCache};
+use crate::pipeline::BuildParams;
 use crate::theme;
 
 /// Immutable application context shared by render and viewer modes.

@@ -306,7 +306,7 @@ fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
 mod tests {
     use super::super::query::test_helpers::empty_ci;
     use super::*;
-    use crate::visual_line::VisualLine;
+    use crate::frame::VisualLine;
 
     fn make_vl(y_px: u32) -> VisualLine {
         VisualLine {

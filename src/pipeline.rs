@@ -6,10 +6,11 @@ use anyhow::{Result, bail};
 use log::info;
 use typst::layout::PagedDocument;
 
-use super::content_index::{BoundIndex, ContentIndex};
-use super::world::{FontCache, MluxWorld};
-use crate::tile::{ContentMapping, TiledDocument};
-use crate::visual_line::{VisualLine, extract_visual_lines_with_map};
+use crate::compile::{
+    BoundIndex, ContentIndex, FontCache, LoadedImages, MluxWorld, Prescan, compile_document,
+    dump_document, extract_diagrams, load_images, markdown_to_typst, prescan, render_diagrams,
+};
+use crate::frame::{ContentMapping, TiledDocument, VisualLine, extract_visual_lines_with_map};
 
 /// Parameters for [`build_tiled_document`].
 #[derive(Clone)]
@@ -40,8 +41,8 @@ struct CompiledContent {
 /// Prescan and image loading are the caller's responsibility.
 fn compile_content(
     params: &BuildParams,
-    prescan: &super::markup::Prescan,
-    mut image_files: crate::image::LoadedImages,
+    prescan: &Prescan,
+    mut image_files: LoadedImages,
 ) -> Result<CompiledContent> {
     // 0. Theme resolution (from prescan CJK detection)
     info!(
@@ -63,16 +64,15 @@ fn compile_content(
     let data_files = crate::theme::data_files(theme_name);
 
     // 1. Diagram pipeline
-    let diagrams = crate::diagram::extract_diagrams(&params.markdown);
+    let diagrams = extract_diagrams(&params.markdown);
     let mermaid_colors = crate::theme::mermaid_colors(theme_name);
-    for (key, svg) in crate::diagram::render_diagrams(&diagrams, mermaid_colors) {
+    for (key, svg) in render_diagrams(&diagrams, mermaid_colors) {
         image_files.insert(key, svg);
     }
 
     // 2. Markdown -> Typst
     let loaded_set = image_files.key_set();
-    let (content_text, content_index) =
-        super::markup::markdown_to_typst(&params.markdown, Some(&loaded_set));
+    let (content_text, content_index) = markdown_to_typst(&params.markdown, Some(&loaded_set));
 
     // 3. Compile content document
     let world = MluxWorld::new(
@@ -83,7 +83,7 @@ fn compile_content(
         params.fonts,
         image_files,
     );
-    let document = super::typst_compile::compile_document(&world)?;
+    let document = compile_document(&world)?;
 
     Ok(CompiledContent {
         theme_name: theme_name.to_string(),
@@ -96,8 +96,8 @@ fn compile_content(
 /// Compile from pre-loaded images and dump the generated Typst source and frame tree to stderr.
 pub(crate) fn compile_and_dump(
     params: &BuildParams,
-    prescan: &super::markup::Prescan,
-    image_files: crate::image::LoadedImages,
+    prescan: &Prescan,
+    image_files: LoadedImages,
 ) -> Result<()> {
     let compiled = compile_content(params, prescan, image_files)?;
 
@@ -112,7 +112,7 @@ pub(crate) fn compile_and_dump(
     }
     eprintln!();
 
-    super::typst_compile::dump_document(&compiled.document);
+    dump_document(&compiled.document);
     Ok(())
 }
 
@@ -121,16 +121,16 @@ pub(crate) fn compile_and_dump(
 /// Convenience wrapper that loads images internally then delegates to
 /// [`compile_and_tile`]. Production code uses [`crate::renderer::build_renderer`] instead.
 pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
-    let prescan = super::markup::prescan(&params.markdown);
-    let (images, errors) = crate::image::load_images(
-        &prescan.image_paths,
+    let ps = prescan(&params.markdown);
+    let (images, errors) = load_images(
+        &ps.image_paths,
         params.base_dir.as_deref(),
         params.allow_remote_images,
     );
     for err in &errors {
         log::warn!("{err}");
     }
-    compile_and_tile(params, &prescan, images)
+    compile_and_tile(params, &ps, images)
 }
 
 /// Compile from pre-loaded images and build a TiledDocument.
@@ -142,8 +142,8 @@ pub fn build_tiled_document(params: &BuildParams) -> Result<TiledDocument> {
 /// Called from the forked child process in [`crate::renderer`].
 pub(crate) fn compile_and_tile(
     params: &BuildParams,
-    prescan: &super::markup::Prescan,
-    image_files: crate::image::LoadedImages,
+    prescan: &Prescan,
+    image_files: LoadedImages,
 ) -> Result<TiledDocument> {
     let start = Instant::now();
 
@@ -176,7 +176,7 @@ pub(crate) fn compile_and_tile(
         &theme_name,
     );
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
-    let sidebar_doc = super::typst_compile::compile_document(&sidebar_world)?;
+    let sidebar_doc = compile_document(&sidebar_world)?;
 
     // 7. Build TiledDocument with both content + sidebar
     let tiled_doc = TiledDocument::new(

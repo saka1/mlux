@@ -7,13 +7,11 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::compile::LoadedImages;
 use crate::fork_sandbox::{SandboxConfig, TypedReader, TypedWriter, fork_sandboxed};
-use crate::highlight::{HighlightRect, HighlightSpec};
-use crate::image::LoadedImages;
+use crate::frame::{DocumentMeta, HighlightRect, HighlightSpec, TilePngs};
 use crate::log::{LogBuffer, LogEntry};
 use crate::pipeline::{BuildParams, compile_and_dump, compile_and_tile};
-use crate::tile::DocumentMeta;
-use crate::tile_cache::TilePngs;
 
 pub use crate::fork_sandbox::ChildProcess;
 
@@ -199,7 +197,7 @@ fn prepare_remote_images(
     params: &BuildParams,
     no_sandbox: bool,
     log_buffer: &LogBuffer,
-) -> Result<(crate::pipeline::Prescan, LoadedImages)> {
+) -> Result<(crate::compile::Prescan, LoadedImages)> {
     use crate::fork_sandbox::fork_compute;
 
     // Fork 1: prescan under maximum-restriction sandbox (no FS, no network)
@@ -210,7 +208,7 @@ fn prepare_remote_images(
     };
     let prescan_result = fork_compute(prescan_sandbox, log_buffer, {
         let md = params.markdown.clone();
-        move || crate::pipeline::prescan(&md)
+        move || crate::compile::prescan(&md)
     })?;
     let paths = &prescan_result.image_paths;
 
@@ -224,7 +222,7 @@ fn prepare_remote_images(
         if remote_urls.is_empty() {
             LoadedImages::default()
         } else {
-            let (images, errors) = crate::image::load_images(&remote_urls, None, true);
+            let (images, errors) = crate::compile::load_images(&remote_urls, None, true);
             for err in &errors {
                 log::warn!("{err}");
             }
@@ -273,8 +271,11 @@ pub fn build_renderer(
             log_buf.drain();
 
             // Load local images (Landlock read scope allows git root)
-            let (mut images, errors) =
-                crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
+            let (mut images, errors) = crate::compile::load_images(
+                &prescan.image_paths,
+                params.base_dir.as_deref(),
+                false,
+            );
             for err in &errors {
                 log::warn!("{err}");
             }
@@ -386,7 +387,7 @@ pub fn build_dump(
 
         // Load local images (Landlock read scope allows git root)
         let (mut images, errors) =
-            crate::image::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
+            crate::compile::load_images(&prescan.image_paths, params.base_dir.as_deref(), false);
         for err in &errors {
             log::warn!("{err}");
         }

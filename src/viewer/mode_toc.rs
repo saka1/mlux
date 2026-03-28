@@ -12,7 +12,7 @@ use super::keymap::TocAction;
 use super::layout::{Layout, visual_line_offset};
 use super::query::DocumentQuery;
 use super::{Effect, ViewerMode};
-use crate::visual_line::VisualLine;
+use crate::frame::VisualLine;
 
 /// A single heading entry in the TOC.
 pub(super) struct TocEntry {

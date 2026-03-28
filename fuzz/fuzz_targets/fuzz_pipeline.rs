@@ -3,8 +3,8 @@
 use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
-use mlux::pipeline::{FontCache, MluxWorld, compile_document, markdown_to_typst, render_frame_to_png};
-use mlux::tile::split_frame;
+use mlux::compile::{FontCache, MluxWorld, compile_document, markdown_to_typst, LoadedImages};
+use mlux::frame::{render_frame_to_png, split_frame};
 
 static THEME: &str = include_str!("../../themes/catppuccin.typ");
 static FONTS: OnceLock<FontCache> = OnceLock::new();
@@ -22,7 +22,7 @@ fuzz_target!(|data: &[u8]| {
         &typst_content,
         660.0,
         fonts,
-        mlux::image::LoadedImages::default(),
+        LoadedImages::default(),
     );
 
     let document = match compile_document(&world) {
