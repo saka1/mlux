@@ -12,69 +12,9 @@ pub struct TilePngs {
     pub sidebar: Vec<u8>,
 }
 
-/// Cache for rendered tile PNGs, separated from [`super::tile::TiledDocument`]
-/// to allow concurrent `&TiledDocument` access (e.g., from a prefetch worker
-/// thread) while the main thread owns `&mut TileCache`.
-struct TiledDocumentCache {
-    data: HashMap<usize, TilePngs>,
-}
-
-impl TiledDocumentCache {
-    fn new() -> Self {
-        Self {
-            data: HashMap::new(),
-        }
-    }
-
-    fn get(&self, idx: usize) -> Option<&TilePngs> {
-        self.data.get(&idx)
-    }
-
-    fn contains(&self, idx: usize) -> bool {
-        self.data.contains_key(&idx)
-    }
-
-    fn insert(&mut self, idx: usize, pngs: TilePngs) {
-        self.data.insert(idx, pngs);
-    }
-
-    /// Evict entries far from `center`, keeping only those within `keep_radius`.
-    fn evict_distant(&mut self, center: usize, keep_radius: usize) {
-        let to_evict: Vec<usize> = self
-            .data
-            .keys()
-            .filter(|&&k| (k as isize - center as isize).unsigned_abs() > keep_radius)
-            .copied()
-            .collect();
-        for k in to_evict {
-            self.data.remove(&k);
-            trace!("cache evict tile {}", k);
-        }
-    }
-
-    fn remove(&mut self, idx: usize) -> Option<TilePngs> {
-        self.data.remove(&idx)
-    }
-
-    fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    fn clear(&mut self) {
-        self.data.clear();
-    }
-}
-
 /// Composite cache that pairs rendered tile PNGs with their content hashes.
-///
-/// Encapsulates `TiledDocumentCache` and the hash vector that were previously
-/// managed as separate `Option` fields in the viewer outer loop.
 pub struct TileCache {
-    cache: TiledDocumentCache,
+    cache: HashMap<usize, TilePngs>,
     hashes: Vec<TilePairHash>,
 }
 
@@ -88,7 +28,7 @@ impl TileCache {
     /// Create an empty tile cache.
     pub fn new() -> Self {
         Self {
-            cache: TiledDocumentCache::new(),
+            cache: HashMap::new(),
             hashes: Vec::new(),
         }
     }
@@ -99,10 +39,10 @@ impl TileCache {
     /// same content hash, move the PNG over. Returns the number of recovered
     /// tiles.
     pub fn merge_generation(&mut self, new_hashes: &[TilePairHash]) -> usize {
-        let mut new_cache = TiledDocumentCache::new();
+        let mut new_cache = HashMap::new();
         for (new_idx, new_hash) in new_hashes.iter().enumerate() {
             if let Some(old_idx) = self.hashes.iter().position(|h| h == new_hash)
-                && let Some(pngs) = self.cache.remove(old_idx)
+                && let Some(pngs) = self.cache.remove(&old_idx)
             {
                 new_cache.insert(new_idx, pngs);
             }
@@ -120,11 +60,11 @@ impl TileCache {
     }
 
     pub fn get(&self, idx: usize) -> Option<&TilePngs> {
-        self.cache.get(idx)
+        self.cache.get(&idx)
     }
 
     pub fn contains(&self, idx: usize) -> bool {
-        self.cache.contains(idx)
+        self.cache.contains_key(&idx)
     }
 
     pub fn insert(&mut self, idx: usize, pngs: TilePngs) {
@@ -133,7 +73,16 @@ impl TileCache {
 
     /// Evict entries far from `center`, keeping only those within `keep_radius`.
     pub fn evict_distant(&mut self, center: usize, keep_radius: usize) {
-        self.cache.evict_distant(center, keep_radius);
+        let to_evict: Vec<usize> = self
+            .cache
+            .keys()
+            .filter(|&&k| (k as isize - center as isize).unsigned_abs() > keep_radius)
+            .copied()
+            .collect();
+        for k in to_evict {
+            self.cache.remove(&k);
+            trace!("cache evict tile {}", k);
+        }
     }
 
     pub fn len(&self) -> usize {
