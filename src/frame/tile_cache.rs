@@ -1,21 +1,13 @@
 use std::collections::HashMap;
 
 use log::trace;
-use serde::{Deserialize, Serialize};
 
-use super::tile::TilePairHash;
-
-/// A pair of rendered PNGs: content + sidebar for the same tile index.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TilePngs {
-    pub content: Vec<u8>,
-    pub sidebar: Vec<u8>,
-}
+use super::tile::{TileHash, TilePngs};
 
 /// Composite cache that pairs rendered tile PNGs with their content hashes.
 pub struct TileCache {
     cache: HashMap<usize, TilePngs>,
-    hashes: Vec<TilePairHash>,
+    hashes: Vec<TileHash>,
 }
 
 impl Default for TileCache {
@@ -38,7 +30,7 @@ impl TileCache {
     /// For each tile in the new document, if the old cache has a tile with the
     /// same content hash, move the PNG over. Returns the number of recovered
     /// tiles.
-    pub fn merge_generation(&mut self, new_hashes: &[TilePairHash]) -> usize {
+    pub fn merge_generation(&mut self, new_hashes: &[TileHash]) -> usize {
         let mut new_cache = HashMap::new();
         for (new_idx, new_hash) in new_hashes.iter().enumerate() {
             if let Some(old_idx) = self.hashes.iter().position(|h| h == new_hash)
@@ -97,13 +89,8 @@ impl TileCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::TileHash;
-
-    fn make_hash(v: u8) -> TilePairHash {
-        TilePairHash {
-            content: TileHash::new_for_test(v as u64),
-            sidebar: TileHash::new_for_test(v as u64),
-        }
+    fn make_hash(v: u8) -> TileHash {
+        TileHash::new_for_test(v as u64)
     }
 
     fn make_pngs(tag: u8) -> TilePngs {

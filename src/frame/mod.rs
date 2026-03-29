@@ -12,10 +12,10 @@ pub use highlight::{
 };
 pub use render_png::render_frame_to_png;
 pub use tile::{
-    ContentMapping, DocumentMeta, TileHash, TilePairHash, TiledDocument, VisibleTiles,
-    compute_tile_hash, split_frame,
+    ContentMapping, DocumentMeta, TileHash, TilePngs, TiledDocument, VisibleTiles,
+    compute_tile_pair_hash, split_frame,
 };
-pub use tile_cache::{TileCache, TilePngs};
+pub use tile_cache::TileCache;
 pub use visual_line::{
     VisualLine, byte_offset_to_line, extract_visual_lines, extract_visual_lines_with_map,
 };

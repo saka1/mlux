@@ -9,7 +9,6 @@ use typst::layout::{Abs, Axes, Frame, FrameItem, PagedDocument, Point};
 use typst::syntax::Source;
 use typst::visualize::{Geometry, Paint};
 
-use super::tile_cache::TilePngs;
 use super::visual_line::{VisualLine, pt_to_px};
 use crate::compile::ContentIndex;
 
@@ -134,18 +133,23 @@ impl TileHash {
     }
 }
 
-/// Combined hash of content + sidebar tiles. Both must match for cache reuse.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub struct TilePairHash {
-    pub content: TileHash,
-    pub sidebar: TileHash,
+/// Hash a content + sidebar frame pair into a single [`TileHash`].
+pub fn compute_tile_pair_hash(content: &Frame, sidebar: &Frame) -> TileHash {
+    let mut h = DefaultHasher::new();
+    content.hash(&mut h);
+    sidebar.hash(&mut h);
+    TileHash(h.finish())
 }
 
-/// Hash a Frame using its derive `Hash` impl.
-pub fn compute_tile_hash(frame: &Frame) -> TileHash {
-    let mut h = DefaultHasher::new();
-    frame.hash(&mut h);
-    TileHash(h.finish())
+// ---------------------------------------------------------------------------
+// TilePngs — rendered tile output
+// ---------------------------------------------------------------------------
+
+/// A pair of rendered PNGs: content + sidebar for the same tile index.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TilePngs {
+    pub content: Vec<u8>,
+    pub sidebar: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +186,7 @@ pub struct DocumentMeta {
     pub visual_lines: Vec<VisualLine>,
     /// Per-tile content hashes (tile index order). Empty if not computed.
     #[serde(default)]
-    pub tile_hashes: Vec<TilePairHash>,
+    pub tile_hashes: Vec<TileHash>,
     pub content_index: ContentIndex,
     pub content_offset: usize,
 }
@@ -365,16 +369,13 @@ impl TiledDocument {
     }
 
     /// Compute content hashes for all tile pairs.
-    pub fn compute_tile_hashes(&self) -> Vec<TilePairHash> {
+    pub fn compute_tile_hashes(&self) -> Vec<TileHash> {
         let start = Instant::now();
-        let hashes: Vec<TilePairHash> = self
+        let hashes: Vec<TileHash> = self
             .tiles
             .iter()
             .zip(self.sidebar_tiles.iter())
-            .map(|(content, sidebar)| TilePairHash {
-                content: compute_tile_hash(content),
-                sidebar: compute_tile_hash(sidebar),
-            })
+            .map(|(content, sidebar)| compute_tile_pair_hash(content, sidebar))
             .collect();
         info!(
             "tile: computed {} tile hashes in {:.1}ms",
@@ -439,24 +440,40 @@ mod tests {
         frame
     }
 
+    fn empty_frame() -> Frame {
+        Frame::hard(Axes::new(Abs::pt(1.0), Abs::pt(1.0)))
+    }
+
     #[test]
-    fn compute_tile_hash_same_frame_same_hash() {
+    fn compute_tile_pair_hash_same_frame_same_hash() {
         let f1 = make_test_frame(100.0, 200.0);
         let f2 = make_test_frame(100.0, 200.0);
-        assert_eq!(compute_tile_hash(&f1), compute_tile_hash(&f2));
+        let side = empty_frame();
+        assert_eq!(
+            compute_tile_pair_hash(&f1, &side),
+            compute_tile_pair_hash(&f2, &side),
+        );
     }
 
     #[test]
-    fn compute_tile_hash_different_frame_different_hash() {
+    fn compute_tile_pair_hash_different_frame_different_hash() {
         let f1 = make_test_frame(100.0, 200.0);
         let f2 = make_test_frame(100.0, 201.0);
-        assert_ne!(compute_tile_hash(&f1), compute_tile_hash(&f2));
+        let side = empty_frame();
+        assert_ne!(
+            compute_tile_pair_hash(&f1, &side),
+            compute_tile_pair_hash(&f2, &side),
+        );
     }
 
     #[test]
-    fn compute_tile_hash_empty_frames() {
+    fn compute_tile_pair_hash_empty_frames() {
         let f1 = Frame::hard(Axes::new(Abs::pt(100.0), Abs::pt(100.0)));
         let f2 = Frame::hard(Axes::new(Abs::pt(100.0), Abs::pt(100.0)));
-        assert_eq!(compute_tile_hash(&f1), compute_tile_hash(&f2));
+        let side = empty_frame();
+        assert_eq!(
+            compute_tile_pair_hash(&f1, &side),
+            compute_tile_pair_hash(&f2, &side),
+        );
     }
 }

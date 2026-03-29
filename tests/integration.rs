@@ -1061,11 +1061,11 @@ fn test_inline_code_no_line_overlap() {
 // Content-addressed tile hash / merge tests
 // ---------------------------------------------------------------------------
 
-use mlux::frame::{TileCache, TilePairHash, TilePngs};
+use mlux::frame::{TileCache, TileHash, TilePngs};
 use mlux::pipeline::build_tiled_document;
 
 /// Build a TiledDocument from markdown, returning metadata with hashes.
-fn build_hashes(md: &str) -> Vec<TilePairHash> {
+fn build_hashes(md: &str) -> Vec<TileHash> {
     let font_cache: &'static FontCache = Box::leak(Box::new(FontCache::new()));
     let params = mlux::pipeline::BuildParams {
         theme_spec: "catppuccin".into(),
