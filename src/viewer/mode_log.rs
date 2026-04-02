@@ -7,9 +7,10 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
+use super::Effect;
+use super::effect::ScreenRestore;
 use super::keymap::LogAction;
 use super::layout::Layout;
-use super::{Effect, ViewerMode};
 
 /// Mutable state for log viewer mode.
 pub(super) struct LogState {
@@ -133,7 +134,10 @@ pub(super) fn handle(
                 state.search_mode = false;
                 vec![Effect::RedrawLog]
             } else {
-                vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]
+                vec![
+                    Effect::ExitToNormal(ScreenRestore::FullRefresh),
+                    Effect::MarkDirty,
+                ]
             }
         }
     }
@@ -381,7 +385,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
     }
 

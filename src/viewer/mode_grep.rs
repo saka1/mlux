@@ -9,7 +9,7 @@ use regex::RegexBuilder;
 use std::io::{self, Write, stdout};
 
 use super::Effect;
-use super::ViewerMode;
+use super::effect::ScreenRestore;
 use super::keymap::GrepAction;
 use super::layout::{Layout, visual_line_offset};
 use super::query::DocumentQuery;
@@ -67,11 +67,7 @@ impl LastSearch {
     /// Build from a set of matches and a current index.
     ///
     /// Shared constructor for both Grep and InlineSearch modes.
-    fn from_matches(
-        matches: Vec<SearchMatch>,
-        current_idx: usize,
-        doc: &DocumentQuery,
-    ) -> Self {
+    fn from_matches(matches: Vec<SearchMatch>, current_idx: usize, doc: &DocumentQuery) -> Self {
         let all_md_ranges: Vec<std::ops::Range<usize>> =
             matches.iter().map(|m| m.md_range.clone()).collect();
 
@@ -329,7 +325,10 @@ pub(super) fn handle(
         }
         GrepAction::Backspace => {
             if gs.query.is_empty() {
-                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
+                return vec![
+                    Effect::ExitToNormal(ScreenRestore::FullRefresh),
+                    Effect::MarkDirty,
+                ];
             }
             gs.query.pop();
             update_grep(gs, doc);
@@ -368,12 +367,15 @@ pub(super) fn handle(
                 Effect::SetLastSearch(last),
                 Effect::ScrollTo(y),
                 Effect::Flash(flash),
-                Effect::SetMode(ViewerMode::Normal),
+                Effect::ExitToNormal(ScreenRestore::FullRefresh),
             ]
         }
         GrepAction::Confirm => {
             if gs.matches.is_empty() {
-                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
+                return vec![
+                    Effect::ExitToNormal(ScreenRestore::FullRefresh),
+                    Effect::MarkDirty,
+                ];
             }
             let vl_idx = gs.matches[gs.selected].visual_line_idx;
             let last = LastSearch::from_grep_state(gs, doc);
@@ -384,10 +386,13 @@ pub(super) fn handle(
                 Effect::SetLastSearch(last),
                 Effect::ScrollTo(y),
                 Effect::Flash(flash),
-                Effect::SetMode(ViewerMode::Normal),
+                Effect::ExitToNormal(ScreenRestore::FullRefresh),
             ]
         }
-        GrepAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
+        GrepAction::Cancel => vec![
+            Effect::ExitToNormal(ScreenRestore::FullRefresh),
+            Effect::MarkDirty,
+        ],
     }
 }
 
@@ -550,7 +555,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
         assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
     }
@@ -600,7 +605,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
     }
 
@@ -616,7 +621,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
         assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
     }
@@ -632,7 +637,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
         assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
     }

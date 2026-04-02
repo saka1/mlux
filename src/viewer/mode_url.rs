@@ -9,11 +9,12 @@ use std::io::{self, Write, stdout};
 
 use crate::url::LinkTarget;
 
+use super::Effect;
+use super::effect::ScreenRestore;
 use super::keymap::UrlAction;
 use super::layout::Layout;
 use super::mode_normal::open_link_target;
 use super::query::{DocumentQuery, UrlEntry, extract_urls_from_lines};
-use super::{Effect, ViewerMode};
 
 /// A single entry in the URL picker list.
 pub(super) struct UrlPickerEntry {
@@ -177,16 +178,22 @@ pub(super) fn handle(
         }
         UrlAction::Confirm => {
             if state.entries.is_empty() {
-                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
+                return vec![
+                    Effect::ExitToNormal(ScreenRestore::FullRefresh),
+                    Effect::MarkDirty,
+                ];
             }
             let entry = &state.entries[state.selected];
             let display = entry.target.display_url().to_string();
             let mut effects = open_link_target(&entry.target, current_file);
             effects.push(Effect::Flash(format!("Opening {display}")));
-            effects.push(Effect::SetMode(ViewerMode::Normal));
+            effects.push(Effect::ExitToNormal(ScreenRestore::FullRefresh));
             effects
         }
-        UrlAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
+        UrlAction::Cancel => vec![
+            Effect::ExitToNormal(ScreenRestore::FullRefresh),
+            Effect::MarkDirty,
+        ],
     }
 }
 
@@ -318,7 +325,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
     }
 }

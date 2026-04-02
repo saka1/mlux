@@ -1,9 +1,10 @@
 //! Command mode handler (`:` prompt).
 
+use super::Effect;
 use super::effect::ExitReason;
+use super::effect::{ScreenRestore, ViewerMode};
 use super::keymap::CommandAction;
 use super::mode_grep::GrepState;
-use super::{Effect, ViewerMode};
 
 /// Mutable state for command mode (`:` prompt).
 pub(super) struct CommandState {
@@ -19,7 +20,10 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
         CommandAction::Backspace => {
             if cs.input.is_empty() {
                 // Empty input + Backspace → cancel (vim behavior)
-                vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]
+                vec![
+                    Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
+                    Effect::MarkDirty,
+                ]
             } else {
                 cs.input.pop();
                 vec![Effect::RedrawCommandBar]
@@ -30,7 +34,10 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
             match cmd.as_str() {
                 "" => {
                     // Empty command → just return to normal
-                    vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty]
+                    vec![
+                        Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
+                        Effect::MarkDirty,
+                    ]
                 }
                 "reload" | "rel" => vec![Effect::Exit(ExitReason::ConfigReload)],
                 "q" | "quit" => vec![Effect::Exit(ExitReason::Quit)],
@@ -45,13 +52,16 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
                     ]
                 }
                 _ => vec![
-                    Effect::SetMode(ViewerMode::Normal),
+                    Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
                     Effect::Flash(format!("Unknown command: {cmd}")),
                     Effect::MarkDirty,
                 ],
             }
         }
-        CommandAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
+        CommandAction::Cancel => vec![
+            Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
+            Effect::MarkDirty,
+        ],
     }
 }
 
@@ -78,7 +88,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
         );
     }
 
