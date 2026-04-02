@@ -27,8 +27,9 @@ The built-in terminal viewer then displays the rendered document directly in you
   Requires a terminal that supports the Kitty Graphics Protocol (e.g. Ghostty, Kitty).
 - **Link navigation** -- Press `No` on a local `.md` link to jump to that file (tag-jump).
   `Ctrl-O` returns to the previous file with scroll position restored.
-- **Search** -- Press `/` to grep Markdown source lines with regex. Matches are
-  highlighted directly on the rendered output with pixel-precise overlays.
+- **Search** -- Press `/` for less-style incremental search: type a regex and
+  the view jumps to the first match in real time with pixel-precise overlay
+  highlights. Press `:grep` for a full-screen search picker with a results list.
 - **URL picker** -- Press `O` to list all URLs in the document and open one in your browser.
 - **Yank** -- Copy source lines or blocks to clipboard via OSC 52 (`Ny`, `NY`).
 - **File watching** -- Automatically re-renders when the source file changes.
@@ -78,14 +79,15 @@ mlux --debug input.md
 | `d` / `u` | Half-page down / up |
 | `g` / `G` | Jump to top / bottom |
 | `[N]g` / `[N]G` | Jump to line N |
-| `/` | Search (regex grep) |
+| `/` | Incremental search (less-style, regex) |
 | `n` / `N` | Next / previous search match |
+| `:grep` | Full-screen search picker |
 | `[N]o` | Open URL on line N (jumps to local `.md` files) |
 | `O` | URL picker (all URLs) |
 | `Ctrl-O` | Go back (after link navigation) |
 | `[N]y` / `[N]Y` | Yank line / block N |
 | `t` | Table of contents (heading list + jump) |
-| `:` | Command mode (`:q`, `:reload`, `:open`, `:back`, `:log`) |
+| `:` | Command mode (`:q`, `:reload`, `:grep`, `:open`, `:back`, `:log`) |
 | `q` | Quit |
 
 ## Configuration
