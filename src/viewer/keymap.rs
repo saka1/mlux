@@ -67,7 +67,7 @@ pub(super) enum Action {
     OpenUrlPrompt,
     EnterUrlPicker,
     EnterToc,
-    EnterSearch,
+    EnterInlineSearch,
     EnterCommand,
     SearchNextMatch,
     SearchPrevMatch,
@@ -172,7 +172,7 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
         // 検索
         (KeyCode::Char('/'), _) => {
             acc.reset();
-            Some(Action::EnterSearch)
+            Some(Action::EnterInlineSearch)
         }
         // コマンドモード
         (KeyCode::Char(':'), _) => {
@@ -202,7 +202,7 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
 }
 
 /// Actions specific to search mode.
-pub(super) enum SearchAction {
+pub(super) enum GrepAction {
     Type(char),
     Backspace,
     SelectNext,
@@ -233,6 +233,31 @@ pub(super) fn map_command_key(key: KeyEvent) -> Option<CommandAction> {
         (KeyCode::Enter, _) => Some(CommandAction::Execute),
         (KeyCode::Backspace, _) => Some(CommandAction::Backspace),
         (KeyCode::Char(c), _) => Some(CommandAction::Type(c)),
+        _ => None,
+    }
+}
+
+/// Actions specific to inline search mode (`/` prompt).
+pub(super) enum InlineSearchAction {
+    Type(char),
+    Backspace,
+    Confirm,
+    Cancel,
+}
+
+/// Map a key event to an inline search action.
+pub(super) fn map_inline_search_key(key: KeyEvent) -> Option<InlineSearchAction> {
+    let KeyEvent {
+        code, modifiers, ..
+    } = key;
+
+    match (code, modifiers) {
+        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            Some(InlineSearchAction::Cancel)
+        }
+        (KeyCode::Enter, _) => Some(InlineSearchAction::Confirm),
+        (KeyCode::Backspace, _) => Some(InlineSearchAction::Backspace),
+        (KeyCode::Char(c), _) => Some(InlineSearchAction::Type(c)),
         _ => None,
     }
 }
@@ -331,23 +356,21 @@ pub(super) fn map_url_key(key: KeyEvent) -> Option<UrlAction> {
 }
 
 /// Map a key event to a search-mode action.
-pub(super) fn map_search_key(key: KeyEvent) -> Option<SearchAction> {
+pub(super) fn map_grep_key(key: KeyEvent) -> Option<GrepAction> {
     let KeyEvent {
         code, modifiers, ..
     } = key;
 
     match (code, modifiers) {
-        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            Some(SearchAction::Cancel)
-        }
-        (KeyCode::Enter, _) => Some(SearchAction::Confirm),
-        (KeyCode::Backspace, _) => Some(SearchAction::Backspace),
-        (KeyCode::Down, _) => Some(SearchAction::SelectNext),
-        (KeyCode::Up, _) => Some(SearchAction::SelectPrev),
+        (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(GrepAction::Cancel),
+        (KeyCode::Enter, _) => Some(GrepAction::Confirm),
+        (KeyCode::Backspace, _) => Some(GrepAction::Backspace),
+        (KeyCode::Down, _) => Some(GrepAction::SelectNext),
+        (KeyCode::Up, _) => Some(GrepAction::SelectPrev),
         (KeyCode::Char(c @ '1'..='9'), KeyModifiers::ALT) => {
-            Some(SearchAction::SelectIndex((c as u8 - b'1') as usize))
+            Some(GrepAction::SelectIndex((c as u8 - b'1') as usize))
         }
-        (KeyCode::Char(c), _) => Some(SearchAction::Type(c)),
+        (KeyCode::Char(c), _) => Some(GrepAction::Type(c)),
         _ => None,
     }
 }
@@ -505,10 +528,10 @@ mod tests {
     // --- Search: normal mode entry ---
 
     #[test]
-    fn test_slash_enters_search() {
+    fn test_slash_enters_inline_search() {
         let mut acc = InputAccumulator::new();
         let a = map_key_event(simple_key(KeyCode::Char('/')), &mut acc);
-        assert!(matches!(a, Some(Action::EnterSearch)));
+        assert!(matches!(a, Some(Action::EnterInlineSearch)));
     }
 
     #[test]
@@ -534,74 +557,106 @@ mod tests {
         assert!(matches!(a, Some(Action::SearchPrevMatch)));
     }
 
-    // --- Search mode: map_search_key ---
+    // --- Search mode: map_grep_key ---
 
     #[test]
     fn test_search_type_char() {
-        let a = map_search_key(simple_key(KeyCode::Char('a')));
-        assert!(matches!(a, Some(SearchAction::Type('a'))));
+        let a = map_grep_key(simple_key(KeyCode::Char('a')));
+        assert!(matches!(a, Some(GrepAction::Type('a'))));
     }
 
     #[test]
     fn test_search_backspace() {
-        let a = map_search_key(simple_key(KeyCode::Backspace));
-        assert!(matches!(a, Some(SearchAction::Backspace)));
+        let a = map_grep_key(simple_key(KeyCode::Backspace));
+        assert!(matches!(a, Some(GrepAction::Backspace)));
     }
 
     #[test]
     fn test_search_select_next_down() {
-        let a = map_search_key(simple_key(KeyCode::Down));
-        assert!(matches!(a, Some(SearchAction::SelectNext)));
+        let a = map_grep_key(simple_key(KeyCode::Down));
+        assert!(matches!(a, Some(GrepAction::SelectNext)));
     }
 
     #[test]
     fn test_search_select_prev_up() {
-        let a = map_search_key(simple_key(KeyCode::Up));
-        assert!(matches!(a, Some(SearchAction::SelectPrev)));
+        let a = map_grep_key(simple_key(KeyCode::Up));
+        assert!(matches!(a, Some(GrepAction::SelectPrev)));
     }
 
     #[test]
     fn test_search_confirm() {
-        let a = map_search_key(simple_key(KeyCode::Enter));
-        assert!(matches!(a, Some(SearchAction::Confirm)));
+        let a = map_grep_key(simple_key(KeyCode::Enter));
+        assert!(matches!(a, Some(GrepAction::Confirm)));
     }
 
     #[test]
     fn test_search_cancel_esc() {
-        let a = map_search_key(simple_key(KeyCode::Esc));
-        assert!(matches!(a, Some(SearchAction::Cancel)));
+        let a = map_grep_key(simple_key(KeyCode::Esc));
+        assert!(matches!(a, Some(GrepAction::Cancel)));
     }
 
     #[test]
     fn test_search_cancel_ctrl_c() {
-        let a = map_search_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(matches!(a, Some(SearchAction::Cancel)));
+        let a = map_grep_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(GrepAction::Cancel)));
     }
 
     #[test]
     fn test_search_unknown_returns_none() {
-        let a = map_search_key(simple_key(KeyCode::Tab));
+        let a = map_grep_key(simple_key(KeyCode::Tab));
         assert!(a.is_none());
     }
 
     #[test]
     fn test_search_alt_digit_selects_index() {
         let e = key(KeyCode::Char('1'), KeyModifiers::ALT);
-        assert!(matches!(
-            map_search_key(e),
-            Some(SearchAction::SelectIndex(0))
-        ));
+        assert!(matches!(map_grep_key(e), Some(GrepAction::SelectIndex(0))));
         let e = key(KeyCode::Char('9'), KeyModifiers::ALT);
-        assert!(matches!(
-            map_search_key(e),
-            Some(SearchAction::SelectIndex(8))
-        ));
+        assert!(matches!(map_grep_key(e), Some(GrepAction::SelectIndex(8))));
     }
 
     #[test]
     fn test_search_alt_digit_not_plain_digit() {
         let e = key(KeyCode::Char('1'), KeyModifiers::NONE);
-        assert!(matches!(map_search_key(e), Some(SearchAction::Type('1'))));
+        assert!(matches!(map_grep_key(e), Some(GrepAction::Type('1'))));
+    }
+
+    // --- InlineSearch mode: map_inline_search_key ---
+
+    #[test]
+    fn inline_search_type_char() {
+        let a = map_inline_search_key(simple_key(KeyCode::Char('a')));
+        assert!(matches!(a, Some(InlineSearchAction::Type('a'))));
+    }
+
+    #[test]
+    fn inline_search_backspace() {
+        let a = map_inline_search_key(simple_key(KeyCode::Backspace));
+        assert!(matches!(a, Some(InlineSearchAction::Backspace)));
+    }
+
+    #[test]
+    fn inline_search_confirm() {
+        let a = map_inline_search_key(simple_key(KeyCode::Enter));
+        assert!(matches!(a, Some(InlineSearchAction::Confirm)));
+    }
+
+    #[test]
+    fn inline_search_cancel_esc() {
+        let a = map_inline_search_key(simple_key(KeyCode::Esc));
+        assert!(matches!(a, Some(InlineSearchAction::Cancel)));
+    }
+
+    #[test]
+    fn inline_search_cancel_ctrl_c() {
+        let a = map_inline_search_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(InlineSearchAction::Cancel)));
+    }
+
+    #[test]
+    fn inline_search_unknown_returns_none() {
+        let a = map_inline_search_key(simple_key(KeyCode::Tab));
+        assert!(a.is_none());
     }
 
     // --- TOC mode ---

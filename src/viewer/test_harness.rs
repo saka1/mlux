@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::display_state::DisplayState;
 use super::effect::{Effect, RenderOp, ViewerMode};
 use super::keymap::{
-    InputAccumulator, map_command_key, map_key_event, map_log_key, map_search_key, map_toc_key,
+    InputAccumulator, map_command_key, map_grep_key, map_key_event, map_log_key, map_toc_key,
     map_url_key,
 };
 use super::layout::{self, Layout, ScrollState};
@@ -127,11 +127,15 @@ impl TestHarness {
                 }
                 None => vec![],
             },
-            ViewerMode::Search(ss) => match map_search_key(key) {
+            ViewerMode::Grep(gs) => match map_grep_key(key) {
                 Some(a) => {
                     let visible_count = (self.layout.status_row - 1) as usize;
-                    super::mode_search::handle(a, ss, &doc, visible_count, max_y)
+                    super::mode_grep::handle(a, gs, &doc, visible_count, max_y)
                 }
+                None => vec![],
+            },
+            ViewerMode::InlineSearch(is) => match super::keymap::map_inline_search_key(key) {
+                Some(a) => super::mode_inline_search::handle(a, is, &doc, max_y),
                 None => vec![],
             },
             ViewerMode::Command(cs) => match map_command_key(key) {
@@ -269,8 +273,8 @@ mod tests {
     fn entering_search_emits_draw() {
         let mut h = TestHarness::new("# Hello\n", 80, 24);
         let ops = h.feed_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert!(ops.iter().any(|op| matches!(op, RenderOp::DrawModeScreen)));
-        assert!(matches!(h.viewport.mode, ViewerMode::Search(_)));
+        assert!(ops.iter().any(|op| matches!(op, RenderOp::DrawStatusBar)));
+        assert!(matches!(h.viewport.mode, ViewerMode::InlineSearch(_)));
     }
 
     #[test]

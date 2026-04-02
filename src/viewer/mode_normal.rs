@@ -9,7 +9,8 @@ use super::effect::ExitReason;
 use super::keymap::Action;
 use super::layout::{ScrollState, visual_line_offset};
 use super::mode_command::CommandState;
-use super::mode_search::{LastSearch, SearchState};
+use super::mode_grep::LastSearch;
+use super::mode_inline_search::InlineSearchState;
 use super::mode_toc::{TocState, collect_headings};
 use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
 use super::query::DocumentQuery;
@@ -99,12 +100,9 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
             vec![Effect::ScrollTo(y)]
         }
 
-        Action::EnterSearch => {
-            let ss = SearchState::new();
-            vec![
-                Effect::DeletePlacements,
-                Effect::SetMode(ViewerMode::Search(ss)),
-            ]
+        Action::EnterInlineSearch => {
+            let is = InlineSearchState::new(ctx.scroll.y_offset);
+            vec![Effect::SetMode(ViewerMode::InlineSearch(is))]
         }
 
         Action::EnterCommand => {
@@ -428,17 +426,19 @@ mod tests {
     }
 
     #[test]
-    fn enter_search_deletes_placements_and_sets_mode() {
-        let state = make_state(0);
+    fn enter_inline_search_sets_mode_and_saves_scroll() {
+        let state = make_state(42);
         let vls = vec![make_vl(0)];
         let ci = empty_ci();
         let doc = DocumentQuery::new("", &vls, &ci, 0);
         let mut ls = None;
         let mut ctx = make_ctx(&state, &doc, &mut ls);
-        let effects = handle(Action::EnterSearch, &mut ctx);
-        assert_eq!(effects.len(), 2);
-        assert!(matches!(effects[0], Effect::DeletePlacements));
-        assert!(matches!(effects[1], Effect::SetMode(ViewerMode::Search(_))));
+        let effects = handle(Action::EnterInlineSearch, &mut ctx);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(
+            effects[0],
+            Effect::SetMode(ViewerMode::InlineSearch(_))
+        ));
     }
 
     #[test]
