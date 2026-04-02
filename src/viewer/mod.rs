@@ -22,9 +22,10 @@ mod effect;
 mod keymap;
 mod layout;
 mod mode_command;
+mod mode_grep;
+mod mode_inline_search;
 mod mode_log;
 mod mode_normal;
-mod mode_search;
 mod mode_toc;
 mod mode_url;
 pub mod query;
@@ -55,8 +56,8 @@ use crate::watch::FileWatcher;
 use display_state::{DisplayState, ForkHandle};
 use effect::{Effect, ExitReason, ViewerMode};
 use keymap::{
-    InputAccumulator, map_command_key, map_key_event, map_log_key, map_search_key, map_toc_key,
-    map_url_key,
+    InputAccumulator, map_command_key, map_grep_key, map_inline_search_key, map_key_event,
+    map_log_key, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
 use query::DocumentQuery;
@@ -347,14 +348,20 @@ pub fn run(
                                     }
                                     None => vec![],
                                 },
-                                ViewerMode::Search(ss) => match map_search_key(key_event) {
+                                ViewerMode::Grep(gs) => match map_grep_key(key_event) {
                                     Some(a) => {
                                         let visible_count =
                                             (session.layout.status_row - 1) as usize;
-                                        mode_search::handle(a, ss, &doc, visible_count, max_y)
+                                        mode_grep::handle(a, gs, &doc, visible_count, max_y)
                                     }
                                     None => vec![],
                                 },
+                                ViewerMode::InlineSearch(is) => {
+                                    match map_inline_search_key(key_event) {
+                                        Some(a) => mode_inline_search::handle(a, is, &doc, max_y),
+                                        None => vec![],
+                                    }
+                                }
                                 ViewerMode::Command(cs) => match map_command_key(key_event) {
                                     Some(a) => mode_command::handle(a, cs),
                                     None => vec![],
@@ -437,7 +444,18 @@ pub fn run(
 
                 // poll timeout → frame budget elapsed, execute redraw
                 if vp.dirty {
-                    let search_spec = vp.last_search.as_ref().map(|ls| ls.highlight_spec());
+                    let doc = DocumentQuery::new(
+                        &markdown,
+                        &meta.visual_lines,
+                        &meta.content_index,
+                        meta.content_offset,
+                    );
+                    let search_spec = match &vp.mode {
+                        ViewerMode::InlineSearch(is) if !is.matches.is_empty() => {
+                            Some(is.highlight_spec(&doc))
+                        }
+                        _ => vp.last_search.as_ref().map(|ls| ls.highlight_spec()),
+                    };
                     display_state::redraw_and_prefetch(
                         &meta,
                         &mut tile_cache,

@@ -10,7 +10,7 @@ use std::io::{self, Write, stdout};
 
 use super::Effect;
 use super::ViewerMode;
-use super::keymap::SearchAction;
+use super::keymap::GrepAction;
 use super::layout::{Layout, visual_line_offset};
 use super::query::DocumentQuery;
 
@@ -31,8 +31,8 @@ pub(super) struct SearchMatch {
     pub md_range: std::ops::Range<usize>,
 }
 
-/// Mutable search state while in search mode.
-pub(super) struct SearchState {
+/// Mutable state while in grep mode.
+pub(super) struct GrepState {
     pub query: String,
     pub matches: Vec<SearchMatch>,
     pub selected: usize,
@@ -40,7 +40,7 @@ pub(super) struct SearchState {
     pub pattern_valid: bool,
 }
 
-impl SearchState {
+impl GrepState {
     pub(super) fn new() -> Self {
         Self {
             query: String::new(),
@@ -64,12 +64,16 @@ pub(super) struct LastSearch {
 }
 
 impl LastSearch {
-    /// Create from a completed SearchState, using the selected match as current.
+    /// Build from a set of matches and a current index.
     ///
-    /// Computes per-match ranges and caches the combined target_ranges.
-    pub(super) fn from_search_state(ss: &SearchState, doc: &DocumentQuery) -> Self {
+    /// Shared constructor for both Grep and InlineSearch modes.
+    fn from_matches(
+        matches: Vec<SearchMatch>,
+        current_idx: usize,
+        doc: &DocumentQuery,
+    ) -> Self {
         let all_md_ranges: Vec<std::ops::Range<usize>> =
-            ss.matches.iter().map(|m| m.md_range.clone()).collect();
+            matches.iter().map(|m| m.md_range.clone()).collect();
 
         let per_match_ranges: Vec<Vec<std::ops::Range<usize>>> = all_md_ranges
             .iter()
@@ -87,11 +91,24 @@ impl LastSearch {
                 .md_to_main_ranges(&all_md_ranges, doc.markdown, doc.content_offset);
 
         Self {
-            matches: ss.matches.clone(),
-            current_idx: ss.selected,
+            matches,
+            current_idx,
             target_ranges,
             per_match_ranges,
         }
+    }
+
+    /// Create from a completed GrepState, using the selected match as current.
+    pub(super) fn from_grep_state(gs: &GrepState, doc: &DocumentQuery) -> Self {
+        Self::from_matches(gs.matches.clone(), gs.selected, doc)
+    }
+
+    /// Create from a completed InlineSearchState.
+    pub(super) fn from_inline_search(
+        is: &super::mode_inline_search::InlineSearchState,
+        doc: &DocumentQuery,
+    ) -> Self {
+        Self::from_matches(is.matches.clone(), is.current_idx, doc)
     }
 
     /// Build a highlight spec with `active_ranges` set to the current match.
@@ -298,55 +315,55 @@ pub(super) fn draw_search_screen(
 }
 
 pub(super) fn handle(
-    action: SearchAction,
-    ss: &mut SearchState,
+    action: GrepAction,
+    gs: &mut GrepState,
     doc: &DocumentQuery,
     visible_count: usize,
     max_scroll: u32,
 ) -> Vec<Effect> {
     match action {
-        SearchAction::Type(c) => {
-            ss.query.push(c);
-            update_grep(ss, doc);
-            vec![Effect::RedrawSearch]
+        GrepAction::Type(c) => {
+            gs.query.push(c);
+            update_grep(gs, doc);
+            vec![Effect::RedrawGrep]
         }
-        SearchAction::Backspace => {
-            if ss.query.is_empty() {
+        GrepAction::Backspace => {
+            if gs.query.is_empty() {
                 return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
             }
-            ss.query.pop();
-            update_grep(ss, doc);
-            vec![Effect::RedrawSearch]
+            gs.query.pop();
+            update_grep(gs, doc);
+            vec![Effect::RedrawGrep]
         }
-        SearchAction::SelectNext => {
-            if !ss.matches.is_empty() {
-                ss.selected = (ss.selected + 1).min(ss.matches.len() - 1);
-                if ss.selected >= ss.scroll_offset + visible_count {
-                    ss.scroll_offset = ss.selected - visible_count + 1;
+        GrepAction::SelectNext => {
+            if !gs.matches.is_empty() {
+                gs.selected = (gs.selected + 1).min(gs.matches.len() - 1);
+                if gs.selected >= gs.scroll_offset + visible_count {
+                    gs.scroll_offset = gs.selected - visible_count + 1;
                 }
             }
-            vec![Effect::RedrawSearch]
+            vec![Effect::RedrawGrep]
         }
-        SearchAction::SelectPrev => {
-            if !ss.matches.is_empty() {
-                ss.selected = ss.selected.saturating_sub(1);
-                if ss.selected < ss.scroll_offset {
-                    ss.scroll_offset = ss.selected;
+        GrepAction::SelectPrev => {
+            if !gs.matches.is_empty() {
+                gs.selected = gs.selected.saturating_sub(1);
+                if gs.selected < gs.scroll_offset {
+                    gs.scroll_offset = gs.selected;
                 }
             }
-            vec![Effect::RedrawSearch]
+            vec![Effect::RedrawGrep]
         }
-        SearchAction::SelectIndex(n) => {
-            let target = ss.scroll_offset + n;
-            if target >= ss.matches.len() {
-                return vec![Effect::RedrawSearch];
+        GrepAction::SelectIndex(n) => {
+            let target = gs.scroll_offset + n;
+            if target >= gs.matches.len() {
+                return vec![Effect::RedrawGrep];
             }
-            ss.selected = target;
-            let vl_idx = ss.matches[ss.selected].visual_line_idx;
-            let last = LastSearch::from_search_state(ss, doc);
+            gs.selected = target;
+            let vl_idx = gs.matches[gs.selected].visual_line_idx;
+            let last = LastSearch::from_grep_state(gs, doc);
             let line_num = (vl_idx + 1) as u32;
             let y = visual_line_offset(doc.visual_lines, max_scroll, line_num);
-            let flash = format!("match {}/{}", ss.selected + 1, ss.matches.len());
+            let flash = format!("match {}/{}", gs.selected + 1, gs.matches.len());
             vec![
                 Effect::SetLastSearch(last),
                 Effect::ScrollTo(y),
@@ -354,15 +371,15 @@ pub(super) fn handle(
                 Effect::SetMode(ViewerMode::Normal),
             ]
         }
-        SearchAction::Confirm => {
-            if ss.matches.is_empty() {
+        GrepAction::Confirm => {
+            if gs.matches.is_empty() {
                 return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
             }
-            let vl_idx = ss.matches[ss.selected].visual_line_idx;
-            let last = LastSearch::from_search_state(ss, doc);
+            let vl_idx = gs.matches[gs.selected].visual_line_idx;
+            let last = LastSearch::from_grep_state(gs, doc);
             let line_num = (vl_idx + 1) as u32;
             let y = visual_line_offset(doc.visual_lines, max_scroll, line_num);
-            let flash = format!("match {}/{}", ss.selected + 1, ss.matches.len());
+            let flash = format!("match {}/{}", gs.selected + 1, gs.matches.len());
             vec![
                 Effect::SetLastSearch(last),
                 Effect::ScrollTo(y),
@@ -370,17 +387,17 @@ pub(super) fn handle(
                 Effect::SetMode(ViewerMode::Normal),
             ]
         }
-        SearchAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
+        GrepAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
     }
 }
 
 /// Re-run grep on the current query and reset selection.
-fn update_grep(ss: &mut SearchState, doc: &DocumentQuery) {
-    let (matches, valid) = grep_markdown(doc, &ss.query);
-    ss.matches = matches;
-    ss.pattern_valid = valid;
-    ss.selected = 0;
-    ss.scroll_offset = 0;
+fn update_grep(gs: &mut GrepState, doc: &DocumentQuery) {
+    let (matches, valid) = grep_markdown(doc, &gs.query);
+    gs.matches = matches;
+    gs.pattern_valid = valid;
+    gs.selected = 0;
+    gs.scroll_offset = 0;
 }
 
 #[cfg(test)]
@@ -485,12 +502,12 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        ss.query = "foo".into();
-        let (matches, _) = grep_markdown(&doc, &ss.query);
-        ss.matches = matches;
+        let mut gs = GrepState::new();
+        gs.query = "foo".into();
+        let (matches, _) = grep_markdown(&doc, &gs.query);
+        gs.matches = matches;
 
-        let ls = LastSearch::from_search_state(&ss, &doc);
+        let ls = LastSearch::from_grep_state(&gs, &doc);
         assert_eq!(ls.per_match_ranges.len(), ls.matches.len());
     }
 
@@ -502,11 +519,11 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        let effects = handle(SearchAction::Type('h'), &mut ss, &doc, 20, 1000);
-        assert_eq!(ss.query, "h");
-        assert!(!ss.matches.is_empty()); // "hello" matches
-        assert!(matches!(effects[0], Effect::RedrawSearch));
+        let mut gs = GrepState::new();
+        let effects = handle(GrepAction::Type('h'), &mut gs, &doc, 20, 1000);
+        assert_eq!(gs.query, "h");
+        assert!(!gs.matches.is_empty()); // "hello" matches
+        assert!(matches!(effects[0], Effect::RedrawGrep));
     }
 
     #[test]
@@ -515,11 +532,11 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        ss.query = "he".into();
-        let effects = handle(SearchAction::Backspace, &mut ss, &doc, 20, 1000);
-        assert_eq!(ss.query, "h");
-        assert!(matches!(effects[0], Effect::RedrawSearch));
+        let mut gs = GrepState::new();
+        gs.query = "he".into();
+        let effects = handle(GrepAction::Backspace, &mut gs, &doc, 20, 1000);
+        assert_eq!(gs.query, "h");
+        assert!(matches!(effects[0], Effect::RedrawGrep));
     }
 
     #[test]
@@ -528,8 +545,8 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        let effects = handle(SearchAction::Backspace, &mut ss, &doc, 20, 1000);
+        let mut gs = GrepState::new();
+        let effects = handle(GrepAction::Backspace, &mut gs, &doc, 20, 1000);
         assert!(
             effects
                 .iter()
@@ -544,12 +561,12 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
+        let mut gs = GrepState::new();
         // Pre-populate with matches
-        handle(SearchAction::Type('a'), &mut ss, &doc, 20, 1000);
-        assert_eq!(ss.selected, 0);
-        handle(SearchAction::SelectNext, &mut ss, &doc, 20, 1000);
-        assert_eq!(ss.selected, 1);
+        handle(GrepAction::Type('a'), &mut gs, &doc, 20, 1000);
+        assert_eq!(gs.selected, 0);
+        handle(GrepAction::SelectNext, &mut gs, &doc, 20, 1000);
+        assert_eq!(gs.selected, 1);
     }
 
     #[test]
@@ -558,11 +575,11 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        handle(SearchAction::Type('a'), &mut ss, &doc, 20, 1000);
-        assert_eq!(ss.selected, 0);
-        handle(SearchAction::SelectPrev, &mut ss, &doc, 20, 1000);
-        assert_eq!(ss.selected, 0);
+        let mut gs = GrepState::new();
+        handle(GrepAction::Type('a'), &mut gs, &doc, 20, 1000);
+        assert_eq!(gs.selected, 0);
+        handle(GrepAction::SelectPrev, &mut gs, &doc, 20, 1000);
+        assert_eq!(gs.selected, 0);
     }
 
     #[test]
@@ -571,9 +588,9 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        handle(SearchAction::Type('h'), &mut ss, &doc, 20, 1000);
-        let effects = handle(SearchAction::Confirm, &mut ss, &doc, 20, 1000);
+        let mut gs = GrepState::new();
+        handle(GrepAction::Type('h'), &mut gs, &doc, 20, 1000);
+        let effects = handle(GrepAction::Confirm, &mut gs, &doc, 20, 1000);
         assert!(
             effects
                 .iter()
@@ -593,9 +610,9 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
+        let mut gs = GrepState::new();
         // No matches (empty query)
-        let effects = handle(SearchAction::Confirm, &mut ss, &doc, 20, 1000);
+        let effects = handle(GrepAction::Confirm, &mut gs, &doc, 20, 1000);
         assert!(
             effects
                 .iter()
@@ -610,8 +627,8 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
-        let effects = handle(SearchAction::Cancel, &mut ss, &doc, 20, 1000);
+        let mut gs = GrepState::new();
+        let effects = handle(GrepAction::Cancel, &mut gs, &doc, 20, 1000);
         assert!(
             effects
                 .iter()
@@ -626,16 +643,16 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut ss = SearchState::new();
+        let mut gs = GrepState::new();
         // Search with visible_count = 2 (only 2 rows visible)
-        handle(SearchAction::Type('a'), &mut ss, &doc, 2, 1000);
+        handle(GrepAction::Type('a'), &mut gs, &doc, 2, 1000);
         // This matches only line 1, so we need a query that matches all
-        ss.query.clear();
-        handle(SearchAction::Type('.'), &mut ss, &doc, 2, 1000);
-        assert_eq!(ss.matches.len(), 5);
-        handle(SearchAction::SelectNext, &mut ss, &doc, 2, 1000);
-        handle(SearchAction::SelectNext, &mut ss, &doc, 2, 1000);
+        gs.query.clear();
+        handle(GrepAction::Type('.'), &mut gs, &doc, 2, 1000);
+        assert_eq!(gs.matches.len(), 5);
+        handle(GrepAction::SelectNext, &mut gs, &doc, 2, 1000);
+        handle(GrepAction::SelectNext, &mut gs, &doc, 2, 1000);
         // selected=2, visible_count=2, should scroll
-        assert!(ss.scroll_offset > 0);
+        assert!(gs.scroll_offset > 0);
     }
 }

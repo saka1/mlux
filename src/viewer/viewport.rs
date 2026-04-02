@@ -9,8 +9,8 @@ use log::debug;
 use super::display_state::DisplayState;
 use super::effect::{Effect, ExitReason, RenderOp, ViewerMode};
 use super::layout::ScrollState;
+use super::mode_grep::LastSearch;
 use super::mode_log::LogState;
-use super::mode_search::LastSearch;
 use super::mode_url::{self, UrlPickerState};
 use super::query::DocumentQuery;
 use super::session::JumpEntry;
@@ -89,8 +89,8 @@ impl Viewport {
             Effect::RedrawStatusBar => {
                 ops.push(RenderOp::DrawStatusBar);
             }
-            Effect::RedrawSearch => {
-                if matches!(self.mode, ViewerMode::Search(_)) {
+            Effect::RedrawGrep => {
+                if matches!(self.mode, ViewerMode::Grep(_)) {
                     ops.push(RenderOp::DrawModeScreen);
                 }
             }
@@ -109,6 +109,11 @@ impl Viewport {
                     ops.push(RenderOp::DrawModeScreen);
                 }
             }
+            Effect::RedrawInlineSearch => {
+                if matches!(self.mode, ViewerMode::InlineSearch(_)) {
+                    ops.push(RenderOp::DrawStatusBar);
+                }
+            }
             Effect::RedrawLog => {
                 if matches!(self.mode, ViewerMode::Log(_)) {
                     ops.push(RenderOp::DrawModeScreen);
@@ -122,12 +127,16 @@ impl Viewport {
             }
             Effect::SetMode(m) => {
                 match &m {
-                    ViewerMode::Search(_)
+                    ViewerMode::Grep(_)
                     | ViewerMode::Command(_)
                     | ViewerMode::UrlPicker(_)
                     | ViewerMode::Toc(_)
                     | ViewerMode::Log(_) => {
                         ops.push(RenderOp::DrawModeScreen);
+                    }
+                    ViewerMode::InlineSearch(_) => {
+                        // InlineSearch keeps document visible — just redraw status bar
+                        ops.push(RenderOp::DrawStatusBar);
                     }
                     ViewerMode::Normal => {
                         // Clear text from search/command screen and

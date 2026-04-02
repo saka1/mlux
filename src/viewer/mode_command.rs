@@ -2,6 +2,7 @@
 
 use super::effect::ExitReason;
 use super::keymap::CommandAction;
+use super::mode_grep::GrepState;
 use super::{Effect, ViewerMode};
 
 /// Mutable state for command mode (`:` prompt).
@@ -36,6 +37,13 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
                 "back" | "b" => vec![Effect::Exit(ExitReason::GoBack)],
                 "open" => vec![Effect::EnterUrlPickerAll],
                 "log" => vec![Effect::EnterLog],
+                "grep" | "g" => {
+                    let gs = GrepState::new();
+                    vec![
+                        Effect::DeletePlacements,
+                        Effect::SetMode(ViewerMode::Grep(gs)),
+                    ]
+                }
                 _ => vec![
                     Effect::SetMode(ViewerMode::Normal),
                     Effect::Flash(format!("Unknown command: {cmd}")),
@@ -105,6 +113,35 @@ mod tests {
         };
         let effects = handle(CommandAction::Execute, &mut cs);
         assert!(effects.iter().any(|e| matches!(e, Effect::EnterLog)));
+    }
+
+    #[test]
+    fn execute_grep() {
+        let mut cs = CommandState {
+            input: "grep".into(),
+        };
+        let effects = handle(CommandAction::Execute, &mut cs);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::DeletePlacements))
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Grep(_))))
+        );
+    }
+
+    #[test]
+    fn execute_g_alias() {
+        let mut cs = CommandState { input: "g".into() };
+        let effects = handle(CommandAction::Execute, &mut cs);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Grep(_))))
+        );
     }
 
     #[test]

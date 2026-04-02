@@ -7,8 +7,9 @@
 //! Persistent session state lives in `session.rs`.
 
 use super::mode_command::CommandState;
+use super::mode_grep::{self, GrepState, LastSearch};
+use super::mode_inline_search::InlineSearchState;
 use super::mode_log::{self, LogState};
-use super::mode_search::{self, LastSearch, SearchState};
 use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
 use super::terminal;
@@ -28,7 +29,8 @@ pub(super) enum ExitReason {
 /// Viewer mode: normal (tile display), search (picker UI), command (`:` prompt), URL picker, or log viewer.
 pub(super) enum ViewerMode {
     Normal,
-    Search(SearchState),
+    Grep(GrepState),
+    InlineSearch(InlineSearchState),
     Command(CommandState),
     UrlPicker(UrlPickerState),
     Toc(TocState),
@@ -44,10 +46,11 @@ pub(super) enum Effect {
     MarkDirty,
     Flash(String),
     RedrawStatusBar,
-    RedrawSearch,
+    RedrawGrep,
     RedrawCommandBar,
     RedrawUrlPicker,
     RedrawToc,
+    RedrawInlineSearch,
     RedrawLog,
     Yank(String),
     OpenExternalUrl(String),
@@ -91,23 +94,32 @@ pub(super) fn execute_render_ops(
     for op in ops {
         match op {
             RenderOp::DrawStatusBar => {
-                terminal::draw_status_bar(
-                    ctx.layout,
-                    &vp.scroll,
-                    ctx.filename,
-                    ctx.acc_value,
-                    vp.flash.as_deref(),
-                )?;
+                if let ViewerMode::InlineSearch(is) = &vp.mode {
+                    terminal::draw_inline_search_bar(
+                        ctx.layout,
+                        &is.query,
+                        is.current_idx,
+                        is.matches.len(),
+                    )?;
+                } else {
+                    terminal::draw_status_bar(
+                        ctx.layout,
+                        &vp.scroll,
+                        ctx.filename,
+                        ctx.acc_value,
+                        vp.flash.as_deref(),
+                    )?;
+                }
             }
             RenderOp::DrawModeScreen => match &vp.mode {
-                ViewerMode::Search(ss) => {
-                    mode_search::draw_search_screen(
+                ViewerMode::Grep(gs) => {
+                    mode_grep::draw_search_screen(
                         ctx.layout,
-                        &ss.query,
-                        &ss.matches,
-                        ss.selected,
-                        ss.scroll_offset,
-                        ss.pattern_valid,
+                        &gs.query,
+                        &gs.matches,
+                        gs.selected,
+                        gs.scroll_offset,
+                        gs.pattern_valid,
                     )?;
                 }
                 ViewerMode::Command(cs) => {
@@ -121,6 +133,9 @@ pub(super) fn execute_render_ops(
                 }
                 ViewerMode::Log(ls) => {
                     mode_log::draw_log_screen(ctx.layout, ls)?;
+                }
+                ViewerMode::InlineSearch(_) => {
+                    // InlineSearch doesn't use DrawModeScreen — it draws via status bar
                 }
                 ViewerMode::Normal => {}
             },
