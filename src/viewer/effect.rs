@@ -37,6 +37,15 @@ pub(super) enum ViewerMode {
     Log(LogState),
 }
 
+/// How to restore the screen when returning to Normal mode.
+/// The exiting mode chooses the appropriate variant.
+pub(super) enum ScreenRestore {
+    /// Full-screen mode occupied the entire screen: ClearScreen + DeleteAllImages + clear_all.
+    FullRefresh,
+    /// Only the status bar was modified: redraw status bar only.
+    StatusBarRefresh,
+}
+
 /// Side-effect descriptors produced by mode handlers.
 ///
 /// Handlers return `Vec<Effect>` which the apply loop in `run()` executes.
@@ -55,6 +64,8 @@ pub(super) enum Effect {
     Yank(String),
     OpenExternalUrl(String),
     SetMode(ViewerMode),
+    /// Return to Normal mode with the specified screen restoration.
+    ExitToNormal(ScreenRestore),
     SetLastSearch(LastSearch),
     DeletePlacements,
     /// Clear overlay rects cache so they're recomputed with new active_ranges.

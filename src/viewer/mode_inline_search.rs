@@ -1,7 +1,7 @@
 //! Inline (less-style) search mode: incremental search with status bar prompt.
 
 use super::Effect;
-use super::effect::ViewerMode;
+use super::effect::ScreenRestore;
 use super::keymap::InlineSearchAction;
 use super::layout::visual_line_offset;
 use super::mode_grep::{LastSearch, SearchMatch, grep_markdown};
@@ -75,7 +75,7 @@ pub(super) fn handle(
                 return vec![
                     Effect::InvalidateOverlays,
                     Effect::ScrollTo(is.pre_search_y),
-                    Effect::SetMode(ViewerMode::Normal),
+                    Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
                 ];
             }
             is.query.pop();
@@ -95,7 +95,7 @@ pub(super) fn handle(
             if is.matches.is_empty() {
                 return vec![
                     Effect::InvalidateOverlays,
-                    Effect::SetMode(ViewerMode::Normal),
+                    Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
                 ];
             }
             let last = LastSearch::from_inline_search(is, doc);
@@ -103,14 +103,14 @@ pub(super) fn handle(
             vec![
                 Effect::SetLastSearch(last),
                 Effect::Flash(flash),
-                Effect::SetMode(ViewerMode::Normal),
+                Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
             ]
         }
         InlineSearchAction::Cancel => {
             vec![
                 Effect::InvalidateOverlays,
                 Effect::ScrollTo(is.pre_search_y),
-                Effect::SetMode(ViewerMode::Normal),
+                Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
             ]
         }
     }
@@ -192,7 +192,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
         );
     }
 
@@ -213,7 +213,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
         );
     }
 
@@ -228,7 +228,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
         );
     }
 
@@ -244,7 +244,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
         );
     }
 }

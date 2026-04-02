@@ -7,7 +7,7 @@
 use log::debug;
 
 use super::display_state::DisplayState;
-use super::effect::{Effect, ExitReason, RenderOp, ViewerMode};
+use super::effect::{Effect, ExitReason, RenderOp, ScreenRestore, ViewerMode};
 use super::layout::ScrollState;
 use super::mode_grep::LastSearch;
 use super::mode_log::LogState;
@@ -127,28 +127,31 @@ impl Viewport {
             }
             Effect::SetMode(m) => {
                 match &m {
-                    ViewerMode::Grep(_)
-                    | ViewerMode::Command(_)
-                    | ViewerMode::UrlPicker(_)
-                    | ViewerMode::Toc(_)
-                    | ViewerMode::Log(_) => {
-                        ops.push(RenderOp::DrawModeScreen);
-                    }
                     ViewerMode::InlineSearch(_) => {
-                        // InlineSearch keeps document visible — just redraw status bar
                         ops.push(RenderOp::DrawStatusBar);
                     }
                     ViewerMode::Normal => {
-                        // Clear text from search/command screen and
-                        // purge terminal-side image data so that
-                        // ensure_loaded() re-uploads from cache.
-                        ops.push(RenderOp::ClearScreen);
-                        ops.push(RenderOp::DeleteAllImages);
-                        self.display.clear_all();
-                        self.dirty = true;
+                        unreachable!("use ExitToNormal to return to Normal mode");
+                    }
+                    _ => {
+                        ops.push(RenderOp::DrawModeScreen);
                     }
                 }
                 self.mode = m;
+            }
+            Effect::ExitToNormal(restore) => {
+                match restore {
+                    ScreenRestore::FullRefresh => {
+                        ops.push(RenderOp::ClearScreen);
+                        ops.push(RenderOp::DeleteAllImages);
+                        self.display.clear_all();
+                    }
+                    ScreenRestore::StatusBarRefresh => {
+                        ops.push(RenderOp::DrawStatusBar);
+                    }
+                }
+                self.mode = ViewerMode::Normal;
+                self.dirty = true;
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
@@ -171,7 +174,7 @@ impl Viewport {
                     if !matches!(self.mode, ViewerMode::Normal) {
                         ops.push(RenderOp::ClearScreen);
                         ops.push(RenderOp::DeleteAllImages);
-                        self.display.map.clear();
+                        self.display.clear_all();
                         self.mode = ViewerMode::Normal;
                         self.dirty = true;
                     } else {

@@ -7,11 +7,12 @@ use crossterm::{
 };
 use std::io::{self, Write, stdout};
 
+use super::Effect;
 use super::effect::ExitReason;
+use super::effect::ScreenRestore;
 use super::keymap::TocAction;
 use super::layout::{Layout, visual_line_offset};
 use super::query::DocumentQuery;
-use super::{Effect, ViewerMode};
 use crate::frame::VisualLine;
 
 /// A single heading entry in the TOC.
@@ -183,7 +184,10 @@ pub(super) fn handle(
         }
         TocAction::Confirm => {
             if state.entries.is_empty() {
-                return vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty];
+                return vec![
+                    Effect::ExitToNormal(ScreenRestore::FullRefresh),
+                    Effect::MarkDirty,
+                ];
             }
             let vl_idx = state.entries[state.selected].visual_line_idx;
             let line_num = (vl_idx + 1) as u32; // 1-based
@@ -192,10 +196,13 @@ pub(super) fn handle(
             vec![
                 Effect::ScrollTo(y),
                 Effect::Flash(format!("Jumped to: {heading}")),
-                Effect::SetMode(ViewerMode::Normal),
+                Effect::ExitToNormal(ScreenRestore::FullRefresh),
             ]
         }
-        TocAction::Cancel => vec![Effect::SetMode(ViewerMode::Normal), Effect::MarkDirty],
+        TocAction::Cancel => vec![
+            Effect::ExitToNormal(ScreenRestore::FullRefresh),
+            Effect::MarkDirty,
+        ],
     }
 }
 
@@ -345,7 +352,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
     }
 
@@ -363,7 +370,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::SetMode(ViewerMode::Normal)))
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::FullRefresh)))
         );
         assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
     }
