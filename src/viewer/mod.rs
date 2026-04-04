@@ -44,7 +44,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     terminal as crossterm_terminal,
 };
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -153,8 +153,7 @@ pub fn run(
                 stdin_eof |= reader.drain_into(&mut stdin_buf).eof;
             }
             match &session.input {
-                InputSource::File(path) => std::fs::read_to_string(path)
-                    .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?,
+                InputSource::File(path) => read_with_retry(path)?,
                 InputSource::Stdin(_) => {
                     if stdin_buf.trim().is_empty() {
                         "*(waiting for input...)*".into()
@@ -502,6 +501,7 @@ pub fn run(
                     }
                 };
                 if content_changed {
+                    info!("file change detected, reloading");
                     return Ok((ExitReason::Reload, vp.scroll.y_offset));
                 }
             }
@@ -566,4 +566,35 @@ pub fn run(
 
     guard.cleanup();
     Ok(())
+}
+
+/// Interval between retries when a file is temporarily missing (atomic save).
+const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+/// Maximum number of retries before giving up.
+const RETRY_MAX_ATTEMPTS: u32 = 10;
+
+/// Read a file, retrying on [`std::io::ErrorKind::NotFound`] to tolerate
+/// atomic-save editors (vim, emacs, etc.) that briefly remove the file
+/// during a write-then-rename sequence.
+fn read_with_retry(path: &std::path::Path) -> anyhow::Result<String> {
+    let mut attempts = 0;
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(content) => return Ok(content),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && attempts < RETRY_MAX_ATTEMPTS => {
+                attempts += 1;
+                warn!(
+                    "file not found (attempt {}/{}), retrying in {}ms: {}",
+                    attempts,
+                    RETRY_MAX_ATTEMPTS,
+                    RETRY_INTERVAL.as_millis(),
+                    path.display()
+                );
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("failed to read {}: {e}", path.display()));
+            }
+        }
+    }
 }
