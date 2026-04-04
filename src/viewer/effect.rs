@@ -74,6 +74,8 @@ pub(super) enum Effect {
     EnterLog,
     GoBack,
     Exit(ExitReason),
+    HideHighlights,
+    ShowHighlights,
 }
 
 /// Terminal I/O operations separated from state mutation.

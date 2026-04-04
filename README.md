@@ -29,7 +29,8 @@ The built-in terminal viewer then displays the rendered document directly in you
   `Ctrl-O` returns to the previous file with scroll position restored.
 - **Search** -- Press `/` for less-style incremental search: type a regex and
   the view jumps to the first match in real time with pixel-precise overlay
-  highlights. Press `:grep` for a full-screen search picker with a results list.
+  highlights. Press `n`/`N` to navigate matches. Use `:noh` to hide highlights
+  without clearing the search (`:grep` opens a full-screen search picker).
 - **URL picker** -- Press `O` to list all URLs in the document and open one in your browser.
 - **Yank** -- Copy source lines or blocks to clipboard via OSC 52 (`Ny`, `NY`).
 - **File watching** -- Automatically re-renders when the source file changes.
@@ -87,7 +88,7 @@ mlux --debug input.md
 | `Ctrl-O` | Go back (after link navigation) |
 | `[N]y` / `[N]Y` | Yank line / block N |
 | `t` | Table of contents (heading list + jump) |
-| `:` | Command mode (`:q`, `:reload`, `:grep`, `:open`, `:back`, `:log`) |
+| `:` | Command mode (`:q`, `:reload`, `:grep`, `:open`, `:back`, `:log`, `:noh`) |
 | `q` | Quit |
 
 ## Configuration

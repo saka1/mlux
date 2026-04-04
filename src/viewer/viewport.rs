@@ -27,6 +27,7 @@ pub(super) struct Viewport {
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
+    pub highlights_visible: bool,
 }
 
 impl Default for Viewport {
@@ -43,6 +44,7 @@ impl Default for Viewport {
             flash: None,
             dirty: false,
             last_search: None,
+            highlights_visible: true,
         }
     }
 }
@@ -155,6 +157,19 @@ impl Viewport {
             }
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
+                self.highlights_visible = true;
+                self.display.clear_overlay_state();
+                ops.push(RenderOp::DeleteOverlayPlacements);
+                self.dirty = true;
+            }
+            Effect::HideHighlights => {
+                self.highlights_visible = false;
+                self.display.clear_overlay_state();
+                ops.push(RenderOp::DeleteOverlayPlacements);
+                self.dirty = true;
+            }
+            Effect::ShowHighlights => {
+                self.highlights_visible = true;
                 self.display.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;

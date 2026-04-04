@@ -206,6 +206,7 @@ fn navigate_search(ctx: &mut NormalCtx, direction: SearchDirection) -> Vec<Effec
     let y = visual_line_offset(ctx.doc.visual_lines, ctx.max_scroll, line_num);
     let flash = format!("match {}/{}", ls.current_idx + 1, ls.matches.len());
     vec![
+        Effect::ShowHighlights,
         Effect::InvalidateOverlays,
         Effect::ScrollTo(y),
         Effect::Flash(flash),

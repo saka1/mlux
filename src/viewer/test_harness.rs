@@ -81,6 +81,7 @@ impl TestHarness {
             flash: None,
             dirty: false,
             last_search: None,
+            highlights_visible: true,
         };
 
         Self {

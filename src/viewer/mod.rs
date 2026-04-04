@@ -265,6 +265,7 @@ pub fn run(
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
+            highlights_visible: true,
         };
 
         // in_flight: set of tile indices sent to the child but not yet received.
@@ -277,7 +278,11 @@ pub fn run(
             let mut acc = InputAccumulator::new();
 
             // Initial redraw + prefetch
-            let search_spec = vp.last_search.as_ref().map(|ls| ls.highlight_spec());
+            let search_spec = if vp.highlights_visible {
+                vp.last_search.as_ref().map(|ls| ls.highlight_spec())
+            } else {
+                None
+            };
             display_state::redraw_and_prefetch(
                 &meta,
                 &mut tile_cache,
@@ -454,7 +459,13 @@ pub fn run(
                         ViewerMode::InlineSearch(is) if !is.matches.is_empty() => {
                             Some(is.highlight_spec(&doc))
                         }
-                        _ => vp.last_search.as_ref().map(|ls| ls.highlight_spec()),
+                        _ => {
+                            if vp.highlights_visible {
+                                vp.last_search.as_ref().map(|ls| ls.highlight_spec())
+                            } else {
+                                None
+                            }
+                        }
                     };
                     display_state::redraw_and_prefetch(
                         &meta,

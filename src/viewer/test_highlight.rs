@@ -85,3 +85,41 @@ fn search_match_count_aligns_with_rects() {
         rects.len()
     );
 }
+
+#[test]
+fn noh_hides_highlights_preserves_last_search() {
+    let mut h = TestHarness::new("# Title\n\nfoo bar baz\n\nfoo end\n", 80, 24);
+    h.feed_keys("/foo\n");
+    assert!(h.viewport.last_search.is_some());
+    assert!(!h.highlight_rects(0).is_empty());
+
+    h.feed_keys(":noh\n");
+    assert!(h.viewport.last_search.is_some(), "last_search preserved");
+    assert!(!h.viewport.highlights_visible, "highlights hidden");
+}
+
+#[test]
+fn n_after_noh_restores_highlights() {
+    let mut h = TestHarness::new("# Title\n\nfoo bar baz\n\nfoo end\n", 80, 24);
+    h.feed_keys("/foo\n");
+    h.feed_keys(":noh\n");
+    assert!(!h.viewport.highlights_visible);
+
+    h.feed_keys("n");
+    assert!(h.viewport.highlights_visible, "highlights restored after n");
+    assert!(!h.highlight_rects(0).is_empty(), "rects visible again");
+}
+
+#[test]
+fn new_search_after_noh_restores_highlights() {
+    let mut h = TestHarness::new("# Title\n\nfoo bar baz\n\nfoo end\n", 80, 24);
+    h.feed_keys("/foo\n");
+    h.feed_keys(":noh\n");
+    assert!(!h.viewport.highlights_visible);
+
+    h.feed_keys("/bar\n");
+    assert!(
+        h.viewport.highlights_visible,
+        "highlights restored after new search"
+    );
+}

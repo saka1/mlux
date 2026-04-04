@@ -44,6 +44,10 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
                 "back" | "b" => vec![Effect::Exit(ExitReason::GoBack)],
                 "open" => vec![Effect::EnterUrlPickerAll],
                 "log" => vec![Effect::EnterLog],
+                "noh" => vec![
+                    Effect::HideHighlights,
+                    Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
+                ],
                 "grep" | "g" => {
                     let gs = GrepState::new();
                     vec![
@@ -151,6 +155,20 @@ mod tests {
             effects
                 .iter()
                 .any(|e| matches!(e, Effect::SetMode(ViewerMode::Grep(_))))
+        );
+    }
+
+    #[test]
+    fn execute_noh_hides_highlights() {
+        let mut cs = CommandState {
+            input: "noh".into(),
+        };
+        let effects = handle(CommandAction::Execute, &mut cs);
+        assert!(effects.iter().any(|e| matches!(e, Effect::HideHighlights)));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
         );
     }
 
