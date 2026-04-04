@@ -9,7 +9,7 @@ use super::effect::ExitReason;
 use super::keymap::Action;
 use super::layout::{ScrollState, visual_line_offset};
 use super::mode_command::CommandState;
-use super::mode_grep::LastSearch;
+use super::mode_grep::{LastSearch, SearchDirection};
 use super::mode_inline_search::InlineSearchState;
 use super::mode_toc::{TocState, collect_headings};
 use super::mode_url::{UrlPickerEntry, UrlPickerState, collect_all_url_entries};
@@ -101,7 +101,12 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         }
 
         Action::EnterInlineSearch => {
-            let is = InlineSearchState::new(ctx.scroll.y_offset);
+            let is = InlineSearchState::new(ctx.scroll.y_offset, SearchDirection::Forward);
+            vec![Effect::SetMode(ViewerMode::InlineSearch(is))]
+        }
+
+        Action::EnterBackwardSearch => {
+            let is = InlineSearchState::new(ctx.scroll.y_offset, SearchDirection::Backward);
             vec![Effect::SetMode(ViewerMode::InlineSearch(is))]
         }
 
@@ -112,8 +117,8 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
             vec![Effect::SetMode(ViewerMode::Command(cs))]
         }
 
-        Action::SearchNextMatch => navigate_search(ctx, SearchDirection::Next),
-        Action::SearchPrevMatch => navigate_search(ctx, SearchDirection::Prev),
+        Action::SearchNextMatch => navigate_search(ctx, KeyDirection::Next),
+        Action::SearchPrevMatch => navigate_search(ctx, KeyDirection::Prev),
 
         Action::YankExactPrompt => {
             vec![
@@ -183,21 +188,30 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
     }
 }
 
-enum SearchDirection {
+enum KeyDirection {
     Next,
     Prev,
 }
 
-fn navigate_search(ctx: &mut NormalCtx, direction: SearchDirection) -> Vec<Effect> {
+fn navigate_search(ctx: &mut NormalCtx, key_dir: KeyDirection) -> Vec<Effect> {
     let Some(ls) = ctx.last_search.as_mut() else {
         return vec![
             Effect::Flash("No search results".into()),
             Effect::RedrawStatusBar,
         ];
     };
-    match direction {
-        SearchDirection::Next => ls.advance_next(),
-        SearchDirection::Prev => ls.advance_prev(),
+    // Compose key direction with saved search direction:
+    // n + Forward = next, n + Backward = prev
+    // N + Forward = prev, N + Backward = next
+    let forward = matches!(
+        (&key_dir, ls.direction),
+        (KeyDirection::Next, SearchDirection::Forward)
+            | (KeyDirection::Prev, SearchDirection::Backward)
+    );
+    if forward {
+        ls.advance_next();
+    } else {
+        ls.advance_prev();
     }
     let Some(vl_idx) = ls.current_visual_line_idx() else {
         return vec![];

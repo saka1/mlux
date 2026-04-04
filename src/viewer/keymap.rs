@@ -68,6 +68,7 @@ pub(super) enum Action {
     EnterUrlPicker,
     EnterToc,
     EnterInlineSearch,
+    EnterBackwardSearch,
     EnterCommand,
     SearchNextMatch,
     SearchPrevMatch,
@@ -169,10 +170,15 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
             Some(Action::EnterToc)
         }
 
-        // 検索
+        // 前方検索
         (KeyCode::Char('/'), _) => {
             acc.reset();
             Some(Action::EnterInlineSearch)
+        }
+        // 後方検索
+        (KeyCode::Char('?'), _) => {
+            acc.reset();
+            Some(Action::EnterBackwardSearch)
         }
         // コマンドモード
         (KeyCode::Char(':'), _) => {

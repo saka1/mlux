@@ -108,12 +108,12 @@ pub(super) fn execute_render_ops(
         match op {
             RenderOp::DrawStatusBar => {
                 if let ViewerMode::InlineSearch(is) = &vp.mode {
-                    terminal::draw_inline_search_bar(
-                        ctx.layout,
-                        &is.query,
-                        is.current_idx,
-                        is.matches.len(),
-                    )?;
+                    use super::mode_grep::SearchDirection;
+                    let prompt = match is.direction {
+                        SearchDirection::Forward => '/',
+                        SearchDirection::Backward => '?',
+                    };
+                    terminal::draw_inline_search_bar(ctx.layout, &is.query, prompt)?;
                 } else {
                     terminal::draw_status_bar(
                         ctx.layout,

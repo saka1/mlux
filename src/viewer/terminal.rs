@@ -494,47 +494,27 @@ fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..s.floor_char_boundary(max_bytes)]
 }
 
-/// Draw the inline search status bar: `/query  N/M matches`.
+/// Draw the inline search status bar: `/query` or `?query`.
 pub(super) fn draw_inline_search_bar(
     layout: &Layout,
     query: &str,
-    current: usize,
-    total: usize,
+    prompt_char: char,
 ) -> io::Result<()> {
     let mut out = stdout();
     out.queue(cursor::MoveTo(0, layout.status_row))?;
 
     let total_cols = (layout.sidebar_cols + layout.image_cols) as usize;
 
-    let left = format!("/{query}");
-    let right = if total == 0 {
-        "No matches".to_string()
-    } else {
-        format!("{}/{} matches", current + 1, total)
-    };
-
-    // Pad middle with spaces
-    let middle_len = total_cols.saturating_sub(left.len() + right.len() + 2);
-    let line = format!("{left}{:middle_len$}  {right}", "");
+    let line = format!("{prompt_char}{query}");
     let truncated = truncate_str(&line, total_cols);
 
-    if total == 0 && !query.is_empty() {
-        write!(
-            out,
-            "{}",
-            format!("{:<width$}", truncated, width = total_cols)
-                .on_dark_red()
-                .white()
-        )?;
-    } else {
-        write!(
-            out,
-            "{}",
-            format!("{:<width$}", truncated, width = total_cols)
-                .on_dark_grey()
-                .white()
-        )?;
-    }
+    write!(
+        out,
+        "{}",
+        format!("{:<width$}", truncated, width = total_cols)
+            .on_dark_grey()
+            .white()
+    )?;
     out.queue(style::ResetColor)?;
     out.flush()
 }

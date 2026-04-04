@@ -4,25 +4,28 @@ use super::Effect;
 use super::effect::ScreenRestore;
 use super::keymap::InlineSearchAction;
 use super::layout::visual_line_offset;
-use super::mode_grep::{LastSearch, SearchMatch, grep_markdown};
+use super::mode_grep::{LastSearch, SearchDirection, SearchMatch, grep_markdown};
 use super::query::DocumentQuery;
 
-/// State for inline search mode (`/` prompt in status bar).
+/// State for inline search mode (`/` or `?` prompt in status bar).
 pub(super) struct InlineSearchState {
     pub query: String,
     pub matches: Vec<SearchMatch>,
     pub current_idx: usize,
     /// Scroll position before search started (restored on Esc).
     pub pre_search_y: u32,
+    /// Search direction: Forward (`/`) or Backward (`?`).
+    pub direction: SearchDirection,
 }
 
 impl InlineSearchState {
-    pub(super) fn new(pre_search_y: u32) -> Self {
+    pub(super) fn new(pre_search_y: u32, direction: SearchDirection) -> Self {
         Self {
             query: String::new(),
             matches: Vec::new(),
             current_idx: 0,
             pre_search_y,
+            direction,
         }
     }
 
@@ -68,47 +71,48 @@ pub(super) fn handle(
     match action {
         InlineSearchAction::Type(c) => {
             is.query.push(c);
-            search_and_jump(is, doc, max_scroll)
+            vec![Effect::RedrawInlineSearch]
         }
         InlineSearchAction::Backspace => {
             if is.query.is_empty() {
                 return vec![
-                    Effect::InvalidateOverlays,
                     Effect::ScrollTo(is.pre_search_y),
                     Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
                 ];
             }
             is.query.pop();
-            if is.query.is_empty() {
-                is.matches.clear();
-                is.current_idx = 0;
-                vec![
-                    Effect::InvalidateOverlays,
-                    Effect::ScrollTo(is.pre_search_y),
-                    Effect::RedrawInlineSearch,
-                ]
-            } else {
-                search_and_jump(is, doc, max_scroll)
-            }
+            vec![Effect::RedrawInlineSearch]
         }
         InlineSearchAction::Confirm => {
+            if is.query.is_empty() {
+                return vec![Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)];
+            }
+            let (matches, _valid) = grep_markdown(doc, &is.query);
+            is.matches = matches;
             if is.matches.is_empty() {
                 return vec![
-                    Effect::InvalidateOverlays,
+                    Effect::Flash("Pattern not found".into()),
                     Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
                 ];
             }
+            is.current_idx = match is.direction {
+                SearchDirection::Forward => first_match_from(is, doc, max_scroll),
+                SearchDirection::Backward => last_match_before(is, doc, max_scroll),
+            };
             let last = LastSearch::from_inline_search(is, doc);
+            let vl_idx = is.matches[is.current_idx].visual_line_idx;
+            let y = visual_line_offset(doc.visual_lines, max_scroll, (vl_idx + 1) as u32);
             let flash = format!("match {}/{}", is.current_idx + 1, is.matches.len());
             vec![
                 Effect::SetLastSearch(last),
+                Effect::InvalidateOverlays,
+                Effect::ScrollTo(y),
                 Effect::Flash(flash),
                 Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
             ]
         }
         InlineSearchAction::Cancel => {
             vec![
-                Effect::InvalidateOverlays,
                 Effect::ScrollTo(is.pre_search_y),
                 Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
             ]
@@ -116,26 +120,30 @@ pub(super) fn handle(
     }
 }
 
-/// Run grep, update state, and return effects to jump to first match.
-fn search_and_jump(
-    is: &mut InlineSearchState,
-    doc: &DocumentQuery,
-    max_scroll: u32,
-) -> Vec<Effect> {
-    let (matches, _valid) = grep_markdown(doc, &is.query);
-    is.matches = matches;
-    is.current_idx = 0;
-
-    let mut effects = vec![Effect::InvalidateOverlays];
-
-    if let Some(m) = is.matches.first() {
+/// Index of the first match at or after `pre_search_y`.
+fn first_match_from(is: &InlineSearchState, doc: &DocumentQuery, max_scroll: u32) -> usize {
+    for (i, m) in is.matches.iter().enumerate() {
         let line_num = (m.visual_line_idx + 1) as u32;
         let y = visual_line_offset(doc.visual_lines, max_scroll, line_num);
-        effects.push(Effect::ScrollTo(y));
+        if y >= is.pre_search_y {
+            return i;
+        }
     }
+    0
+}
 
-    effects.push(Effect::RedrawInlineSearch);
-    effects
+/// Index of the last match at or before `pre_search_y`.
+fn last_match_before(is: &InlineSearchState, doc: &DocumentQuery, max_scroll: u32) -> usize {
+    let mut result = is.matches.len().saturating_sub(1);
+    for (i, m) in is.matches.iter().enumerate().rev() {
+        let line_num = (m.visual_line_idx + 1) as u32;
+        let y = visual_line_offset(doc.visual_lines, max_scroll, line_num);
+        if y <= is.pre_search_y {
+            result = i;
+            break;
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -144,33 +152,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn type_triggers_search_and_jump() {
+    fn type_updates_query_without_searching() {
         let md = "hello world\nfoo bar";
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut is = InlineSearchState::new(0);
+        let mut is = InlineSearchState::new(0, SearchDirection::Forward);
         let effects = handle(InlineSearchAction::Type('f'), &mut is, &doc, 1000);
         assert_eq!(is.query, "f");
-        assert!(!is.matches.is_empty());
-        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+        assert!(is.matches.is_empty());
+        assert!(!effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
         assert!(
             effects
                 .iter()
-                .any(|e| matches!(e, Effect::InvalidateOverlays))
+                .any(|e| matches!(e, Effect::RedrawInlineSearch))
         );
     }
 
     #[test]
-    fn backspace_pops_and_researches() {
+    fn backspace_pops_query() {
         let md = "hello world";
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut is = InlineSearchState::new(0);
+        let mut is = InlineSearchState::new(0, SearchDirection::Forward);
         is.query = "he".into();
-        let (matches, _) = grep_markdown(&doc, "he");
-        is.matches = matches;
         let effects = handle(InlineSearchAction::Backspace, &mut is, &doc, 1000);
         assert_eq!(is.query, "h");
         assert!(
@@ -186,7 +192,7 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut is = InlineSearchState::new(42);
+        let mut is = InlineSearchState::new(42, SearchDirection::Forward);
         let effects = handle(InlineSearchAction::Backspace, &mut is, &doc, 1000);
         assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(42))));
         assert!(
@@ -197,19 +203,36 @@ mod tests {
     }
 
     #[test]
-    fn confirm_sets_last_search() {
+    fn confirm_searches_and_sets_last_search() {
         let md = "hello world";
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut is = InlineSearchState::new(0);
+        let mut is = InlineSearchState::new(0, SearchDirection::Forward);
+        // Type does not search — only updates query
         handle(InlineSearchAction::Type('h'), &mut is, &doc, 1000);
+        assert!(is.matches.is_empty());
+        // Confirm triggers the actual search
         let effects = handle(InlineSearchAction::Confirm, &mut is, &doc, 1000);
+        assert!(!is.matches.is_empty());
         assert!(
             effects
                 .iter()
                 .any(|e| matches!(e, Effect::SetLastSearch(_)))
         );
+        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+    }
+
+    #[test]
+    fn confirm_no_match_flashes() {
+        let md = "hello";
+        let vl = make_visual_lines(md);
+        let ci = empty_ci();
+        let doc = DocumentQuery::new(md, &vl, &ci, 0);
+        let mut is = InlineSearchState::new(0, SearchDirection::Forward);
+        handle(InlineSearchAction::Type('z'), &mut is, &doc, 1000);
+        let effects = handle(InlineSearchAction::Confirm, &mut is, &doc, 1000);
+        assert!(effects.iter().any(|e| matches!(e, Effect::Flash(_))));
         assert!(
             effects
                 .iter()
@@ -223,7 +246,7 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut is = InlineSearchState::new(0);
+        let mut is = InlineSearchState::new(0, SearchDirection::Forward);
         let effects = handle(InlineSearchAction::Confirm, &mut is, &doc, 1000);
         assert!(
             effects
@@ -238,7 +261,7 @@ mod tests {
         let vl = make_visual_lines(md);
         let ci = empty_ci();
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
-        let mut is = InlineSearchState::new(99);
+        let mut is = InlineSearchState::new(99, SearchDirection::Forward);
         let effects = handle(InlineSearchAction::Cancel, &mut is, &doc, 1000);
         assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(99))));
         assert!(

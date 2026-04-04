@@ -52,10 +52,18 @@ impl GrepState {
     }
 }
 
+/// Direction of the original search (`/` = Forward, `?` = Backward).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SearchDirection {
+    Forward,
+    Backward,
+}
+
 /// Persisted search results for n/N navigation in normal mode.
 pub(super) struct LastSearch {
     pub matches: Vec<SearchMatch>,
     pub current_idx: usize,
+    pub direction: SearchDirection,
     /// All target_ranges (union of all matches).
     target_ranges: Vec<std::ops::Range<usize>>,
     /// Per-match main.typ byte ranges, indexed by match position in the
@@ -67,7 +75,12 @@ impl LastSearch {
     /// Build from a set of matches and a current index.
     ///
     /// Shared constructor for both Grep and InlineSearch modes.
-    fn from_matches(matches: Vec<SearchMatch>, current_idx: usize, doc: &DocumentQuery) -> Self {
+    fn from_matches(
+        matches: Vec<SearchMatch>,
+        current_idx: usize,
+        direction: SearchDirection,
+        doc: &DocumentQuery,
+    ) -> Self {
         let all_md_ranges: Vec<std::ops::Range<usize>> =
             matches.iter().map(|m| m.md_range.clone()).collect();
 
@@ -89,6 +102,7 @@ impl LastSearch {
         Self {
             matches,
             current_idx,
+            direction,
             target_ranges,
             per_match_ranges,
         }
@@ -96,7 +110,12 @@ impl LastSearch {
 
     /// Create from a completed GrepState, using the selected match as current.
     pub(super) fn from_grep_state(gs: &GrepState, doc: &DocumentQuery) -> Self {
-        Self::from_matches(gs.matches.clone(), gs.selected, doc)
+        Self::from_matches(
+            gs.matches.clone(),
+            gs.selected,
+            SearchDirection::Forward,
+            doc,
+        )
     }
 
     /// Create from a completed InlineSearchState.
@@ -104,7 +123,7 @@ impl LastSearch {
         is: &super::mode_inline_search::InlineSearchState,
         doc: &DocumentQuery,
     ) -> Self {
-        Self::from_matches(is.matches.clone(), is.current_idx, doc)
+        Self::from_matches(is.matches.clone(), is.current_idx, is.direction, doc)
     }
 
     /// Build a highlight spec with `active_ranges` set to the current match.
