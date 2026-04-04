@@ -192,23 +192,23 @@ fn main() {
     // buffer, which is required for log forwarding to work.
     let log_buffer = mlux::log::init(true, None);
 
-    eprint!("test usecase::test_fork_render_matches_local ... ");
+    eprint!("test test_renderer::test_fork_render_matches_local ... ");
     test_fork_render_matches_local();
     eprintln!("ok");
 
-    eprint!("test usecase::test_fork_render_metadata_methods ... ");
+    eprint!("test test_renderer::test_fork_render_metadata_methods ... ");
     test_fork_render_metadata_methods();
     eprintln!("ok");
 
-    eprint!("test usecase::test_fork_renderer_build_error_propagated ... ");
+    eprint!("test test_renderer::test_fork_renderer_build_error_propagated ... ");
     test_fork_renderer_build_error_propagated();
     eprintln!("ok");
 
-    eprint!("test usecase::test_fork_dump_build_error_exit_code ... ");
+    eprint!("test test_renderer::test_fork_dump_build_error_exit_code ... ");
     test_fork_dump_build_error_exit_code();
     eprintln!("ok");
 
-    eprint!("test usecase::test_fork_renderer_logs_forwarded ... ");
+    eprint!("test test_renderer::test_fork_renderer_logs_forwarded ... ");
     test_fork_renderer_logs_forwarded(&log_buffer);
     eprintln!("ok");
 }
