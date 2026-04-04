@@ -305,6 +305,7 @@ pub(super) enum LogAction {
     JumpToTop,
     JumpToBottom,
     EnterSearch,
+    ConfirmSearch,
     SearchNext,
     SearchPrev,
     Type(char),
@@ -314,27 +315,47 @@ pub(super) enum LogAction {
 }
 
 /// Map a key event to a log viewer action.
-pub(super) fn map_log_key(key: KeyEvent) -> Option<LogAction> {
+///
+/// When `search_mode` is true, all character keys become `Type(c)` so the user
+/// can type any character into the search query (matching the pattern used by
+/// `map_command_key`, `map_inline_search_key`, and `map_grep_key`).
+pub(super) fn map_log_key(key: KeyEvent, search_mode: bool) -> Option<LogAction> {
     let KeyEvent {
         code, modifiers, ..
     } = key;
-    match (code, modifiers) {
-        (KeyCode::Char('q'), _)
-        | (KeyCode::Esc, _)
-        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(LogAction::Cancel),
-        (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
-            Some(LogAction::ScrollDown)
+    if search_mode {
+        match (code, modifiers) {
+            (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                Some(LogAction::Cancel)
+            }
+            (KeyCode::Enter, _) => Some(LogAction::ConfirmSearch),
+            (KeyCode::Backspace, _) => Some(LogAction::Backspace),
+            (KeyCode::Down, _) => Some(LogAction::ScrollDown),
+            (KeyCode::Up, _) => Some(LogAction::ScrollUp),
+            (KeyCode::Char(c), _) => Some(LogAction::Type(c)),
+            _ => None,
         }
-        (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => Some(LogAction::ScrollUp),
-        (KeyCode::Char('g'), KeyModifiers::NONE) => Some(LogAction::JumpToTop),
-        (KeyCode::Char('G'), _) => Some(LogAction::JumpToBottom),
-        (KeyCode::Char('/'), _) => Some(LogAction::EnterSearch),
-        (KeyCode::Char('n'), KeyModifiers::NONE) => Some(LogAction::SearchNext),
-        (KeyCode::Char('N'), _) => Some(LogAction::SearchPrev),
-        (KeyCode::Char('y'), KeyModifiers::NONE) => Some(LogAction::Yank),
-        (KeyCode::Backspace, _) => Some(LogAction::Backspace),
-        (KeyCode::Char(c), _) => Some(LogAction::Type(c)),
-        _ => None,
+    } else {
+        match (code, modifiers) {
+            (KeyCode::Char('q'), _)
+            | (KeyCode::Esc, _)
+            | (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(LogAction::Cancel),
+            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
+                Some(LogAction::ScrollDown)
+            }
+            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, _) => {
+                Some(LogAction::ScrollUp)
+            }
+            (KeyCode::Char('g'), KeyModifiers::NONE) => Some(LogAction::JumpToTop),
+            (KeyCode::Char('G'), _) => Some(LogAction::JumpToBottom),
+            (KeyCode::Char('/'), _) => Some(LogAction::EnterSearch),
+            (KeyCode::Char('n'), KeyModifiers::NONE) => Some(LogAction::SearchNext),
+            (KeyCode::Char('N'), _) => Some(LogAction::SearchPrev),
+            (KeyCode::Char('y'), KeyModifiers::NONE) => Some(LogAction::Yank),
+            (KeyCode::Backspace, _) => Some(LogAction::Backspace),
+            (KeyCode::Char(c), _) => Some(LogAction::Type(c)),
+            _ => None,
+        }
     }
 }
 
@@ -760,14 +781,16 @@ mod tests {
 
     // --- Log mode ---
 
+    // --- Log mode (normal, search_mode=false) ---
+
     #[test]
     fn log_scroll_down() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('j'))),
+            map_log_key(simple_key(KeyCode::Char('j')), false),
             Some(LogAction::ScrollDown)
         );
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Down)),
+            map_log_key(simple_key(KeyCode::Down), false),
             Some(LogAction::ScrollDown)
         );
     }
@@ -775,11 +798,11 @@ mod tests {
     #[test]
     fn log_scroll_up() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('k'))),
+            map_log_key(simple_key(KeyCode::Char('k')), false),
             Some(LogAction::ScrollUp)
         );
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Up)),
+            map_log_key(simple_key(KeyCode::Up), false),
             Some(LogAction::ScrollUp)
         );
     }
@@ -787,11 +810,11 @@ mod tests {
     #[test]
     fn log_top_bottom() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('g'))),
+            map_log_key(simple_key(KeyCode::Char('g')), false),
             Some(LogAction::JumpToTop)
         );
         assert_eq!(
-            map_log_key(key(KeyCode::Char('G'), KeyModifiers::SHIFT)),
+            map_log_key(key(KeyCode::Char('G'), KeyModifiers::SHIFT), false),
             Some(LogAction::JumpToBottom)
         );
     }
@@ -799,7 +822,7 @@ mod tests {
     #[test]
     fn log_search() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('/'))),
+            map_log_key(simple_key(KeyCode::Char('/')), false),
             Some(LogAction::EnterSearch)
         );
     }
@@ -807,11 +830,11 @@ mod tests {
     #[test]
     fn log_search_nav() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('n'))),
+            map_log_key(simple_key(KeyCode::Char('n')), false),
             Some(LogAction::SearchNext)
         );
         assert_eq!(
-            map_log_key(key(KeyCode::Char('N'), KeyModifiers::SHIFT)),
+            map_log_key(key(KeyCode::Char('N'), KeyModifiers::SHIFT), false),
             Some(LogAction::SearchPrev)
         );
     }
@@ -819,7 +842,7 @@ mod tests {
     #[test]
     fn log_yank() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('y'))),
+            map_log_key(simple_key(KeyCode::Char('y')), false),
             Some(LogAction::Yank)
         );
     }
@@ -827,23 +850,84 @@ mod tests {
     #[test]
     fn log_cancel() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('q'))),
+            map_log_key(simple_key(KeyCode::Char('q')), false),
             Some(LogAction::Cancel)
         );
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Esc)),
+            map_log_key(simple_key(KeyCode::Esc), false),
             Some(LogAction::Cancel)
         );
     }
 
     #[test]
-    fn log_type_in_search() {
+    fn log_type_fallback() {
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Char('a'))),
+            map_log_key(simple_key(KeyCode::Char('a')), false),
             Some(LogAction::Type('a'))
         );
         assert_eq!(
-            map_log_key(simple_key(KeyCode::Backspace)),
+            map_log_key(simple_key(KeyCode::Backspace), false),
+            Some(LogAction::Backspace)
+        );
+    }
+
+    // --- Log mode (search, search_mode=true) ---
+
+    #[test]
+    fn log_search_mode_chars_become_type() {
+        for c in ['j', 'k', 'g', 'n', 'y', 'q', '/'] {
+            assert_eq!(
+                map_log_key(simple_key(KeyCode::Char(c)), true),
+                Some(LogAction::Type(c)),
+                "'{c}' should be Type in search mode"
+            );
+        }
+        assert_eq!(
+            map_log_key(key(KeyCode::Char('G'), KeyModifiers::SHIFT), true),
+            Some(LogAction::Type('G'))
+        );
+        assert_eq!(
+            map_log_key(key(KeyCode::Char('N'), KeyModifiers::SHIFT), true),
+            Some(LogAction::Type('N'))
+        );
+    }
+
+    #[test]
+    fn log_search_mode_cancel() {
+        assert_eq!(
+            map_log_key(simple_key(KeyCode::Esc), true),
+            Some(LogAction::Cancel)
+        );
+        assert_eq!(
+            map_log_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), true),
+            Some(LogAction::Cancel)
+        );
+    }
+
+    #[test]
+    fn log_search_mode_confirm() {
+        assert_eq!(
+            map_log_key(simple_key(KeyCode::Enter), true),
+            Some(LogAction::ConfirmSearch)
+        );
+    }
+
+    #[test]
+    fn log_search_mode_arrows_scroll() {
+        assert_eq!(
+            map_log_key(simple_key(KeyCode::Down), true),
+            Some(LogAction::ScrollDown)
+        );
+        assert_eq!(
+            map_log_key(simple_key(KeyCode::Up), true),
+            Some(LogAction::ScrollUp)
+        );
+    }
+
+    #[test]
+    fn log_search_mode_backspace() {
+        assert_eq!(
+            map_log_key(simple_key(KeyCode::Backspace), true),
             Some(LogAction::Backspace)
         );
     }

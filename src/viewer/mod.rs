@@ -397,7 +397,8 @@ pub fn run(
                                     }
                                     None => vec![],
                                 },
-                                ViewerMode::Log(ls) => match map_log_key(key_event) {
+                                ViewerMode::Log(ls) => match map_log_key(key_event, ls.search_mode)
+                                {
                                     Some(a) => {
                                         let visible_count =
                                             (session.layout.status_row - 1) as usize;

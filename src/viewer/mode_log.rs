@@ -102,6 +102,10 @@ pub(super) fn handle(
                 vec![]
             }
         }
+        LogAction::ConfirmSearch => {
+            state.search_mode = false;
+            vec![Effect::RedrawLog]
+        }
         LogAction::SearchNext => {
             if !state.search_matches.is_empty() {
                 state.search_index = (state.search_index + 1) % state.search_matches.len();
@@ -306,11 +310,19 @@ pub(super) fn draw_log_screen(layout: &Layout, state: &LogState) -> io::Result<(
     } else {
         String::new()
     };
-    let status = format!(
-        " {} entries{} | j/k:scroll g/G:top/bottom /:search y:yank q:back",
-        state.entries.len(),
-        match_info
-    );
+    let status = if state.search_mode {
+        format!(
+            " {} entries{} | Enter:confirm Esc:cancel",
+            state.entries.len(),
+            match_info
+        )
+    } else {
+        format!(
+            " {} entries{} | j/k:scroll g/G:top/bottom /:search n/N:next/prev y:yank q:back",
+            state.entries.len(),
+            match_info
+        )
+    };
     let padded = format!("{:<width$}", status, width = total_cols);
     write!(out, "{}", padded.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
@@ -434,6 +446,23 @@ mod tests {
         handle(LogAction::Backspace, &mut state, 10, 200);
         assert_eq!(state.search_query, "a");
         assert!(state.search_mode); // still in search
+    }
+
+    #[test]
+    fn confirm_search_exits_keeps_matches() {
+        let mut state = make_state(5);
+        state.entries[2].message = "special".into();
+        handle(LogAction::EnterSearch, &mut state, 10, 200);
+        handle(LogAction::Type('s'), &mut state, 10, 200);
+        handle(LogAction::Type('p'), &mut state, 10, 200);
+        handle(LogAction::Type('e'), &mut state, 10, 200);
+        assert!(state.search_mode);
+        assert!(!state.search_matches.is_empty());
+        let effects = handle(LogAction::ConfirmSearch, &mut state, 10, 200);
+        assert!(!state.search_mode);
+        assert!(!state.search_matches.is_empty());
+        assert!(!state.search_query.is_empty());
+        assert!(effects.iter().any(|e| matches!(e, Effect::RedrawLog)));
     }
 
     #[test]
