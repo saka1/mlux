@@ -84,14 +84,22 @@ pub fn split_frame(frame: &Frame, tile_height_pt: f64) -> Vec<Frame> {
             let item_h = item_bounding_height(item);
             let item_bottom = item_y + item_h;
 
+            // For Text items, pos.y is the baseline. Glyphs extend upward
+            // by the ascent (~80% of font size). Expand the overlap region
+            // so text near a tile boundary is cloned into both tiles.
+            let visual_top = match item {
+                FrameItem::Text(t) => item_y - t.size.to_pt(),
+                _ => item_y,
+            };
+
             // Does item overlap [y_start, y_end)?
-            if item_bottom > y_start && item_y < y_end {
+            if item_bottom > y_start && visual_top < y_end {
                 let new_pos = Point::new(pos.x, Abs::pt(item_y - y_start));
                 sub.push(new_pos, item.clone());
                 item_count += 1;
 
                 // Check if item spans beyond this tile
-                if item_y < y_start || item_bottom > y_end {
+                if visual_top < y_start || item_bottom > y_end {
                     spanning_count += 1;
                 }
             }
