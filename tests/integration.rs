@@ -1072,6 +1072,7 @@ fn build_hashes(md: &str) -> Vec<TileHash> {
         detected_light: false,
         markdown: md.into(),
         base_dir: None,
+        file_path: None,
         width_pt: WIDTH_PT,
         sidebar_width_pt: 50.0,
         tile_height_pt: 200.0,

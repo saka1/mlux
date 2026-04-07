@@ -55,7 +55,7 @@ pub const THEMES: &[ThemeEntry] = &[
             include_bytes!("../themes/catppuccin-mocha.tmTheme"),
         )],
         sidebar_bg: "#1e1e2e", // Mocha Base
-        sidebar_fg: "#6c7086", // Mocha Overlay0
+        sidebar_fg: "#a6adc8", // Mocha Subtext0
         mermaid: MermaidColors {
             background: "#1e1e2e",            // Base
             primary_color: "#313244",         // Surface0
@@ -85,7 +85,7 @@ pub const THEMES: &[ThemeEntry] = &[
             include_bytes!("../themes/catppuccin-latte.tmTheme"),
         )],
         sidebar_bg: "#e6e9ef", // Latte Mantle
-        sidebar_fg: "#8c8fa1", // Latte Overlay0
+        sidebar_fg: "#6c6f85", // Latte Subtext0
         mermaid: MermaidColors {
             background: "#FFFFFF",
             primary_color: "#F8FAFC",
@@ -115,7 +115,7 @@ pub const THEMES: &[ThemeEntry] = &[
             include_bytes!("../themes/catppuccin-mocha.tmTheme"),
         )],
         sidebar_bg: "#1e1e2e",
-        sidebar_fg: "#6c7086",
+        sidebar_fg: "#a6adc8", // Mocha Subtext0
         mermaid: MermaidColors {
             background: "#1e1e2e",
             primary_color: "#313244",
@@ -145,7 +145,7 @@ pub const THEMES: &[ThemeEntry] = &[
             include_bytes!("../themes/catppuccin-latte.tmTheme"),
         )],
         sidebar_bg: "#e6e9ef",
-        sidebar_fg: "#8c8fa1",
+        sidebar_fg: "#6c6f85", // Latte Subtext0
         mermaid: MermaidColors {
             background: "#FFFFFF",
             primary_color: "#F8FAFC",
@@ -214,7 +214,7 @@ pub fn data_files(name: &str) -> DataFiles {
 pub fn sidebar_colors(name: &str) -> (&'static str, &'static str) {
     find(name)
         .map(|t| (t.sidebar_bg, t.sidebar_fg))
-        .unwrap_or(("#1e1e2e", "#6c7086"))
+        .unwrap_or(("#1e1e2e", "#a6adc8"))
 }
 
 /// Return Mermaid diagram colours for a theme (falls back to catppuccin dark).
@@ -250,21 +250,21 @@ mod tests {
     fn sidebar_colors_known_theme() {
         let (bg, fg) = sidebar_colors("catppuccin");
         assert_eq!(bg, "#1e1e2e");
-        assert_eq!(fg, "#6c7086");
+        assert_eq!(fg, "#a6adc8");
     }
 
     #[test]
     fn sidebar_colors_latte() {
         let (bg, fg) = sidebar_colors("catppuccin-latte");
         assert_eq!(bg, "#e6e9ef");
-        assert_eq!(fg, "#8c8fa1");
+        assert_eq!(fg, "#6c6f85");
     }
 
     #[test]
     fn sidebar_colors_unknown_falls_back() {
         let (bg, fg) = sidebar_colors("nonexistent");
         assert_eq!(bg, "#1e1e2e");
-        assert_eq!(fg, "#6c7086");
+        assert_eq!(fg, "#a6adc8");
     }
 
     #[test]

@@ -231,6 +231,7 @@ pub(super) mod test_helpers {
                     y_px: 0,
                     md_block_range: Some(start..end),
                     md_offset: None,
+                    diff_status: None,
                 }
             })
             .collect()
@@ -258,6 +259,7 @@ pub(super) mod test_helpers {
             y_px: 0,
             md_block_range,
             md_offset: None,
+            diff_status: None,
         }
     }
 }

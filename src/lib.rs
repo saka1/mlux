@@ -1,6 +1,7 @@
 pub mod app_context;
 pub mod compile;
 pub mod config;
+pub mod diff;
 pub mod fork_sandbox;
 pub mod frame;
 pub mod input_source;

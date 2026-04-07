@@ -19,6 +19,7 @@ pub struct BuildParams {
     pub detected_light: bool,
     pub markdown: String,
     pub base_dir: Option<PathBuf>,
+    pub file_path: Option<PathBuf>,
     pub width_pt: f64,
     pub sidebar_width_pt: f64,
     pub tile_height_pt: f64,
@@ -161,7 +162,22 @@ pub(crate) fn compile_and_tile(
         content_world.content_offset(),
         &params.markdown,
     );
-    let visual_lines = extract_visual_lines_with_map(&document, params.ppi, Some(&bound_index));
+    let mut visual_lines = extract_visual_lines_with_map(&document, params.ppi, Some(&bound_index));
+
+    // 5. Apply git diff markers to visual lines
+    let mut deletion_gaps = Vec::new();
+    if let Some(ref fp) = params.file_path {
+        let diff_ranges = crate::diff::diff_against_head(fp);
+        if !diff_ranges.is_empty() {
+            crate::diff::apply_diff_to_visual_lines(
+                &mut visual_lines,
+                &diff_ranges,
+                &params.markdown,
+            );
+            deletion_gaps =
+                crate::diff::find_deletion_gaps(&visual_lines, &diff_ranges, &params.markdown);
+        }
+    }
 
     if document.pages.is_empty() {
         bail!("[BUG] document has no pages");
@@ -174,6 +190,7 @@ pub(crate) fn compile_and_tile(
         params.sidebar_width_pt,
         page_height_pt,
         &theme_name,
+        &deletion_gaps,
     );
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
     let sidebar_doc = compile_document(&sidebar_world)?;
@@ -207,6 +224,7 @@ pub fn generate_sidebar_typst(
     sidebar_width_pt: f64,
     page_height_pt: f64,
     theme_name: &str,
+    deletion_gaps: &[f64],
 ) -> String {
     let (bg, fg) = crate::theme::sidebar_colors(theme_name);
     let mut src = String::new();
@@ -224,11 +242,43 @@ pub fn generate_sidebar_typst(
     for (i, line) in lines.iter().enumerate() {
         let line_num = i + 1;
         let dy = line.y_pt;
+
+        // Diff marker: colored rectangle at left edge
+        if let Some(status) = &line.diff_status {
+            let color = match status {
+                crate::diff::DiffStatus::Added => "#a6e3a1",
+                crate::diff::DiffStatus::Modified => "#f9e2af",
+                crate::diff::DiffStatus::Deleted => "#f38ba8",
+            };
+            let height = if i + 1 < lines.len() {
+                lines[i + 1].y_pt - dy
+            } else {
+                crate::diff::DEFAULT_LINE_HEIGHT_PT
+            };
+            writeln!(
+                src,
+                "#place(top + left, dy: {dy}pt - 6pt, dx: 2pt)[#rect(width: 2pt, height: {height:.1}pt, fill: rgb(\"{color}\"))]"
+            )
+            .unwrap();
+        }
+
         // Place at baseline Y; use top+right alignment with ascent offset.
         // 8pt text has ~6pt ascent, so shift up to align baselines.
         writeln!(
             src,
             "#place(top + right, dy: {dy}pt - 6pt, dx: -4pt)[#text(size: 8pt)[{line_num}]]"
+        )
+        .unwrap();
+    }
+
+    // Deletion gap markers: small red wedge at the gap between visual lines.
+    for &gap_y in deletion_gaps {
+        // Draw a downward-pointing triangle (wedge) to indicate deleted lines.
+        // The triangle is 8pt wide × 5pt tall, positioned at the left edge.
+        let dy = gap_y - 6.0; // same ascent adjustment
+        writeln!(
+            src,
+            "#place(top + left, dy: {dy:.1}pt - 5pt, dx: 0pt)[#polygon(fill: rgb(\"#f38ba8\"), (0pt, 0pt), (8pt, 0pt), (4pt, 5pt))]"
         )
         .unwrap();
     }
