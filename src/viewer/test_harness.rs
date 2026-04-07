@@ -54,6 +54,7 @@ impl TestHarness {
             detected_light: false,
             markdown: md.into(),
             base_dir: None,
+            file_path: None,
             width_pt,
             sidebar_width_pt,
             tile_height_pt,

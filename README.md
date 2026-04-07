@@ -34,6 +34,9 @@ The built-in terminal viewer then displays the rendered document directly in you
   (`:grep` opens a full-screen search picker).
 - **URL picker** -- Press `O` to list all URLs in the document and open one in your browser.
 - **Yank** -- Copy source lines or blocks to clipboard via OSC 52 (`Ny`, `NY`).
+- **Git diff markers** -- When viewing a file inside a git repository, the sidebar
+  shows colored markers for lines changed since the last commit (green = added,
+  yellow = modified).
 - **File watching** -- Automatically re-renders when the source file changes.
 - **Stdin support** -- Pipe Markdown via stdin: `cat README.md | mlux -`.
 
@@ -146,4 +149,5 @@ Rendering untrusted Markdown is safer than executing arbitrary code, but it's no
 
 <img src="docs/gallery01.png" alt="Rendering gallery (light theme)" width="300">
 <img src="docs/gallery02.png" alt="Rendering gallery (dark theme)" width="300">
+
 

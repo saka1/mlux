@@ -327,6 +327,7 @@ mod tests {
             y_px,
             md_block_range: None,
             md_offset: None,
+            diff_status: None,
         }
     }
 

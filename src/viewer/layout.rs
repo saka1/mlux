@@ -140,12 +140,14 @@ mod tests {
                 y_px: 0,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
             VisualLine {
                 y_pt: 0.0,
                 y_px: 100,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
         ];
         // Line 1 → idx 0, saturating_sub(1) → idx 0 → y_px 0
@@ -160,18 +162,21 @@ mod tests {
                 y_px: 0,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
             VisualLine {
                 y_pt: 0.0,
                 y_px: 100,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
             VisualLine {
                 y_pt: 0.0,
                 y_px: 200,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
         ];
         // Line 3 → idx 2, previous line idx 1 → y_px 100
@@ -185,6 +190,7 @@ mod tests {
             y_px: 0,
             md_block_range: None,
             md_offset: None,
+            diff_status: None,
         }];
         assert_eq!(visual_line_offset(&vls, 1000, 99), 0);
     }
@@ -197,12 +203,14 @@ mod tests {
                 y_px: 0,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
             VisualLine {
                 y_pt: 0.0,
                 y_px: 500,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
         ];
         // Line 2 → idx 1, previous idx 0 → y_px 0, min(100) → 0
@@ -214,18 +222,21 @@ mod tests {
                 y_px: 0,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
             VisualLine {
                 y_pt: 0.0,
                 y_px: 9999,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
             VisualLine {
                 y_pt: 0.0,
                 y_px: 10000,
                 md_block_range: None,
                 md_offset: None,
+                diff_status: None,
             },
         ];
         // Line 3 → idx 2, previous idx 1 → y_px 9999, min(500) → 500

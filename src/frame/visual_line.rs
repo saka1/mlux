@@ -30,6 +30,9 @@ pub struct VisualLine {
     /// Precise Markdown byte offset of the text at this visual line's position.
     /// Always Some when md_block_range is Some.
     pub md_offset: Option<usize>,
+    /// Git diff status for this visual line. Set by the diff pipeline step.
+    #[serde(default)]
+    pub diff_status: Option<crate::diff::DiffStatus>,
 }
 
 /// Extract visual line positions from the frame tree (without source mapping).
@@ -106,6 +109,7 @@ pub fn extract_visual_lines_with_map(
                 y_px: pt_to_px(y_pt, ppi),
                 md_block_range: pos.as_ref().map(|p| p.block_range.clone()),
                 md_offset: pos.as_ref().map(|p| p.offset),
+                diff_status: None,
             }
         })
         .collect();

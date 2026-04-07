@@ -167,6 +167,10 @@ pub fn run(
             InputSource::File(path) => path.parent(),
             InputSource::Stdin(_) => None,
         };
+        let file_path = match &session.input {
+            InputSource::File(path) => Some(path.to_path_buf()),
+            InputSource::Stdin(_) => None,
+        };
 
         // 5b. Build document (content + sidebar compiled & split)
         info!("building tiled document...");
@@ -195,6 +199,7 @@ pub fn run(
             let params = app.build_params(
                 markdown.clone(),
                 base_dir.map(|p| p.to_path_buf()),
+                file_path.clone(),
                 width_pt,
                 sidebar_width_pt,
                 tile_height_pt,

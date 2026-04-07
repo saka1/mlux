@@ -194,6 +194,10 @@ fn main() {
         InputSource::File(path) => path.parent().map(|d| d.to_path_buf()),
         InputSource::Stdin(_) => None,
     };
+    let file_path = match &input_source {
+        InputSource::File(path) => Some(path.clone()),
+        InputSource::Stdin(_) => None,
+    };
 
     let result = match cli.command {
         Some(Command::Render { output, dump, .. }) => cmd_render(
@@ -201,6 +205,7 @@ fn main() {
             &input_source,
             markdown,
             base_dir,
+            file_path,
             output,
             dump,
             cli.no_sandbox,
@@ -253,6 +258,7 @@ fn cmd_render(
     input: &InputSource,
     markdown: String,
     base_dir: Option<PathBuf>,
+    file_path: Option<PathBuf>,
     output: PathBuf,
     dump: bool,
     no_sandbox: bool,
@@ -267,6 +273,7 @@ fn cmd_render(
     let params = app.build_params(
         markdown.clone(),
         base_dir,
+        file_path,
         app.config.width,
         DEFAULT_SIDEBAR_WIDTH_PT,
         app.config.viewer.tile_height,
