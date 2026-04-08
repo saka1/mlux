@@ -80,8 +80,10 @@ impl Session {
             }
             ExitReason::Reload => {
                 self.scroll_carry = scroll_position;
-                debug!("file changed: reloading document");
-                terminal::delete_all_images()?;
+                debug!("file changed: reloading document (double-buffer swap)");
+                // Old images are NOT deleted here — they stay visible while
+                // the new document compiles. Cleanup happens after the first
+                // redraw of the new generation.
             }
             ExitReason::ConfigReload => {
                 self.scroll_carry = scroll_position;

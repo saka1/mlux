@@ -58,6 +58,7 @@ impl Drop for RawGuard {
 
 /// PNG データをチャンク分割して送信（a=t: データ転送のみ、表示なし）
 pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
+    debug!("kgp: send_image id={image_id} ({} bytes)", png_data.len());
     let encoded = BASE64.encode(png_data);
     let chunks: Vec<&str> = encoded
         .as_bytes()
@@ -110,6 +111,16 @@ pub(super) fn delete_image(image_id: u32) -> io::Result<()> {
 pub(super) fn delete_all_images() -> io::Result<()> {
     let mut out = stdout();
     write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
+    out.flush()
+}
+
+/// 指定 ID の画像データ+配置を個別削除（旧世代クリーンアップ用）
+pub(super) fn delete_images_by_ids(ids: &[u32]) -> io::Result<()> {
+    debug!("kgp: delete_images_by_ids ({} images)", ids.len());
+    let mut out = stdout();
+    for &id in ids {
+        write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+    }
     out.flush()
 }
 
@@ -519,12 +530,20 @@ pub(super) fn draw_inline_search_bar(
     out.flush()
 }
 
-/// ローディング画面: 画面クリア + ステータスバーに "Building… q:quit" 表示。
+/// ローディング画面: ステータスバーに "Building… q:quit" 表示。
 ///
 /// 100ms の fast path を超えた場合のみ呼ばれる。
-pub(super) fn draw_loading_screen(layout: &Layout, filename: &str) -> io::Result<()> {
+/// `clear_screen` が true のとき画面クリアも行う（初回ロードなど画像がない場面向け）。
+/// ダブルバッファ reload 中は false にして旧タイルを維持する。
+pub(super) fn draw_loading_screen(
+    layout: &Layout,
+    filename: &str,
+    clear_screen: bool,
+) -> io::Result<()> {
     let mut out = stdout();
-    out.queue(terminal::Clear(terminal::ClearType::All))?;
+    if clear_screen {
+        out.queue(terminal::Clear(terminal::ClearType::All))?;
+    }
     out.queue(cursor::MoveTo(0, layout.status_row))?;
 
     let total_cols = (layout.sidebar_cols + layout.image_cols) as usize;
