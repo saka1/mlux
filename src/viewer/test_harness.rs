@@ -61,6 +61,7 @@ impl TestHarness {
             ppi: PPI,
             fonts: font_cache,
             allow_remote_images: false,
+            fast_png: true,
         };
 
         let doc = build_tiled_document(&params).expect("test document build");

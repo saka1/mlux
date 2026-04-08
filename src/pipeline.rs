@@ -26,6 +26,7 @@ pub struct BuildParams {
     pub ppi: f32,
     pub fonts: &'static FontCache,
     pub allow_remote_images: bool,
+    pub fast_png: bool,
 }
 
 /// Result of the shared compilation pipeline (steps 1-4).
@@ -207,6 +208,7 @@ pub(crate) fn compile_and_tile(
             content_index,
             content_offset: content_world.content_offset(),
         },
+        params.fast_png,
     )?;
     info!(
         "build_tiled_document completed in {:.1}ms",

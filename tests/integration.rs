@@ -41,7 +41,7 @@ fn test_paragraph_ja_renders() {
     );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
-    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0, false)
         .expect("rendering should succeed");
 
     // Check PNG magic bytes
@@ -74,7 +74,7 @@ fn test_empty_input() {
     );
     let document = compile_document(&world).expect("compilation should succeed");
     let tiles = split_frame(&document.pages[0].frame, 500.0);
-    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0, false)
         .expect("empty input should still render");
 
     assert_eq!(&png_data[..8], b"\x89PNG\r\n\x1a\n");
@@ -102,7 +102,7 @@ fn test_full_document_renders() {
     assert!(!tiles.is_empty(), "should produce at least one tile");
 
     // Check first tile renders to valid PNG
-    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0, false)
         .expect("rendering should succeed");
     assert_eq!(
         &png_data[..8],
@@ -796,7 +796,7 @@ fn test_all_features_renders() {
 
     // Verify every tile renders to valid PNG
     for (i, tile) in tiles.iter().enumerate() {
-        let png_data = render_frame_to_png(tile, &document.pages[0].fill, 144.0)
+        let png_data = render_frame_to_png(tile, &document.pages[0].fill, 144.0, false)
             .unwrap_or_else(|e| panic!("tile {i} should render: {e}"));
         assert_eq!(
             &png_data[..8],
@@ -865,7 +865,7 @@ fn test_image_renders() {
     let tiles = split_frame(&document.pages[0].frame, 500.0);
     assert!(!tiles.is_empty(), "should produce at least one tile");
 
-    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0, false)
         .expect("rendering should succeed");
     assert_eq!(
         &png_data[..8],
@@ -925,7 +925,7 @@ fn test_mermaid_diagram_renders() {
     let tiles = split_frame(&document.pages[0].frame, 500.0);
     assert!(!tiles.is_empty(), "should produce at least one tile");
 
-    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0)
+    let png_data = render_frame_to_png(&tiles[0], &document.pages[0].fill, 144.0, false)
         .expect("rendering should succeed");
     assert_eq!(
         &png_data[..8],
@@ -999,7 +999,7 @@ fn test_mermaid_fixture_renders() {
 
     // Verify all tiles render to valid PNG
     for (i, tile) in tiles.iter().enumerate() {
-        let png_data = render_frame_to_png(tile, &document.pages[0].fill, 144.0)
+        let png_data = render_frame_to_png(tile, &document.pages[0].fill, 144.0, false)
             .unwrap_or_else(|e| panic!("tile {i} should render: {e}"));
         assert_eq!(
             &png_data[..8],
@@ -1079,6 +1079,7 @@ fn build_hashes(md: &str) -> Vec<TileHash> {
         ppi: PPI,
         fonts: font_cache,
         allow_remote_images: false,
+        fast_png: false,
     };
     let doc = build_tiled_document(&params).expect("build should succeed");
     let meta = doc.metadata();

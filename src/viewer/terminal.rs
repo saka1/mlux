@@ -18,7 +18,7 @@ use crate::frame::VisibleTiles;
 const CHUNK_SIZE: usize = 4096;
 
 // ---------------------------------------------------------------------------
-// RawGuard — Drop で raw mode / alternate screen / 画像削除を確実に復元
+// RawGuard — restores raw mode / alternate screen / image cleanup on Drop
 // ---------------------------------------------------------------------------
 
 pub(super) struct RawGuard {
@@ -56,7 +56,7 @@ impl Drop for RawGuard {
 // Kitty protocol helpers
 // ---------------------------------------------------------------------------
 
-/// PNG データをチャンク分割して送信（a=t: データ転送のみ、表示なし）
+/// Send PNG data in chunks (a=t: transfer only, no display)
 pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
     debug!("kgp: send_image id={image_id} ({} bytes)", png_data.len());
     let encoded = BASE64.encode(png_data);
@@ -82,7 +82,7 @@ pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
     out.flush()
 }
 
-/// Raw RGBA データを送信（a=t: データ転送のみ、表示なし）。
+/// Send raw RGBA data (a=t: transfer only, no display).
 ///
 /// Small payloads (e.g. 96 bytes for 1×24 RGBA) fit in a single chunk.
 pub(super) fn send_raw_image(
@@ -100,21 +100,21 @@ pub(super) fn send_raw_image(
     out.flush()
 }
 
-/// 画像データ+配置を削除
+/// Delete image data and placements
 pub(super) fn delete_image(image_id: u32) -> io::Result<()> {
     let mut out = stdout();
     write!(out, "\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")?;
     out.flush()
 }
 
-/// 全画像+データ削除
+/// Delete all images and data
 pub(super) fn delete_all_images() -> io::Result<()> {
     let mut out = stdout();
     write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
     out.flush()
 }
 
-/// 指定 ID の画像データ+配置を個別削除（旧世代クリーンアップ用）
+/// Delete image data and placements for specific IDs (old-generation cleanup)
 pub(super) fn delete_images_by_ids(ids: &[u32]) -> io::Result<()> {
     debug!("kgp: delete_images_by_ids ({} images)", ids.len());
     let mut out = stdout();
@@ -450,10 +450,10 @@ fn place_rects_in_region(
     Ok(())
 }
 
-/// ステータスバーをターミナル最終行に描画。
+/// Draw the status bar on the last terminal row.
 ///
-/// `acc_peek`: 数字蓄積中なら `:56_` のように表示
-/// `flash`: ヤンク成功等の一時メッセージ（次のキー入力でクリア）
+/// `acc_peek`: shows accumulated count like `:56_` when digits are being typed
+/// `flash`: transient message (e.g. yank success), cleared on next keypress
 pub(super) fn draw_status_bar(
     layout: &Layout,
     scroll: &ScrollState,
@@ -530,11 +530,11 @@ pub(super) fn draw_inline_search_bar(
     out.flush()
 }
 
-/// ローディング画面: ステータスバーに "Building… q:quit" 表示。
+/// Loading screen: show "Building… q:quit" in the status bar.
 ///
-/// 100ms の fast path を超えた場合のみ呼ばれる。
-/// `clear_screen` が true のとき画面クリアも行う（初回ロードなど画像がない場面向け）。
-/// ダブルバッファ reload 中は false にして旧タイルを維持する。
+/// Called only when the 100ms fast path is exceeded.
+/// When `clear_screen` is true, also clears the screen (for initial load when no images exist).
+/// During double-buffered reload, pass false to keep the old tiles visible.
 pub(super) fn draw_loading_screen(
     layout: &Layout,
     filename: &str,

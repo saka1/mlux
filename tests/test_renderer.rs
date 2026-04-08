@@ -28,6 +28,7 @@ fn test_fork_render_matches_local() {
         ppi: 144.0,
         fonts: font_cache,
         allow_remote_images: false,
+        fast_png: false,
     };
 
     // Local render
@@ -79,6 +80,7 @@ fn test_fork_render_metadata_methods() {
         ppi: 144.0,
         fonts: font_cache,
         allow_remote_images: false,
+        fast_png: false,
     };
 
     // Throwaway log buffer -- forwarded logs not inspected here
@@ -119,6 +121,7 @@ fn make_failing_params(font_cache: &'static FontCache) -> BuildParams {
         ppi: 144.0,
         fonts: font_cache,
         allow_remote_images: false,
+        fast_png: false,
     }
 }
 
@@ -169,6 +172,7 @@ fn test_fork_renderer_logs_forwarded(log_buf: &LogBuffer) {
         ppi: 144.0,
         fonts: font_cache,
         allow_remote_images: false,
+        fast_png: false,
     };
 
     // Drain any pre-existing entries so we only check what this test produces.

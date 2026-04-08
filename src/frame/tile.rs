@@ -282,6 +282,7 @@ pub struct TiledDocument {
     source: Source,
     content_index: ContentIndex,
     content_offset: usize,
+    fast_png: bool,
 }
 
 impl TiledDocument {
@@ -291,6 +292,7 @@ impl TiledDocument {
     /// - `visual_lines`: pre-extracted visual line positions (avoids redundant extraction)
     /// - `tile_height_pt`: height of each tile in typst points
     /// - `ppi`: rendering resolution
+    /// - `fast_png`: use minimal PNG compression (viewer) vs default (file output)
     pub fn new(
         document: &PagedDocument,
         sidebar_doc: &PagedDocument,
@@ -298,6 +300,7 @@ impl TiledDocument {
         tile_height_pt: f64,
         ppi: f32,
         content_mapping: ContentMapping,
+        fast_png: bool,
     ) -> Result<Self> {
         if document.pages.is_empty() {
             bail!("[BUG] document has no pages");
@@ -347,6 +350,7 @@ impl TiledDocument {
             source: content_mapping.source,
             content_index: content_mapping.content_index,
             content_offset: content_mapping.content_offset,
+            fast_png,
         })
     }
 
@@ -373,7 +377,7 @@ impl TiledDocument {
     ) -> Result<Vec<u8>> {
         assert!(idx < tiles.len(), "{label} tile index out of bounds");
         trace!("rendering {label} tile {idx}");
-        super::render_png::render_frame_to_png(&tiles[idx], fill, self.ppi)
+        super::render_png::render_frame_to_png(&tiles[idx], fill, self.ppi, self.fast_png)
     }
 
     /// Compute content hashes for all tile pairs.
