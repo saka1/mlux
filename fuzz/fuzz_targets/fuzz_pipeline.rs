@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
     let page = &document.pages[0];
     let tiles = split_frame(&page.frame, 500.0);
     for tile in &tiles {
-        if let Err(e) = render_frame_to_png(tile, &page.fill, 144.0) {
+        if let Err(e) = render_frame_to_png(tile, &page.fill, 144.0, false) {
             panic!("render failed:\n{e}");
         }
     }

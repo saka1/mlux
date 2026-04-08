@@ -209,6 +209,7 @@ pub fn run(
                 width_pt,
                 sidebar_width_pt,
                 tile_height_pt,
+                true,
             );
             // Fork 1 (image extraction) + Fork 2 (renderer) before any threads.
             // The child starts building immediately; we wait for meta below.

@@ -102,4 +102,53 @@ Kitty 側の制限は特にない (任意サイズのペイロードを受け付
 1. **即時フィードバック** — 難易度低・体感効果大
 2. **Span 除外ハッシュ** — 最大効果だが実装量あり
 3. **PNG 低圧縮** — 難易度低・確実な短縮
-4. **チャンクサイズ** — 簡単に試せる微調整
+4. ~~**チャンクサイズ**~~ — 実施済み (4KB→16KB)。効果は限定的 (転送時間の支配要因はデータ量)
+
+## Appendix: 施策1 Span除外ハッシュ 実装メモ
+
+### Span の所在 (typst 0.14)
+
+| FrameItem variant | Span の場所 | 対処 |
+|---|---|---|
+| `Shape(Shape, Span)` | 第2フィールド | Span をスキップ |
+| `Image(Image, Size, Span)` | 第3フィールド | Span をスキップ |
+| `Text(TextItem)` | `Glyph.span: (Span, u16)` | `glyph.span` をスキップ |
+| `Tag(Tag)` | `Tag::Start(Content, _)` → Content 内部に Span | Tag 全体をスキップ (introspection 用、描画に無関係) |
+| `Group(GroupItem)` | Span なし (`g.frame` を再帰) | 再帰 |
+| `Link(Destination, Size)` | Span なし | そのまま Hash |
+
+Span を含まないもの: `Label`, `FrameParent`, `Destination`, `Shape` 構造体, `GroupItem` の各フィールド。
+
+### 実装方針
+
+`hash_frame_visual()` + `hash_frame_item_visual()` を追加し、Frame tree を walk して
+視覚要素のみハッシュする。`compute_tile_pair_hash()` から呼び出す。
+
+```rust
+fn hash_frame_visual(frame: &Frame, h: &mut impl Hasher) {
+    frame.size().hash(h);
+    frame.baseline().hash(h);
+    frame.kind().hash(h);
+    for (pos, item) in frame.items() {
+        pos.hash(h);
+        hash_frame_item_visual(item, h);
+    }
+}
+```
+
+`hash_frame_item_visual()` は各 variant を match し、Span フィールドだけスキップ。
+Text の場合は Glyph の各フィールドを個別にハッシュし `glyph.span` を除外する。
+
+### テスト戦略
+
+- 既存の unit test (same/different/empty) はそのまま動く (等価・非等価の関係は保存)
+- **重要:** 既存の integration test `test_tile_hash_merge_recovers_unchanged_tiles` は
+  末尾追記のため Span シフトが起きず、変更前でも pass する
+- **追加すべきテスト:** ドキュメント中間に行挿入 → 前半タイルの cache recovery を検証
+  (`test_tile_hash_mid_edit_recovers_early_tiles`)
+
+### 所感
+
+typst の `FrameItem` 全 variant を展開して個別ハッシュするため、
+typst バージョンアップ時に variant 追加や Glyph フィールド変更への追従が必要。
+コンパイルエラーで検知できるので壊れたまま気づかないリスクは低い。

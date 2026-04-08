@@ -277,6 +277,7 @@ fn cmd_render(
         app.config.width,
         DEFAULT_SIDEBAR_WIDTH_PT,
         app.config.viewer.tile_height,
+        false,
     );
 
     if dump {

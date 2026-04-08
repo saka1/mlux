@@ -23,6 +23,7 @@ impl AppContext {
     /// Render provides fixed width from CLI; viewer computes from terminal size.
     /// Fields `ppi`, `allow_remote_images`, and fonts come from `self`.
     /// Theme resolution is deferred to the build pipeline.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_params(
         &self,
         markdown: String,
@@ -31,6 +32,7 @@ impl AppContext {
         width_pt: f64,
         sidebar_width_pt: f64,
         tile_height_pt: f64,
+        fast_png: bool,
     ) -> BuildParams {
         BuildParams {
             theme_spec: self.config.theme.clone(),
@@ -44,6 +46,7 @@ impl AppContext {
             ppi: self.config.ppi,
             fonts: self.font_cache,
             allow_remote_images: self.cli_overrides.allow_remote_images,
+            fast_png,
         }
     }
 }
