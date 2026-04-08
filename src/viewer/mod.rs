@@ -135,6 +135,12 @@ pub fn run(
     // Content-addressed tile cache for merge across rebuilds
     let mut tile_cache = TileCache::new();
 
+    // Double-buffer: two fixed ID ranges, toggled on reload.
+    // Old-generation images stay visible while new ones compile + upload.
+    const GEN_BASES: [u32; 2] = [100, 5000];
+    let mut active_gen: usize = 0;
+    let mut stale_image_ids: Vec<u32> = Vec::new();
+
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
         // 5a. Read markdown (re-read on each iteration for reload support)
@@ -222,7 +228,9 @@ pub fn run(
                     break (meta, renderer);
                 }
                 if !loading_shown && Instant::now() >= fast_deadline {
-                    terminal::draw_loading_screen(&session.layout, &session.filename)?;
+                    // Don't clear screen if old-gen images are still displayed
+                    let clear = stale_image_ids.is_empty();
+                    terminal::draw_loading_screen(&session.layout, &session.filename, clear)?;
                     loading_shown = true;
                 }
                 if event::poll(Duration::from_millis(16))? {
@@ -241,6 +249,8 @@ pub fn run(
                                 new_rows,
                                 app.config.viewer.sidebar_cols,
                             )?;
+                            stale_image_ids.clear(); // resize deletes all images
+                            active_gen = 0;
                             continue 'outer;
                         }
                         _ => {}
@@ -265,7 +275,10 @@ pub fn run(
                 vp_w,
                 vp_h,
             },
-            display: DisplayState::new(app.config.viewer.evict_distance),
+            display: DisplayState::new_with_start_id(
+                app.config.viewer.evict_distance,
+                GEN_BASES[active_gen],
+            ),
             flash: session.pending_flash.take(),
             dirty: false,
             last_search: None,
@@ -302,6 +315,17 @@ pub fn run(
                     in_flight: &mut in_flight,
                 },
             )?;
+
+            // Double-buffer: clean up old-generation images now that new tiles are placed
+            if !stale_image_ids.is_empty() {
+                info!(
+                    "double-buffer: deleting {} stale image IDs from old gen",
+                    stale_image_ids.len(),
+                );
+                debug!("double-buffer: stale IDs: {:?}", stale_image_ids);
+                terminal::delete_images_by_ids(&stale_image_ids)?;
+                stale_image_ids.clear();
+            }
 
             // Inner event loop
             let mut last_render = Instant::now();
@@ -435,12 +459,14 @@ pub fn run(
                                 if let Some(reason) =
                                     effect::execute_render_ops(render_ops, &vp, &ctx)?
                                 {
+                                    stale_image_ids = vp.display.all_image_ids();
                                     return Ok((reason, vp.scroll.y_offset));
                                 }
                             }
                         }
 
                         Event::Resize(new_cols, new_rows) => {
+                            stale_image_ids = vp.display.all_image_ids();
                             return Ok((
                                 ExitReason::Resize { new_cols, new_rows },
                                 vp.scroll.y_offset,
@@ -508,6 +534,7 @@ pub fn run(
                 };
                 if content_changed {
                     info!("file change detected, reloading");
+                    stale_image_ids = vp.display.all_image_ids();
                     return Ok((ExitReason::Reload, vp.scroll.y_offset));
                 }
             }
@@ -563,6 +590,22 @@ pub fn run(
                     debug!("config reload failed: {e}");
                 }
             }
+        }
+
+        // Double-buffer: toggle generation on reload, reset on everything else
+        if matches!(&exit, ExitReason::Reload) {
+            active_gen ^= 1;
+            debug!(
+                "double-buffer: gen {} → {}, stale {} IDs (base={})",
+                active_gen ^ 1,
+                active_gen,
+                stale_image_ids.len(),
+                GEN_BASES[active_gen],
+            );
+        } else {
+            // Resize/Navigate/etc call delete_all_images() → reset to gen 0
+            active_gen = 0;
+            stale_image_ids.clear();
         }
 
         if session.handle_exit(exit, scroll_y, app.config.viewer.sidebar_cols)? {

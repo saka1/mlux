@@ -78,13 +78,34 @@ pub(super) struct LoadAction {
 
 impl DisplayState {
     pub(super) fn new(evict_distance: usize) -> Self {
+        Self::new_with_start_id(evict_distance, 100)
+    }
+
+    /// Create a DisplayState that allocates image IDs starting from `start_id`.
+    ///
+    /// Used by the double-buffer reload scheme: each generation starts from a
+    /// fixed base (e.g. 100 or 5000) so old and new images coexist briefly.
+    pub(super) fn new_with_start_id(evict_distance: usize, start_id: u32) -> Self {
         Self {
             map: HashMap::new(),
-            next_id: 100, // Reserve 1-99 for future use
+            next_id: start_id,
             evict_distance,
             overlay_rects: HashMap::new(),
             highlight_images: None,
         }
+    }
+
+    /// All Kitty image IDs owned by this DisplayState (tiles + highlights).
+    pub(super) fn all_image_ids(&self) -> Vec<u32> {
+        let mut ids = Vec::new();
+        for tile_ids in self.map.values() {
+            ids.push(tile_ids.content_id);
+            ids.push(tile_ids.sidebar_id);
+        }
+        if let Some(ref imgs) = self.highlight_images {
+            ids.extend_from_slice(&imgs.all_ids());
+        }
+        ids
     }
 
     /// Plan what needs to happen to load a tile. Returns `None` if already loaded.
