@@ -217,6 +217,9 @@ impl Viewport {
                     ops.push(RenderOp::Exit(ExitReason::GoBack));
                 }
             }
+            Effect::ToggleWatch => {
+                // Handled in mod.rs effect loop (needs Session access)
+            }
             Effect::Exit(reason) => {
                 ops.push(RenderOp::Exit(reason));
             }

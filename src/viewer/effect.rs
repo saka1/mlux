@@ -75,6 +75,7 @@ pub(super) enum Effect {
     Exit(ExitReason),
     HideHighlights,
     ShowHighlights,
+    ToggleWatch,
 }
 
 /// Terminal I/O operations separated from state mutation.

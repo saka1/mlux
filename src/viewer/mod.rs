@@ -455,6 +455,35 @@ pub fn run(
                                 log_buffer: &session.log_buffer,
                             };
                             for effect in effects {
+                                if matches!(effect, Effect::ToggleWatch) {
+                                    match session.current_file_path() {
+                                        Some(path) => {
+                                            let path = path.to_path_buf();
+                                            if session.watch {
+                                                session.watch = false;
+                                                session.watcher = None;
+                                                vp.flash = Some("watch: off".into());
+                                            } else {
+                                                match FileWatcher::new(&path) {
+                                                    Ok(w) => {
+                                                        session.watch = true;
+                                                        session.watcher = Some(w);
+                                                        vp.flash = Some("watch: on".into());
+                                                    }
+                                                    Err(e) => {
+                                                        vp.flash =
+                                                            Some(format!("watch: failed ({e})"));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            vp.flash =
+                                                Some("watch: not available for stdin".into());
+                                        }
+                                    }
+                                    continue;
+                                }
                                 let (new_vp, render_ops) = vp.apply(effect, &ctx);
                                 vp = new_vp;
                                 if let Some(reason) =

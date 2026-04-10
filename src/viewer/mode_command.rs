@@ -44,6 +44,11 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
                 "back" | "b" => vec![Effect::Exit(ExitReason::GoBack)],
                 "open" => vec![Effect::EnterUrlPickerAll],
                 "log" => vec![Effect::EnterLog],
+                "watch" | "w" => vec![
+                    Effect::ToggleWatch,
+                    Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
+                    Effect::MarkDirty,
+                ],
                 "noh" => vec![
                     Effect::HideHighlights,
                     Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
@@ -156,6 +161,28 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::SetMode(ViewerMode::Grep(_))))
         );
+    }
+
+    #[test]
+    fn execute_watch() {
+        let mut cs = CommandState {
+            input: "watch".into(),
+        };
+        let effects = handle(CommandAction::Execute, &mut cs);
+        assert!(effects.iter().any(|e| matches!(e, Effect::ToggleWatch)));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::ExitToNormal(ScreenRestore::StatusBarRefresh)))
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::MarkDirty)));
+    }
+
+    #[test]
+    fn execute_w_alias() {
+        let mut cs = CommandState { input: "w".into() };
+        let effects = handle(CommandAction::Execute, &mut cs);
+        assert!(effects.iter().any(|e| matches!(e, Effect::ToggleWatch)));
     }
 
     #[test]

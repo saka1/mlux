@@ -52,9 +52,9 @@ struct Cli {
     #[arg(long, global = true)]
     theme: Option<String>,
 
-    /// Disable automatic file watching (viewer reloads on file change by default)
-    #[arg(long, global = true)]
-    no_watch: bool,
+    /// Enable automatic file watching (viewer reloads on file change)
+    #[arg(short = 'w', long, global = true)]
+    watch: bool,
 
     /// Disable Landlock filesystem sandbox (Linux only; fork is always used)
     #[arg(long, global = true)]
@@ -206,7 +206,7 @@ fn main() {
             app,
             input_source,
             markdown,
-            !cli.no_watch,
+            cli.watch,
             cli.no_sandbox,
             log_buffer,
         ),
