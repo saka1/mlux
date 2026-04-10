@@ -113,15 +113,6 @@ fn main() {
     };
     let log_buffer = mlux::log::init(cli.debug, log_file);
 
-    // Load config file and merge CLI overrides
-    let mut cfg = match config::load_config() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e:#}");
-            std::process::exit(1);
-        }
-    };
-
     // Extract render-subcommand CLI overrides (width/ppi/tile_height)
     let (render_width, render_ppi, render_tile_height) = match &cli.command {
         Some(Command::Render {
@@ -133,7 +124,7 @@ fn main() {
         None => (None, None, None),
     };
 
-    // Build CliOverrides for viewer config reload support
+    // Build CliOverrides
     let cli_overrides = config::CliOverrides {
         theme: cli.theme.clone(),
         width: render_width,
@@ -142,8 +133,8 @@ fn main() {
         allow_remote_images: cli.allow_remote_images,
     };
 
-    cfg.merge_cli(cli.theme, render_width, render_ppi, render_tile_height);
-    let config = cfg.resolve();
+    let mut config = config::Config::default();
+    config.apply_cli(&cli_overrides);
 
     // Theme detection: only when theme is "auto" and stdout is a TTY
     let detected_light = if config.theme == "auto" {

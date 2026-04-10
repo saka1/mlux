@@ -47,8 +47,8 @@ is split into vertical tiles. Only visible tiles are rendered to PNG on demand.
 
 ### Config system (`src/config.rs`)
 
-Two-layer: `ConfigFile` (TOML, all `Option`) → `Config` (resolved with defaults).
-CLI args override config via `CliOverrides`, preserved across live config reloads.
+`Config::default()` provides hardcoded defaults, `Config::apply_cli()` merges CLI overrides.
+`CliOverrides` preserves CLI args for the viewer session.
 
 ## Commands
 

@@ -48,7 +48,7 @@ use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::app_context::{AppContext, AppContextBuilder};
+use crate::app_context::AppContext;
 use crate::frame::TileCache;
 use crate::input_source::InputSource;
 use crate::watch::FileWatcher;
@@ -74,7 +74,7 @@ const FAST_THRESHOLD: Duration = Duration::from_millis(100);
 /// `watch` enables automatic reload on file change.
 /// `no_sandbox` disables Landlock sandbox (fork is always used).
 pub fn run(
-    mut app: AppContext,
+    app: AppContext,
     input: InputSource,
     initial_markdown: String,
     watch: bool,
@@ -545,51 +545,9 @@ pub fn run(
 
         // Discard cache on navigation (reload/resize keeps it for merge_generation)
         match &exit {
-            ExitReason::Reload | ExitReason::Resize { .. } | ExitReason::ConfigReload => {}
+            ExitReason::Reload | ExitReason::Resize { .. } => {}
             _ => {
                 tile_cache.clear();
-            }
-        }
-
-        // Handle config reload: rebuild AppContext with new config
-        if matches!(&exit, ExitReason::ConfigReload) {
-            match crate::config::reload_config(&app.cli_overrides) {
-                Ok(new_config) => {
-                    // Validate theme spec (alias or known name)
-                    if !crate::theme::is_valid_theme_spec(&new_config.theme) {
-                        session.pending_flash = Some(format!(
-                            "Reload failed: unknown theme '{}'",
-                            new_config.theme
-                        ));
-                        debug!(
-                            "config reload: unknown theme '{}', keeping old config",
-                            new_config.theme
-                        );
-                        // continue with old AppContext
-                    } else {
-                        // Recalculate layout if sidebar_cols changed
-                        if new_config.viewer.sidebar_cols != app.config.viewer.sidebar_cols {
-                            let winsize = crossterm_terminal::window_size()?;
-                            session.layout = layout::compute_layout(
-                                winsize.columns,
-                                winsize.rows,
-                                winsize.width,
-                                winsize.height,
-                                new_config.viewer.sidebar_cols,
-                            );
-                        }
-
-                        let new_overrides = app.cli_overrides.clone();
-                        app = AppContextBuilder::from_existing(new_config, new_overrides, &app)
-                            .build()
-                            .expect("theme spec validated above");
-                        session.pending_flash = Some("Config reloaded".into());
-                    }
-                }
-                Err(e) => {
-                    session.pending_flash = Some(format!("Reload failed: {e}"));
-                    debug!("config reload failed: {e}");
-                }
             }
         }
 

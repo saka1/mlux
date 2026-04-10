@@ -39,7 +39,7 @@ pub(super) fn handle(action: CommandAction, cs: &mut CommandState) -> Vec<Effect
                         Effect::MarkDirty,
                     ]
                 }
-                "reload" | "rel" => vec![Effect::Exit(ExitReason::ConfigReload)],
+                "reload" | "rel" => vec![Effect::Exit(ExitReason::Reload)],
                 "q" | "quit" => vec![Effect::Exit(ExitReason::Quit)],
                 "back" | "b" => vec![Effect::Exit(ExitReason::GoBack)],
                 "open" => vec![Effect::EnterUrlPickerAll],
@@ -110,7 +110,7 @@ mod tests {
             input: "reload".into(),
         };
         let effects = handle(CommandAction::Execute, &mut cs);
-        assert!(matches!(effects[0], Effect::Exit(ExitReason::ConfigReload)));
+        assert!(matches!(effects[0], Effect::Exit(ExitReason::Reload)));
     }
 
     #[test]

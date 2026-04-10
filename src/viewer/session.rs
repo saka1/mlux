@@ -85,11 +85,6 @@ impl Session {
                 // the new document compiles. Cleanup happens after the first
                 // redraw of the new generation.
             }
-            ExitReason::ConfigReload => {
-                self.scroll_carry = scroll_position;
-                debug!("config reload requested");
-                terminal::delete_all_images()?;
-            }
             ExitReason::Navigate { path } => {
                 if !path.exists() {
                     self.pending_flash = Some(format!("File not found: {}", path.display()));

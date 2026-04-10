@@ -22,7 +22,6 @@ typst-kit = { version = "0.14", default-features = false, features = ["embed-fon
 pulldown-cmark = "0.12"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
 anyhow = "1"
 crossterm = { version = "0.28", features = ["use-dev-tty"] }
 base64 = "0.22"

@@ -1855,7 +1855,6 @@ dependencies = [
  "regex",
  "serde",
  "tempfile",
- "toml",
  "typst",
  "typst-kit",
  "typst-render",

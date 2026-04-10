@@ -73,9 +73,7 @@ impl AppContextBuilder {
         }
     }
 
-    /// Rebuild from an existing `AppContext` on config reload.
-    ///
-    /// Consumes the old context to reclaim `FontCache` and `detected_light`.
+    /// Rebuild from an existing `AppContext`, reusing font cache and theme detection.
     pub fn from_existing(
         new_config: Config,
         new_cli_overrides: CliOverrides,
@@ -134,8 +132,7 @@ mod tests {
     use crate::config::{CliOverrides, Config};
 
     fn test_config() -> Config {
-        let cfg = crate::config::ConfigFile::default();
-        cfg.resolve()
+        Config::default()
     }
 
     fn test_overrides() -> CliOverrides {
