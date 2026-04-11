@@ -111,8 +111,21 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Build commit log
+        run: |
+          prev_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$prev_tag" ]; then
+            range="${prev_tag}..HEAD"
+          else
+            range="HEAD"
+          fi
+          {
+            echo "## Commits"
+            echo ""
+            git log "$range" --pretty=format:"- %s (%h)" --no-merges
+          } > commit-log.md
       - name: Create release
-        run: gh release create "${{ needs.validate.outputs.tag }}" --generate-notes artifacts/*.tar.gz
+        run: gh release create "${{ needs.validate.outputs.tag }}" --generate-notes --notes-file commit-log.md artifacts/*.tar.gz
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
