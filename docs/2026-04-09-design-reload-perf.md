@@ -84,7 +84,34 @@ level 6 (default) と使い分ける。
 - `src/frame/render_png.rs`
 - `Cargo.toml` — `png` crate 追加
 
-### 4. Kitty 転送チャンクサイズ増加
+### 5. Kitty temp file transfer (`t=t`) — PTY バイパス
+
+**問題:** `send_image()` は PNG データ全体を base64 エンコードし、4KB チャンクに
+分割して PTY 経由で送信。1MB の PNG で ~333 チャンク、~139ms を要する。
+チャンクサイズ増加（施策4）は PTY スループット自体が律速のため効果が限定的。
+
+**方針:** Kitty Graphics Protocol の `t=t`（一時ファイル転送）モードを使用。
+PNG データをテンプファイル（`/tmp`）に書き出し、ファイルパスのみ（base64 エンコード）
+を Kitty に送信する。Kitty がファイルを直接読み取り、読み取り後に削除する。
+
+**期待効果:**
+- base64 エンコード不要（ペイロードゼロ化）
+- PTY 経由のデータ転送なし（単一エスケープシーケンスのみ）
+- ~139ms → ~数 ms（ファイル write + 単一 write syscall）
+- 施策4（チャンクサイズ増加）を置換
+
+**注意:**
+- `t=t` は Kitty がファイルを削除するため、Rust 側で削除してはならない
+  （`NamedTempFile::into_temp_path().keep()` で Drop を無効化）
+- ローカルターミナル前提（SSH 越しではファイルパスが到達しない）
+  → mlux は元々ローカル前提のため問題なし
+- `send_raw_image`（96 byte RGBA）はインライン `t=d` のまま（ファイル I/O の方が重い）
+
+**対象ファイル:**
+- `src/viewer/terminal.rs` — `send_image()`
+- `Cargo.toml` — `tempfile` を dev-dependencies → dependencies に移動
+
+### 4. ~~Kitty 転送チャンクサイズ増加~~（施策5で置換）
 
 **問題:** 現在 `CHUNK_SIZE = 4096` で、1MB の base64 データを ~333 チャンクに
 分割して write + flush している。各チャンクに escape sequence のオーバーヘッドあり。
@@ -102,7 +129,8 @@ Kitty 側の制限は特にない (任意サイズのペイロードを受け付
 1. **即時フィードバック** — 難易度低・体感効果大
 2. **Span 除外ハッシュ** — 最大効果だが実装量あり
 3. **PNG 低圧縮** — 難易度低・確実な短縮
-4. ~~**チャンクサイズ**~~ — 実施済み (4KB→16KB)。効果は限定的 (転送時間の支配要因はデータ量)
+4. ~~**チャンクサイズ**~~ — 施策5で置換
+5. ~~**Kitty temp file (`t=t`)**~~ — 実施済み。~139ms → 数ms の PTY バイパス
 
 ## Appendix: 施策1 Span除外ハッシュ 実装メモ
 

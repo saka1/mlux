@@ -9,13 +9,11 @@ use crossterm::{
 use log::{debug, warn};
 use std::io::{self, Write, stdout};
 use std::os::unix::io::AsRawFd;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::display_state::DisplayState;
 use super::layout::{Layout, ScrollState};
 use crate::frame::VisibleTiles;
-
-const CHUNK_SIZE: usize = 4096;
 
 // ---------------------------------------------------------------------------
 // RawGuard — restores raw mode / alternate screen / image cleanup on Drop
@@ -56,30 +54,44 @@ impl Drop for RawGuard {
 // Kitty protocol helpers
 // ---------------------------------------------------------------------------
 
-/// Send PNG data in chunks (a=t: transfer only, no display)
+/// Send PNG data via temp file (a=t: transfer only, no display).
+///
+/// Writes `png_data` to a temp file, then sends a single Kitty escape
+/// sequence with `t=t` (temp file transfer). Kitty reads and deletes
+/// the file, avoiding base64-encoding the full payload through the pty.
 pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
-    debug!("kgp: send_image id={image_id} ({} bytes)", png_data.len());
-    let encoded = BASE64.encode(png_data);
-    let chunks: Vec<&str> = encoded
-        .as_bytes()
-        .chunks(CHUNK_SIZE)
-        .map(|c| std::str::from_utf8(c).unwrap())
-        .collect();
+    let start = Instant::now();
 
+    let mut tmp = tempfile::Builder::new()
+        .prefix("tty-graphics-protocol.")
+        .tempfile()?;
+    tmp.write_all(png_data)?;
+    tmp.flush()?;
+
+    // Get path, then close handle and disarm auto-delete.
+    // Kitty deletes the file after reading (t=t).
+    let path = tmp
+        .path()
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "temp path not UTF-8"))?
+        .to_string();
+    let _ = tmp.into_temp_path().keep();
+
+    let encoded_path = BASE64.encode(path.as_bytes());
     let mut out = stdout();
-    for (i, chunk) in chunks.iter().enumerate() {
-        let is_last = i == chunks.len() - 1;
-        let m = if is_last { 0 } else { 1 };
-        if i == 0 {
-            write!(
-                out,
-                "\x1b_Ga=t,f=100,i={image_id},t=d,q=2,m={m};{chunk}\x1b\\"
-            )?;
-        } else {
-            write!(out, "\x1b_Gm={m},q=2;{chunk}\x1b\\")?;
-        }
-    }
-    out.flush()
+    write!(
+        out,
+        "\x1b_Ga=t,f=100,i={image_id},t=t,q=2;{encoded_path}\x1b\\"
+    )?;
+    out.flush()?;
+
+    debug!(
+        "kgp: send_image id={image_id} ({} bytes) tmpfile {:.1}ms [{}]",
+        png_data.len(),
+        start.elapsed().as_secs_f64() * 1000.0,
+        path,
+    );
+    Ok(())
 }
 
 /// Send raw RGBA data (a=t: transfer only, no display).
