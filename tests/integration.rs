@@ -1165,6 +1165,44 @@ fn test_tile_hash_no_change_full_recovery() {
     );
 }
 
+/// Inserting a line in the middle shifts all subsequent Spans.
+/// With Span-excluding hashing, tiles before the edit should still match.
+#[test]
+fn test_tile_hash_mid_edit_recovers_early_tiles() {
+    let lines: Vec<String> = (0..50).map(|i| format!("Line {i}\n")).collect();
+    let md_original: String = lines.iter().cloned().collect();
+
+    let old_hashes = build_hashes(&md_original);
+    assert!(old_hashes.len() >= 2, "need at least 2 tiles for this test");
+
+    let mut tile_cache = TileCache::new();
+    tile_cache.merge_generation(&old_hashes);
+    for i in 0..old_hashes.len() {
+        tile_cache.insert(
+            i,
+            TilePngs {
+                content: vec![i as u8],
+                sidebar: vec![i as u8],
+            },
+        );
+    }
+
+    // Insert a line near the middle — this shifts Spans for all subsequent content
+    let mut modified_lines = lines.clone();
+    modified_lines.insert(25, "INSERTED LINE\n".to_string());
+    let md_modified: String = modified_lines.iter().cloned().collect();
+
+    let new_hashes = build_hashes(&md_modified);
+    let recovered = tile_cache.merge_generation(&new_hashes);
+
+    // The first tile (before the edit point) should be recovered
+    assert!(
+        recovered > 0,
+        "mid-edit should recover early tiles (recovered {recovered}/{})",
+        new_hashes.len(),
+    );
+}
+
 #[test]
 fn test_code_block_no_lang_lines_are_individual() {
     let md = "# H\n\n```\nline1\nline2\nline3\n```\n";

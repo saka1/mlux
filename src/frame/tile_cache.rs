@@ -90,7 +90,9 @@ impl TileCache {
 mod tests {
     use super::*;
     fn make_hash(v: u8) -> TileHash {
-        TileHash::new_for_test(v as u64)
+        let mut arr = [0u8; 32];
+        arr[0] = v;
+        TileHash::new_for_test(arr)
     }
 
     fn make_pngs(tag: u8) -> TilePngs {

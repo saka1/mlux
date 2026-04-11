@@ -1,4 +1,4 @@
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -125,28 +125,114 @@ pub fn split_frame(frame: &Frame, tile_height_pt: f64) -> Vec<Frame> {
 // TileHash — content-addressed tile identity
 // ---------------------------------------------------------------------------
 
-/// 64-bit content hash identifying a tile's visual content.
+/// 256-bit content hash identifying a tile's visual content.
 ///
-/// Uses `Frame`'s derive `Hash` (which covers all fields including Span).
-/// Same source text + same `FileId` produces identical Spans, so the hash
-/// is deterministic across recompilations of the same input.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub struct TileHash(u64);
+/// Uses BLAKE3 with a custom Frame tree walk that excludes Span (source
+/// positions). This ensures that editing one line of Markdown does not
+/// invalidate the hashes of tiles whose visual content is unchanged.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct TileHash([u8; 32]);
 
 #[cfg(test)]
 impl TileHash {
     /// Create a TileHash from a raw value (test-only).
-    pub(crate) fn new_for_test(v: u64) -> Self {
+    pub(crate) fn new_for_test(v: [u8; 32]) -> Self {
         Self(v)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BLAKE3 visual hashing — Span-excluding Frame tree walk
+// ---------------------------------------------------------------------------
+
+/// Adapter: forwards `std::hash::Hasher::write()` to `blake3::Hasher::update()`.
+///
+/// This lets us reuse typst's `derive Hash` for Span-free types (Paint, Font,
+/// Shape, Geometry, etc.) without manually decomposing every nested field.
+struct Blake3StdHasher<'a>(&'a mut blake3::Hasher);
+
+impl Hasher for Blake3StdHasher<'_> {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+    fn finish(&self) -> u64 {
+        unreachable!("use blake3::Hasher::finalize()")
+    }
+}
+
+/// Hash the visual content of a Frame, excluding Span fields.
+fn hash_frame_visual(frame: &Frame, h: &mut blake3::Hasher) {
+    let mut adapter = Blake3StdHasher(h);
+    frame.size().hash(&mut adapter);
+    frame.baseline().hash(&mut adapter);
+    frame.kind().hash(&mut adapter);
+    let h = adapter.0;
+    for (pos, item) in frame.items() {
+        pos.hash(&mut Blake3StdHasher(h));
+        hash_frame_item_visual(item, h);
+    }
+}
+
+/// Hash a single FrameItem, skipping Span fields and Tag contents.
+///
+/// The field lists for `Text`/`Glyph` are tied to typst 0.14's struct layout.
+/// If typst adds a visually-significant field, update this function accordingly.
+fn hash_frame_item_visual(item: &FrameItem, h: &mut blake3::Hasher) {
+    match item {
+        FrameItem::Group(g) => {
+            h.update(&[0]);
+            g.transform.hash(&mut Blake3StdHasher(h));
+            g.clip.hash(&mut Blake3StdHasher(h));
+            g.label.hash(&mut Blake3StdHasher(h));
+            g.parent.hash(&mut Blake3StdHasher(h));
+            hash_frame_visual(&g.frame, h);
+        }
+        FrameItem::Text(t) => {
+            h.update(&[1]);
+            t.font.hash(&mut Blake3StdHasher(h));
+            t.size.hash(&mut Blake3StdHasher(h));
+            t.fill.hash(&mut Blake3StdHasher(h));
+            t.stroke.hash(&mut Blake3StdHasher(h));
+            t.lang.hash(&mut Blake3StdHasher(h));
+            t.region.hash(&mut Blake3StdHasher(h));
+            t.text.hash(&mut Blake3StdHasher(h));
+            for glyph in &t.glyphs {
+                glyph.id.hash(&mut Blake3StdHasher(h));
+                glyph.x_advance.hash(&mut Blake3StdHasher(h));
+                glyph.x_offset.hash(&mut Blake3StdHasher(h));
+                glyph.y_advance.hash(&mut Blake3StdHasher(h));
+                glyph.y_offset.hash(&mut Blake3StdHasher(h));
+                glyph.range.hash(&mut Blake3StdHasher(h));
+                // glyph.span deliberately excluded
+            }
+        }
+        FrameItem::Shape(shape, _span) => {
+            h.update(&[2]);
+            shape.hash(&mut Blake3StdHasher(h));
+        }
+        FrameItem::Image(image, size, _span) => {
+            h.update(&[3]);
+            image.hash(&mut Blake3StdHasher(h));
+            size.hash(&mut Blake3StdHasher(h));
+        }
+        FrameItem::Link(dest, size) => {
+            h.update(&[4]);
+            dest.hash(&mut Blake3StdHasher(h));
+            size.hash(&mut Blake3StdHasher(h));
+        }
+        FrameItem::Tag(_) => {
+            h.update(&[5]);
+            // Tag is for introspection only — no visual content.
+        }
     }
 }
 
 /// Hash a content + sidebar frame pair into a single [`TileHash`].
 pub fn compute_tile_pair_hash(content: &Frame, sidebar: &Frame) -> TileHash {
-    let mut h = DefaultHasher::new();
-    content.hash(&mut h);
-    sidebar.hash(&mut h);
-    TileHash(h.finish())
+    let mut h = blake3::Hasher::new();
+    hash_frame_visual(content, &mut h);
+    hash_frame_visual(sidebar, &mut h);
+    TileHash(h.finalize().into())
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +561,38 @@ mod tests {
         assert_ne!(
             compute_tile_pair_hash(&f1, &side),
             compute_tile_pair_hash(&f2, &side),
+        );
+    }
+
+    /// Same visual Shape but different Spans must produce the same hash.
+    #[test]
+    fn compute_tile_pair_hash_ignores_span() {
+        use std::num::NonZeroU16;
+        use typst::syntax::FileId;
+
+        let file_id = FileId::from_raw(NonZeroU16::new(1).unwrap());
+        let span_a = Span::from_range(file_id, 0..10);
+        let span_b = Span::from_range(file_id, 100..200);
+        assert_ne!(span_a, span_b);
+
+        let shape = typst::visualize::Shape {
+            geometry: Geometry::Rect(Axes::new(Abs::pt(50.0), Abs::pt(50.0))),
+            fill: None,
+            fill_rule: Default::default(),
+            stroke: None,
+        };
+
+        let mut f1 = Frame::hard(Axes::new(Abs::pt(100.0), Abs::pt(100.0)));
+        f1.push(Point::zero(), FrameItem::Shape(shape.clone(), span_a));
+
+        let mut f2 = Frame::hard(Axes::new(Abs::pt(100.0), Abs::pt(100.0)));
+        f2.push(Point::zero(), FrameItem::Shape(shape, span_b));
+
+        let side = empty_frame();
+        assert_eq!(
+            compute_tile_pair_hash(&f1, &side),
+            compute_tile_pair_hash(&f2, &side),
+            "identical visual content with different Spans should hash equally"
         );
     }
 
