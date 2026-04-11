@@ -1129,13 +1129,14 @@ fn test_tile_hash_merge_recovers_unchanged_tiles() {
     md_modified.push_str("Extra line at the end.\n");
 
     let new_hashes = build_hashes(&md_modified);
-    let total = new_hashes.len();
-    let recovered = tile_cache.merge_generation(&new_hashes);
+    let m = tile_cache.merge_generation(&new_hashes);
 
     // At least some tiles should be recovered (early tiles are unchanged)
     assert!(
-        recovered > 0,
-        "merge should recover at least some tiles (recovered {recovered}/{total})",
+        m.recovered > 0,
+        "merge should recover at least some tiles (recovered {}/{})",
+        m.recovered,
+        m.total,
     );
 }
 
@@ -1157,11 +1158,11 @@ fn test_tile_hash_no_change_full_recovery() {
     }
 
     // Rebuild identical document
-    let total = hashes.len();
-    let recovered = tile_cache.merge_generation(&hashes);
+    let m = tile_cache.merge_generation(&hashes);
     assert_eq!(
-        recovered, total,
-        "identical rebuild should recover all {total} tiles"
+        m.recovered, m.total,
+        "identical rebuild should recover all {} tiles",
+        m.total,
     );
 }
 
@@ -1193,12 +1194,13 @@ fn test_tile_hash_mid_edit_recovers_early_tiles() {
     let md_modified: String = modified_lines.iter().cloned().collect();
 
     let new_hashes = build_hashes(&md_modified);
-    let recovered = tile_cache.merge_generation(&new_hashes);
+    let m = tile_cache.merge_generation(&new_hashes);
 
     // The first tile (before the edit point) should be recovered
     assert!(
-        recovered > 0,
-        "mid-edit should recover early tiles (recovered {recovered}/{})",
+        m.recovered > 0,
+        "mid-edit should recover early tiles (recovered {}/{})",
+        m.recovered,
         new_hashes.len(),
     );
 }

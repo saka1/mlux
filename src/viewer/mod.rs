@@ -260,8 +260,17 @@ pub fn run(
             }
         };
         // Merge cached tiles from previous generation
-        let recovered = tile_cache.merge_generation(&meta.tile_hashes);
-        info!("merge: recovered {}/{} tiles", recovered, meta.tile_count);
+        let merge = tile_cache.merge_generation(&meta.tile_hashes);
+        if merge.recovered == merge.total {
+            info!("merge: recovered {}/{} tiles", merge.recovered, merge.total);
+        } else {
+            let not_cached = merge.hash_matched - merge.recovered;
+            let changed = merge.total - merge.hash_matched;
+            info!(
+                "merge: recovered {}/{} tiles ({} changed, {} not yet rendered)",
+                merge.recovered, merge.total, changed, not_cached,
+            );
+        }
 
         let img_w = meta.width_px;
         let img_h = meta.total_height_px;

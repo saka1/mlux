@@ -15,7 +15,7 @@ pub use tile::{
     ContentMapping, DocumentMeta, TileHash, TilePngs, TiledDocument, VisibleTiles,
     compute_tile_pair_hash, split_frame,
 };
-pub use tile_cache::TileCache;
+pub use tile_cache::{MergeResult, TileCache};
 pub use visual_line::{
     VisualLine, byte_offset_to_line, extract_visual_lines, extract_visual_lines_with_map,
 };

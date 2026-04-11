@@ -480,6 +480,13 @@ impl TiledDocument {
             hashes.len(),
             start.elapsed().as_secs_f64() * 1000.0
         );
+        for (i, hash) in hashes.iter().enumerate() {
+            debug!(
+                "tile: hash[{i}] = {:032x}{:032x}",
+                u128::from_be_bytes(hash.0[..16].try_into().unwrap()),
+                u128::from_be_bytes(hash.0[16..].try_into().unwrap())
+            );
+        }
         hashes
     }
 

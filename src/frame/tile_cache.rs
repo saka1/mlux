@@ -4,6 +4,17 @@ use log::trace;
 
 use super::tile::{TileHash, TilePngs};
 
+/// Result of [`TileCache::merge_generation`].
+pub struct MergeResult {
+    /// Tiles with a matching hash whose cached PNGs were recovered.
+    pub recovered: usize,
+    /// Tiles whose content hash matched the previous generation (including
+    /// those without cached PNGs, e.g. never rendered or evicted).
+    pub hash_matched: usize,
+    /// Total number of tiles in the new generation.
+    pub total: usize,
+}
+
 /// Composite cache that pairs rendered tile PNGs with their content hashes.
 pub struct TileCache {
     cache: HashMap<usize, TilePngs>,
@@ -28,21 +39,27 @@ impl TileCache {
     /// Merge cached tile PNGs from a previous generation into a new cache.
     ///
     /// For each tile in the new document, if the old cache has a tile with the
-    /// same content hash, move the PNG over. Returns the number of recovered
-    /// tiles.
-    pub fn merge_generation(&mut self, new_hashes: &[TileHash]) -> usize {
+    /// same content hash, move the PNG over.
+    pub fn merge_generation(&mut self, new_hashes: &[TileHash]) -> MergeResult {
         let mut new_cache = HashMap::new();
+        let mut hash_matched = 0usize;
         for (new_idx, new_hash) in new_hashes.iter().enumerate() {
-            if let Some(old_idx) = self.hashes.iter().position(|h| h == new_hash)
-                && let Some(pngs) = self.cache.remove(&old_idx)
-            {
-                new_cache.insert(new_idx, pngs);
+            if let Some(old_idx) = self.hashes.iter().position(|h| h == new_hash) {
+                hash_matched += 1;
+                if let Some(pngs) = self.cache.remove(&old_idx) {
+                    new_cache.insert(new_idx, pngs);
+                }
             }
         }
         let recovered = new_cache.len();
+        let total = new_hashes.len();
         self.cache = new_cache;
         self.hashes = new_hashes.to_vec();
-        recovered
+        MergeResult {
+            recovered,
+            hash_matched,
+            total,
+        }
     }
 
     /// Discard all cached data (e.g., when navigating to a different document).
@@ -111,8 +128,10 @@ mod tests {
         tc.cache.insert(0, make_pngs(10));
         tc.cache.insert(1, make_pngs(20));
 
-        let recovered = tc.merge_generation(&hashes);
-        assert_eq!(recovered, 2);
+        let m = tc.merge_generation(&hashes);
+        assert_eq!(m.recovered, 2);
+        assert_eq!(m.hash_matched, 2);
+        assert_eq!(m.total, 2);
         assert_eq!(tc.get(0).unwrap().content, vec![10]);
         assert_eq!(tc.get(1).unwrap().content, vec![20]);
     }
@@ -126,8 +145,10 @@ mod tests {
         tc.cache.insert(0, make_pngs(10));
         tc.cache.insert(1, make_pngs(20));
 
-        let recovered = tc.merge_generation(&new_hashes);
-        assert_eq!(recovered, 1);
+        let m = tc.merge_generation(&new_hashes);
+        assert_eq!(m.recovered, 1);
+        assert_eq!(m.hash_matched, 1);
+        assert_eq!(m.total, 2);
         assert!(tc.contains(0));
         assert!(!tc.contains(1));
     }
@@ -141,8 +162,10 @@ mod tests {
         tc.cache.insert(0, make_pngs(10));
         tc.cache.insert(1, make_pngs(20));
 
-        let recovered = tc.merge_generation(&new_hashes);
-        assert_eq!(recovered, 0);
+        let m = tc.merge_generation(&new_hashes);
+        assert_eq!(m.recovered, 0);
+        assert_eq!(m.hash_matched, 0);
+        assert_eq!(m.total, 2);
     }
 
     #[test]
@@ -152,8 +175,10 @@ mod tests {
         tc.hashes = hashes.clone();
         // Don't insert anything — simulates evicted tile (no PNG in cache)
 
-        let recovered = tc.merge_generation(&hashes);
-        assert_eq!(recovered, 0);
+        let m = tc.merge_generation(&hashes);
+        assert_eq!(m.recovered, 0);
+        assert_eq!(m.hash_matched, 1);
+        assert_eq!(m.total, 1);
     }
 
     #[test]
