@@ -30,6 +30,7 @@ mod mode_normal;
 mod mode_toc;
 mod mode_url;
 pub mod query;
+mod scroll;
 mod scroll_policy;
 mod session;
 mod terminal;
@@ -57,14 +58,14 @@ use crate::watch::FileWatcher;
 
 use display_state::{DisplayState, ForkHandle};
 use effect::{Effect, ExitReason, ViewerMode};
-use input_history::{InputHistory, ScrollDirection};
+use input_history::ScrollDirection;
 use keymap::{
     Action, InputAccumulator, map_command_key, map_grep_key, map_inline_search_key, map_key_event,
     map_log_key, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
 use query::DocumentQuery;
-use scroll_policy::ScrollPolicy;
+use scroll::ScrollStrategy;
 use session::Session;
 use viewport::{ViewContext, Viewport};
 
@@ -302,8 +303,7 @@ pub fn run(
         // in_flight: set of tile indices sent to the child but not yet received.
         // Inserted by send_prefetch(), removed on try_recv().
         let mut in_flight: HashSet<usize> = HashSet::new();
-        let mut input_history = InputHistory::new(Duration::from_millis(5000), 128);
-        let scroll_policy = ScrollPolicy::new();
+        let mut scroll_strategy = ScrollStrategy::from_mode(app.config.viewer.scroll_mode);
         let mut renderer = renderer;
 
         let exit: anyhow::Result<(ExitReason, u32)> = (|| -> anyhow::Result<(ExitReason, u32)> {
@@ -390,19 +390,16 @@ pub fn run(
                                             }
                                             _ => None,
                                         };
-                                        if let Some(d) = dir {
-                                            input_history.record(d);
-                                        }
-
-                                        let base_step = app.config.viewer.scroll_step
-                                            * session.layout.cell_h as u32;
                                         let scroll_step = match dir {
-                                            Some(d) => scroll_policy.effective_step(
-                                                base_step,
+                                            Some(d) => scroll_strategy.step(
+                                                app.config.viewer.scroll_step,
+                                                session.layout.cell_h as u32,
                                                 d,
-                                                &input_history,
                                             ),
-                                            None => base_step,
+                                            None => {
+                                                app.config.viewer.scroll_step
+                                                    * session.layout.cell_h as u32
+                                            }
                                         };
 
                                         let mut ctx = mode_normal::NormalCtx {

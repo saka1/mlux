@@ -71,6 +71,28 @@ struct Cli {
     /// Enable debug-level logging (default is info level)
     #[arg(long, global = true)]
     debug: bool,
+
+    /// Scroll behavior. `adaptive` is experimental — input-density-driven
+    /// acceleration (see docs/2026-04-12-design-scroll-acceleration.md).
+    #[arg(long, value_enum, global = true)]
+    scroll: Option<ScrollModeArg>,
+}
+
+/// CLI-local mirror of [`mlux::config::ScrollMode`] — carries the clap
+/// `ValueEnum` derive so the lib crate stays free of CLI-parsing concerns.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ScrollModeArg {
+    Fixed,
+    Adaptive,
+}
+
+impl From<ScrollModeArg> for mlux::config::ScrollMode {
+    fn from(v: ScrollModeArg) -> Self {
+        match v {
+            ScrollModeArg::Fixed => Self::Fixed,
+            ScrollModeArg::Adaptive => Self::Adaptive,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -131,6 +153,7 @@ fn main() {
         ppi: render_ppi,
         tile_height: render_tile_height,
         allow_remote_images: cli.allow_remote_images,
+        scroll_mode: cli.scroll.map(Into::into),
     };
 
     let mut config = config::Config::default();
