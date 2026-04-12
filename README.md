@@ -91,6 +91,12 @@ matches with `n` / `N`. `:noh` clears highlights.
 Links to local `.md` files navigate inline, and `Ctrl-O` pops back
 to the previous location with scroll position restored.
 
+### Adaptive scroll (experimental)
+
+`--scroll-mode=adaptive` adjusts scroll speed to input frequency —
+faster when keys are pressed rapidly, slower when you ease off. Default
+is `fixed`.
+
 ## How it works
 
 mlux converts Markdown to Typst markup, then renders each page as a PNG
