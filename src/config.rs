@@ -13,8 +13,21 @@ pub struct Config {
     pub viewer: ViewerConfig,
 }
 
+/// User-facing scroll-behavior choice.  Config carries only the
+/// selection; the viewer maps each variant to a concrete strategy
+/// implementation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollMode {
+    /// Constant step per keypress (classic behavior).
+    #[default]
+    Fixed,
+    /// Input-density-driven multiplier (experimental).
+    Adaptive,
+}
+
 pub struct ViewerConfig {
     pub scroll_step: u32,
+    pub scroll_mode: ScrollMode,
     pub frame_budget: Duration,
     pub tile_height: f64,
     pub sidebar_cols: u16,
@@ -37,6 +50,7 @@ impl Default for ViewerConfig {
     fn default() -> Self {
         Self {
             scroll_step: 3,
+            scroll_mode: ScrollMode::default(),
             frame_budget: Duration::from_millis(32),
             tile_height: 500.0,
             sidebar_cols: 6,
@@ -65,6 +79,16 @@ impl Config {
             debug!("config: CLI override tile_height={v}");
             self.viewer.tile_height = v;
         }
+        if let Some(mode) = cli.scroll_mode {
+            debug!("config: CLI override scroll_mode={mode:?}");
+            self.viewer.scroll_mode = mode;
+            // Note: `scroll_step` is NOT coerced here.  It applies only
+            // to the `Fixed` strategy; `Adaptive` uses its own internal
+            // base (see `src/viewer/scroll_policy.rs`) and ignores this
+            // setting entirely.  Earlier revisions coerced `scroll_step
+            // = 2` for adaptive, which mixed user preference with
+            // algorithm tuning — keeping them disjoint is the fix.
+        }
     }
 }
 
@@ -79,6 +103,7 @@ pub struct CliOverrides {
     pub ppi: Option<f32>,
     pub tile_height: Option<f64>,
     pub allow_remote_images: bool,
+    pub scroll_mode: Option<ScrollMode>,
 }
 
 #[cfg(test)]
@@ -92,6 +117,7 @@ mod tests {
         assert_eq!(config.width, 660.0);
         assert_eq!(config.ppi, 144.0);
         assert_eq!(config.viewer.scroll_step, 3);
+        assert_eq!(config.viewer.scroll_mode, ScrollMode::Fixed);
         assert_eq!(config.viewer.sidebar_cols, 6);
         assert_eq!(config.viewer.evict_distance, 4);
     }
@@ -105,10 +131,29 @@ mod tests {
             ppi: Some(288.0),
             tile_height: None,
             allow_remote_images: false,
+            scroll_mode: None,
         };
         config.apply_cli(&cli);
         assert_eq!(config.theme, "dark");
         assert_eq!(config.ppi, 288.0);
         assert_eq!(config.width, 660.0); // unchanged
+    }
+
+    #[test]
+    fn scroll_mode_override_does_not_touch_scroll_step() {
+        // `scroll_step` is the user's canonical preference; selecting
+        // adaptive mode must not silently rewrite it.  The adaptive
+        // algorithm scales off whatever the user configured.
+        for mode in [ScrollMode::Fixed, ScrollMode::Adaptive] {
+            let mut config = Config::default();
+            assert_eq!(config.viewer.scroll_step, 3);
+            let cli = CliOverrides {
+                scroll_mode: Some(mode),
+                ..Default::default()
+            };
+            config.apply_cli(&cli);
+            assert_eq!(config.viewer.scroll_mode, mode);
+            assert_eq!(config.viewer.scroll_step, 3); // unchanged
+        }
     }
 }

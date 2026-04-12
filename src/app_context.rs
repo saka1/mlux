@@ -136,13 +136,7 @@ mod tests {
     }
 
     fn test_overrides() -> CliOverrides {
-        CliOverrides {
-            theme: None,
-            width: None,
-            ppi: None,
-            tile_height: None,
-            allow_remote_images: false,
-        }
+        CliOverrides::default()
     }
 
     #[test]
