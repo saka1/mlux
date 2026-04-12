@@ -17,7 +17,6 @@
 //!   causing phantom scrolling. `q=2` suppresses both OK and error responses.
 //!   Since the viewer never reads Kitty responses, this is always safe.
 
-mod display_state;
 mod effect;
 mod input_history;
 mod keymap;
@@ -29,6 +28,7 @@ mod mode_log;
 mod mode_normal;
 mod mode_toc;
 mod mode_url;
+mod presenter;
 pub mod query;
 mod scroll;
 mod scroll_policy;
@@ -56,7 +56,6 @@ use crate::frame::TileCache;
 use crate::input_source::InputSource;
 use crate::watch::FileWatcher;
 
-use display_state::{DisplayState, ForkHandle};
 use effect::{Effect, ExitReason, ViewerMode};
 use input_history::ScrollDirection;
 use keymap::{
@@ -64,6 +63,7 @@ use keymap::{
     map_log_key, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
+use presenter::{ForkHandle, GenerationTracker, TilePresenter};
 use query::DocumentQuery;
 use scroll::ScrollStrategy;
 use session::Session;
@@ -142,9 +142,7 @@ pub fn run(
 
     // Double-buffer: two fixed ID ranges, toggled on reload.
     // Old-generation images stay visible while new ones compile + upload.
-    const GEN_BASES: [u32; 2] = [100, 5000];
-    let mut active_gen: usize = 0;
-    let mut stale_image_ids: Vec<u32> = Vec::new();
+    let mut gen_tracker = GenerationTracker::new();
 
     // Outer loop: each iteration builds a new TiledDocument (initial + resize + reload)
     'outer: loop {
@@ -235,7 +233,7 @@ pub fn run(
                 }
                 if !loading_shown && Instant::now() >= fast_deadline {
                     // Don't clear screen if old-gen images are still displayed
-                    let clear = stale_image_ids.is_empty();
+                    let clear = !gen_tracker.has_stale();
                     terminal::draw_loading_screen(&session.layout, &session.filename, clear)?;
                     loading_shown = true;
                 }
@@ -255,8 +253,7 @@ pub fn run(
                                 new_rows,
                                 app.config.viewer.sidebar_cols,
                             )?;
-                            stale_image_ids.clear(); // resize deletes all images
-                            active_gen = 0;
+                            gen_tracker.on_exit(false); // resize deletes all images
                             continue 'outer;
                         }
                         _ => {}
@@ -290,9 +287,9 @@ pub fn run(
                 vp_w,
                 vp_h,
             },
-            display: DisplayState::new_with_start_id(
+            presenter: TilePresenter::new_for_generation(
                 app.config.viewer.evict_distance,
-                GEN_BASES[active_gen],
+                &gen_tracker,
             ),
             flash: session.pending_flash.take(),
             dirty: false,
@@ -316,16 +313,17 @@ pub fn run(
             } else {
                 None
             };
-            display_state::redraw_and_prefetch(
-                &meta,
+            vp.presenter.present(
+                &presenter::PresentationFrame {
+                    meta: &meta,
+                    layout: &session.layout,
+                    scroll: &vp.scroll,
+                    filename: &session.filename,
+                    acc_peek: acc.peek(),
+                    flash: None,
+                    search_spec: search_spec.as_ref(),
+                },
                 &mut tile_cache,
-                &mut vp.display,
-                &session.layout,
-                &vp.scroll,
-                &session.filename,
-                acc.peek(),
-                None,
-                search_spec.as_ref(),
                 &mut ForkHandle {
                     renderer: &mut renderer,
                     in_flight: &mut in_flight,
@@ -333,15 +331,7 @@ pub fn run(
             )?;
 
             // Double-buffer: clean up old-generation images now that new tiles are placed
-            if !stale_image_ids.is_empty() {
-                info!(
-                    "double-buffer: deleting {} stale image IDs from old gen",
-                    stale_image_ids.len(),
-                );
-                debug!("double-buffer: stale IDs: {:?}", stale_image_ids);
-                terminal::delete_images_by_ids(&stale_image_ids)?;
-                stale_image_ids.clear();
-            }
+            gen_tracker.finalize()?;
 
             // Inner event loop
             let mut last_render = Instant::now();
@@ -522,16 +512,16 @@ pub fn run(
                                 let (new_vp, render_ops) = vp.apply(effect, &ctx);
                                 vp = new_vp;
                                 if let Some(reason) =
-                                    effect::execute_render_ops(render_ops, &vp, &ctx)?
+                                    effect::execute_render_ops(render_ops, &mut vp, &ctx)?
                                 {
-                                    stale_image_ids = vp.display.all_image_ids();
+                                    gen_tracker.capture_stale(&vp.presenter);
                                     return Ok((reason, vp.scroll.y_offset));
                                 }
                             }
                         }
 
                         Event::Resize(new_cols, new_rows) => {
-                            stale_image_ids = vp.display.all_image_ids();
+                            gen_tracker.capture_stale(&vp.presenter);
                             return Ok((
                                 ExitReason::Resize { new_cols, new_rows },
                                 vp.scroll.y_offset,
@@ -563,16 +553,17 @@ pub fn run(
                             }
                         }
                     };
-                    display_state::redraw_and_prefetch(
-                        &meta,
+                    vp.presenter.present(
+                        &presenter::PresentationFrame {
+                            meta: &meta,
+                            layout: &session.layout,
+                            scroll: &vp.scroll,
+                            filename: &session.filename,
+                            acc_peek: acc.peek(),
+                            flash: vp.flash.as_deref(),
+                            search_spec: search_spec.as_ref(),
+                        },
                         &mut tile_cache,
-                        &mut vp.display,
-                        &session.layout,
-                        &vp.scroll,
-                        &session.filename,
-                        acc.peek(),
-                        vp.flash.as_deref(),
-                        search_spec.as_ref(),
                         &mut ForkHandle {
                             renderer: &mut renderer,
                             in_flight: &mut in_flight,
@@ -599,7 +590,7 @@ pub fn run(
                 };
                 if content_changed {
                     info!("file change detected, reloading");
-                    stale_image_ids = vp.display.all_image_ids();
+                    gen_tracker.capture_stale(&vp.presenter);
                     return Ok((ExitReason::Reload, vp.scroll.y_offset));
                 }
             }
@@ -616,20 +607,7 @@ pub fn run(
         }
 
         // Double-buffer: toggle generation on reload, reset on everything else
-        if matches!(&exit, ExitReason::Reload) {
-            active_gen ^= 1;
-            debug!(
-                "double-buffer: gen {} → {}, stale {} IDs (base={})",
-                active_gen ^ 1,
-                active_gen,
-                stale_image_ids.len(),
-                GEN_BASES[active_gen],
-            );
-        } else {
-            // Resize/Navigate/etc call delete_all_images() → reset to gen 0
-            active_gen = 0;
-            stale_image_ids.clear();
-        }
+        gen_tracker.on_exit(matches!(&exit, ExitReason::Reload));
 
         if session.handle_exit(exit, scroll_y, app.config.viewer.sidebar_cols)? {
             break 'outer;

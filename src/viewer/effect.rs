@@ -101,7 +101,7 @@ pub(super) enum RenderOp {
 /// Short-circuits on the first `RenderOp::Exit` encountered.
 pub(super) fn execute_render_ops(
     ops: Vec<RenderOp>,
-    vp: &Viewport,
+    vp: &mut Viewport,
     ctx: &ViewContext,
 ) -> anyhow::Result<Option<ExitReason>> {
     for op in ops {
@@ -165,10 +165,10 @@ pub(super) fn execute_render_ops(
                 let _ = open::that_in_background(&url);
             }
             RenderOp::DeletePlacements => {
-                vp.display.delete_placements()?;
+                vp.presenter.delete_placements()?;
             }
             RenderOp::DeleteOverlayPlacements => {
-                vp.display.delete_overlay_placements()?;
+                vp.presenter.delete_overlay_placements()?;
             }
             RenderOp::Exit(reason) => {
                 return Ok(Some(reason));

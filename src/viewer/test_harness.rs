@@ -5,13 +5,13 @@ use crate::frame::{DocumentMeta, HighlightRect, TiledDocument, VisibleTiles};
 use crate::pipeline::{BuildParams, build_tiled_document};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::display_state::DisplayState;
 use super::effect::{Effect, RenderOp, ViewerMode};
 use super::keymap::{
     InputAccumulator, map_command_key, map_grep_key, map_key_event, map_log_key, map_toc_key,
     map_url_key,
 };
 use super::layout::{self, Layout, ScrollState};
+use super::presenter::TilePresenter;
 use super::query::DocumentQuery;
 use super::viewport::{ViewContext, Viewport};
 
@@ -79,7 +79,7 @@ impl TestHarness {
                 vp_w,
                 vp_h,
             },
-            display: DisplayState::new(4),
+            presenter: TilePresenter::new(4),
             flash: None,
             dirty: false,
             last_search: None,

@@ -6,12 +6,12 @@
 
 use log::debug;
 
-use super::display_state::DisplayState;
 use super::effect::{Effect, ExitReason, RenderOp, ScreenRestore, ViewerMode};
 use super::layout::ScrollState;
 use super::mode_grep::LastSearch;
 use super::mode_log::LogState;
 use super::mode_url::{self, UrlPickerState};
+use super::presenter::TilePresenter;
 use super::query::DocumentQuery;
 use super::session::JumpEntry;
 
@@ -23,7 +23,7 @@ use super::session::JumpEntry;
 pub(super) struct Viewport {
     pub mode: ViewerMode,
     pub scroll: ScrollState,
-    pub display: DisplayState,
+    pub presenter: TilePresenter,
     pub flash: Option<String>,
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
@@ -40,7 +40,7 @@ impl Default for Viewport {
                 vp_w: 0,
                 vp_h: 0,
             },
-            display: DisplayState::new(0),
+            presenter: TilePresenter::new(0),
             flash: None,
             dirty: false,
             last_search: None,
@@ -146,7 +146,7 @@ impl Viewport {
                     ScreenRestore::FullRefresh => {
                         ops.push(RenderOp::ClearScreen);
                         ops.push(RenderOp::DeleteAllImages);
-                        self.display.clear_all();
+                        self.presenter.clear_all();
                     }
                     ScreenRestore::StatusBarRefresh => {
                         ops.push(RenderOp::DrawStatusBar);
@@ -158,19 +158,19 @@ impl Viewport {
             Effect::SetLastSearch(ls) => {
                 self.last_search = Some(ls);
                 self.highlights_visible = true;
-                self.display.clear_overlay_state();
+                self.presenter.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
             Effect::HideHighlights => {
                 self.highlights_visible = false;
-                self.display.clear_overlay_state();
+                self.presenter.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
             Effect::ShowHighlights => {
                 self.highlights_visible = true;
-                self.display.clear_overlay_state();
+                self.presenter.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
@@ -178,7 +178,7 @@ impl Viewport {
                 ops.push(RenderOp::DeletePlacements);
             }
             Effect::InvalidateOverlays => {
-                self.display.clear_overlay_state();
+                self.presenter.clear_overlay_state();
                 ops.push(RenderOp::DeleteOverlayPlacements);
                 self.dirty = true;
             }
@@ -189,7 +189,7 @@ impl Viewport {
                     if !matches!(self.mode, ViewerMode::Normal) {
                         ops.push(RenderOp::ClearScreen);
                         ops.push(RenderOp::DeleteAllImages);
-                        self.display.clear_all();
+                        self.presenter.clear_all();
                         self.mode = ViewerMode::Normal;
                         self.dirty = true;
                     } else {

@@ -1,5 +1,12 @@
 //! Terminal display state: Kitty image cache, redraw orchestration, and prefetch.
 
+mod frame;
+mod generation;
+mod ledger;
+mod placements;
+pub(super) use frame::PresentationFrame;
+pub(super) use generation::GenerationTracker;
+
 use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -14,12 +21,14 @@ use crate::renderer::{TileRenderer, TileResponse};
 // ---------------------------------------------------------------------------
 
 /// Kitty image IDs for a content + sidebar tile pair.
+#[derive(Clone)]
 pub(super) struct TileImageIds {
     pub content_id: u32,
     pub sidebar_id: u32,
 }
 
 /// KGP image IDs for all highlight images (full-width PNG + partial patterns).
+#[derive(Clone)]
 pub(super) struct HighlightImages {
     /// 2048×24 yellow PNG for precise width cropping (non-active matches).
     pub full_id: u32,
@@ -56,7 +65,7 @@ impl HighlightImages {
 }
 
 /// Track which tile PNGs are loaded in the terminal, keyed by tile index.
-pub(super) struct DisplayState {
+pub(super) struct TilePresenter {
     /// tile_index → Kitty image IDs (content + sidebar)
     pub map: HashMap<usize, TileImageIds>,
     next_id: u32,
@@ -65,6 +74,8 @@ pub(super) struct DisplayState {
     overlay_rects: HashMap<usize, Vec<HighlightRect>>,
     /// KGP image IDs for highlight images (uploaded once).
     highlight_images: Option<HighlightImages>,
+    /// Last-emitted placement parameters per logical slot for diff-based emission.
+    ledger: ledger::PlacementLedger,
 }
 
 /// Describes the actions needed to load a tile into the terminal.
@@ -76,12 +87,20 @@ pub(super) struct LoadAction {
     pub evict: Vec<(usize, TileImageIds)>,
 }
 
-impl DisplayState {
+impl TilePresenter {
     pub(super) fn new(evict_distance: usize) -> Self {
         Self::new_with_start_id(evict_distance, 100)
     }
 
-    /// Create a DisplayState that allocates image IDs starting from `start_id`.
+    /// Create a TilePresenter for the current generation tracked by `tracker`.
+    pub(super) fn new_for_generation(
+        evict_distance: usize,
+        tracker: &generation::GenerationTracker,
+    ) -> Self {
+        Self::new_with_start_id(evict_distance, tracker.current_base())
+    }
+
+    /// Create a TilePresenter that allocates image IDs starting from `start_id`.
     ///
     /// Used by the double-buffer reload scheme: each generation starts from a
     /// fixed base (e.g. 100 or 5000) so old and new images coexist briefly.
@@ -92,10 +111,11 @@ impl DisplayState {
             evict_distance,
             overlay_rects: HashMap::new(),
             highlight_images: None,
+            ledger: ledger::PlacementLedger::new(),
         }
     }
 
-    /// All Kitty image IDs owned by this DisplayState (tiles + highlights).
+    /// All Kitty image IDs owned by this TilePresenter (tiles + highlights).
     pub(super) fn all_image_ids(&self) -> Vec<u32> {
         let mut ids = Vec::new();
         for tile_ids in self.map.values() {
@@ -261,6 +281,7 @@ impl DisplayState {
     pub(super) fn clear_all(&mut self) {
         self.map.clear();
         self.highlight_images = None;
+        self.ledger.clear();
     }
 
     /// Clear overlay rect state only (no I/O).
@@ -276,8 +297,45 @@ impl DisplayState {
         Ok(())
     }
 
+    /// Full redraw cycle: drain, load, place, prefetch.
+    ///
+    /// Replaces the `redraw_and_prefetch` free function at call sites.
+    pub(super) fn present(
+        &mut self,
+        frame: &PresentationFrame<'_>,
+        cache: &mut TileCache,
+        rh: &mut ForkHandle<'_>,
+    ) -> anyhow::Result<()> {
+        drain_responses(rh, cache, self)?;
+        redraw(
+            frame.meta,
+            cache,
+            self,
+            frame.layout,
+            frame.scroll,
+            frame.filename,
+            frame.acc_peek,
+            frame.flash,
+            rh,
+        )?;
+        if let Some(spec) = frame.search_spec {
+            update_overlays(frame.meta, self, cache, frame.scroll, spec, rh)?;
+            let visible = frame
+                .meta
+                .visible_tiles(frame.scroll.y_offset, frame.scroll.vp_h);
+            placements::place_overlay_rects(&visible, self, frame.layout)?;
+        }
+        send_prefetch(rh, frame.meta, cache, frame.scroll.y_offset);
+        Ok(())
+    }
+
     /// Delete all tile placements (content + sidebar + highlight overlay).
-    pub(super) fn delete_placements(&self) -> io::Result<()> {
+    /// Delete all tile and overlay placements (explicit full-clear path).
+    ///
+    /// Used when entering a mode overlay (URL picker, etc.) or when the
+    /// caller has already deleted all images. Clears the ledger so the next
+    /// redraw re-emits everything from scratch.
+    pub(super) fn delete_placements(&mut self) -> io::Result<()> {
         use std::io::Write;
         let mut out = std::io::stdout();
         for ids in self.map.values() {
@@ -289,7 +347,9 @@ impl DisplayState {
                 write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
             }
         }
-        out.flush()
+        out.flush()?;
+        self.ledger.clear();
+        Ok(())
     }
 }
 
@@ -322,12 +382,12 @@ pub(super) struct ForkHandle<'a> {
 
 /// Full redraw: content tiles + sidebar + overlay + status bar.
 ///
-/// Ordering: ensure loaded (slow) → delete placements → place new (fast).
+/// Ordering: ensure loaded (slow) → delete stray placements → diff+emit (fast).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn redraw(
     meta: &DocumentMeta,
     cache: &mut TileCache,
-    loaded: &mut DisplayState,
+    loaded: &mut TilePresenter,
     layout: &Layout,
     scroll: &ScrollState,
     filename: &str,
@@ -350,13 +410,19 @@ pub(super) fn redraw(
         }
     }
 
-    // Phase 2: Delete old placements atomically, then place new ones.
-    loaded.delete_placements()?;
+    // Phase 2: Delete slots that are no longer visible (targeted, not blanket).
+    {
+        use std::io::Write;
+        let tile_keep = placements::visible_tile_slots(&visible);
+        let mut out = std::io::stdout();
+        placements::delete_stray_placements(&mut out, loaded, &tile_keep)?;
+        out.flush()?;
+    }
 
-    // Phase 3: Place content + sidebar + overlay + status bar
-    terminal::place_content_tiles(&visible, loaded, layout, scroll)?;
-    terminal::place_sidebar_tiles(&visible, loaded, meta.sidebar_width_px, layout)?;
-    terminal::place_overlay_rects(&visible, loaded, layout)?;
+    // Phase 3: Diff+emit content + sidebar + overlay + status bar
+    placements::place_content_tiles(&visible, loaded, layout, scroll)?;
+    placements::place_sidebar_tiles(&visible, loaded, meta.sidebar_width_px, layout)?;
+    placements::place_overlay_rects(&visible, loaded, layout)?;
     terminal::draw_status_bar(layout, scroll, filename, acc_peek, flash)?;
     Ok(())
 }
@@ -402,7 +468,7 @@ pub(super) fn send_prefetch(
 /// `place_overlay_rects`.
 pub(super) fn update_overlays(
     meta: &DocumentMeta,
-    loaded: &mut DisplayState,
+    loaded: &mut TilePresenter,
     cache: &mut TileCache,
     scroll: &ScrollState,
     spec: &HighlightSpec,
@@ -457,7 +523,7 @@ pub(super) fn update_overlays(
 pub(super) fn drain_responses(
     rh: &mut ForkHandle<'_>,
     cache: &mut TileCache,
-    display: &mut DisplayState,
+    display: &mut TilePresenter,
 ) -> anyhow::Result<()> {
     while let Some(resp) = rh.renderer.try_recv()? {
         match resp {
@@ -478,41 +544,13 @@ pub(super) fn drain_responses(
     Ok(())
 }
 
-/// Full redraw cycle: drain pending responses, render visible tiles,
-/// update search overlays, and prefetch adjacent tiles.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn redraw_and_prefetch(
-    meta: &DocumentMeta,
-    cache: &mut TileCache,
-    display: &mut DisplayState,
-    layout: &Layout,
-    scroll: &ScrollState,
-    filename: &str,
-    acc_peek: Option<u32>,
-    flash: Option<&str>,
-    search_spec: Option<&HighlightSpec>,
-    rh: &mut ForkHandle<'_>,
-) -> anyhow::Result<()> {
-    drain_responses(rh, cache, display)?;
-    redraw(
-        meta, cache, display, layout, scroll, filename, acc_peek, flash, rh,
-    )?;
-    if let Some(spec) = search_spec {
-        update_overlays(meta, display, cache, scroll, spec, rh)?;
-        let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
-        terminal::place_overlay_rects(&visible, display, layout)?;
-    }
-    send_prefetch(rh, meta, cache, scroll.y_offset);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn plan_load_allocates_ids() {
-        let mut loaded = DisplayState::new(3);
+        let mut loaded = TilePresenter::new(3);
         let action = loaded.plan_load(0).unwrap();
         assert_eq!(action.idx, 0);
         assert_eq!(action.content_id, 100);
@@ -522,14 +560,14 @@ mod tests {
 
     #[test]
     fn plan_load_already_loaded_returns_none() {
-        let mut loaded = DisplayState::new(3);
+        let mut loaded = TilePresenter::new(3);
         loaded.plan_load(0); // load tile 0
         assert!(loaded.plan_load(0).is_none());
     }
 
     #[test]
     fn plan_load_evicts_distant_tiles() {
-        let mut loaded = DisplayState::new(2); // evict_distance = 2
+        let mut loaded = TilePresenter::new(2); // evict_distance = 2
         loaded.plan_load(0);
         loaded.plan_load(1);
         loaded.plan_load(2);
@@ -544,7 +582,7 @@ mod tests {
 
     #[test]
     fn plan_load_increments_ids() {
-        let mut loaded = DisplayState::new(3);
+        let mut loaded = TilePresenter::new(3);
         let a1 = loaded.plan_load(0).unwrap();
         let a2 = loaded.plan_load(1).unwrap();
         assert_eq!(a1.content_id, 100);
@@ -555,7 +593,7 @@ mod tests {
 
     #[test]
     fn clear_overlay_state_empties_rects() {
-        let mut loaded = DisplayState::new(3);
+        let mut loaded = TilePresenter::new(3);
         loaded.set_overlay_rects(0, vec![]);
         assert!(loaded.has_overlay(0));
         loaded.clear_overlay_state();
