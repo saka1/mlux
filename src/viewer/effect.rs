@@ -101,7 +101,7 @@ pub(super) enum RenderOp {
 /// Short-circuits on the first `RenderOp::Exit` encountered.
 pub(super) fn execute_render_ops(
     ops: Vec<RenderOp>,
-    vp: &Viewport,
+    vp: &mut Viewport,
     ctx: &ViewContext,
 ) -> anyhow::Result<Option<ExitReason>> {
     for op in ops {
