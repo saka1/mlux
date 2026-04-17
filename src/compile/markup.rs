@@ -95,10 +95,8 @@ pub fn prescan(markdown: &str) -> Prescan {
                     }
                 }
             }
-            Event::Text(text) | Event::Code(text) => {
-                if !has_cjk && text.chars().any(is_cjk) {
-                    has_cjk = true;
-                }
+            Event::Text(text) | Event::Code(text) if !has_cjk && text.chars().any(is_cjk) => {
+                has_cjk = true;
             }
             _ => {}
         }

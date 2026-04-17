@@ -65,16 +65,8 @@ pub(super) fn compute_layout(
     let image_cols = term_cols.saturating_sub(sidebar_cols);
     let image_rows = term_rows.saturating_sub(1);
     let status_row = term_rows.saturating_sub(1);
-    let cell_w = if term_cols > 0 {
-        pixel_w / term_cols
-    } else {
-        1
-    };
-    let cell_h = if term_rows > 0 {
-        pixel_h / term_rows
-    } else {
-        1
-    };
+    let cell_w = pixel_w.checked_div(term_cols).unwrap_or(1);
+    let cell_h = pixel_h.checked_div(term_rows).unwrap_or(1);
     Layout {
         sidebar_cols,
         image_col,
