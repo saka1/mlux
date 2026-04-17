@@ -119,7 +119,19 @@ pub(super) fn delete_image(image_id: u32) -> io::Result<()> {
     out.flush()
 }
 
-/// Delete all images and data
+/// Delete all images and data.
+///
+/// INVARIANT: any caller must ensure the corresponding `DisplayState.live_slots`
+/// is cleared — either via [`DisplayState::clear_all`] or by dropping the
+/// `DisplayState` entirely — before the next frame emits placements. Otherwise
+/// `live_slots` would claim slots the terminal no longer has (phantom state),
+/// causing spurious `a=d` on the next redraw.
+///
+/// Current callers:
+/// - `RenderOp::DeleteAllImages` (effect.rs) — paired with `clear_all()`
+/// - `Session::update_layout_for_resize` / `handle_exit::Navigate|GoBack` —
+///   paired by the outer `'outer` loop in `viewer::run` which constructs a
+///   fresh `DisplayState` for the next iteration.
 pub(super) fn delete_all_images() -> io::Result<()> {
     let mut out = stdout();
     write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
@@ -953,5 +965,191 @@ mod tests {
         let bf = b as f64 / 0xFFFF as f64;
         let lum = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
         assert!(lum > 0.5, "luminance {lum} should be > 0.5 for light bg");
+    }
+
+    // ----- KGP placement slot tests --------------------------------------
+    //
+    // These guard the parity between `overlay_slots_for_tile` (used by
+    // `collect_new_slots` for Phase 2 pruning) and the actual emission in
+    // `place_rects_in_region`. If these diverge, Phase 2 either leaves
+    // phantom placements alive or deletes slots that are about to be
+    // re-emitted — both visible as flicker or orphaned overlays.
+
+    use crate::frame::HighlightRect;
+    use std::collections::HashSet;
+
+    fn rect(y_px: u32, h_px: u32, is_active: bool) -> HighlightRect {
+        HighlightRect {
+            x_px: 0,
+            y_px,
+            w_px: 100,
+            h_px,
+            is_active,
+        }
+    }
+
+    fn imgs_for_test() -> HighlightImagesCopy {
+        HighlightImagesCopy {
+            full_id: 200,
+            p75_id: 201,
+            p50_id: 202,
+            p25_id: 203,
+            active_full_id: 204,
+            active_p75_id: 205,
+            active_p50_id: 206,
+            active_p25_id: 207,
+        }
+    }
+
+    /// Collect the slots actually emitted by `place_rects_in_region` for the
+    /// given rects/region by inspecting `DisplayState.live_slots` afterwards.
+    fn slots_from_emission(rects: &[HighlightRect], rgn: &TileRegion) -> HashSet<PlacementSlot> {
+        let mut loaded = DisplayState::new(4);
+        let mut out = Vec::<u8>::new();
+        let imgs = imgs_for_test();
+        place_rects_in_region(&mut out, &mut loaded, 7, rects, &imgs, rgn).unwrap();
+        // Only overlay slots for tile 7 should have been inserted.
+        let mut set = HashSet::new();
+        for slot in [
+            PlacementSlot::OverlayPrimary(7, 0),
+            PlacementSlot::OverlayOverflow(7, 0),
+            PlacementSlot::OverlayPrimary(7, 1),
+            PlacementSlot::OverlayOverflow(7, 1),
+            PlacementSlot::OverlayPrimary(7, 2),
+            PlacementSlot::OverlayOverflow(7, 2),
+            PlacementSlot::OverlayPrimary(7, 3),
+            PlacementSlot::OverlayOverflow(7, 3),
+        ] {
+            if loaded.live_slot_image(slot).is_some() {
+                set.insert(slot);
+            }
+        }
+        set
+    }
+
+    fn slots_from_predicate(rects: &[HighlightRect], rgn: &TileRegion) -> HashSet<PlacementSlot> {
+        let mut set = HashSet::new();
+        overlay_slots_for_tile(
+            &mut set,
+            7,
+            rects,
+            rgn.src_y,
+            rgn.src_h,
+            rgn.screen_row,
+            rgn.max_rows,
+            rgn.ch,
+        );
+        set
+    }
+
+    #[test]
+    fn slot_parity_mixed_visibility() {
+        // ch = 24px (typical cell height). Four rects:
+        //   0: fully visible, single row
+        //   1: clipped out above src_y (y_px + h_px <= src_y)
+        //   2: overflows into next cell (h_px > first_coverage)
+        //   3: row exceeds max_rows (clipped out)
+        let rgn = TileRegion {
+            src_y: 50,
+            src_h: 400,
+            screen_row: 0,
+            max_rows: 10,
+            image_col: 0,
+            cw: 10,
+            ch: 24,
+        };
+        let rects = vec![
+            // 0 — y_px=60, h=10 → screen_y=10, row=0, y_off=10, first_cov=14,
+            //     h=10<=14 → primary only
+            rect(60, 10, false),
+            // 1 — y+h=40 <= src_y=50 → fully clipped
+            rect(0, 40, false),
+            // 2 — y_px=100, h=40 → screen_y=50, row=2, y_off=2, first_cov=22,
+            //     h=40>22 → overflow to row 3
+            rect(100, 40, false),
+            // 3 — y_px=400, h=20 → screen_y=350, row=14 >= max_rows=10
+            rect(400, 20, false),
+        ];
+        let predicted = slots_from_predicate(&rects, &rgn);
+        let emitted = slots_from_emission(&rects, &rgn);
+        assert_eq!(
+            predicted, emitted,
+            "overlay_slots_for_tile must agree with place_rects_in_region"
+        );
+        // Sanity assertions on the predicted set (serves as a fixture lock-in).
+        assert!(emitted.contains(&PlacementSlot::OverlayPrimary(7, 0)));
+        assert!(!emitted.contains(&PlacementSlot::OverlayOverflow(7, 0)));
+        assert!(emitted.contains(&PlacementSlot::OverlayPrimary(7, 2)));
+        assert!(emitted.contains(&PlacementSlot::OverlayOverflow(7, 2)));
+        assert!(!emitted.contains(&PlacementSlot::OverlayPrimary(7, 1)));
+        assert!(!emitted.contains(&PlacementSlot::OverlayPrimary(7, 3)));
+    }
+
+    #[test]
+    fn slot_parity_overflow_at_last_row_boundary() {
+        // Overflow that would fall past max_rows: primary emitted, overflow
+        // slot must NOT be emitted.
+        let rgn = TileRegion {
+            src_y: 0,
+            src_h: 400,
+            screen_row: 0,
+            max_rows: 2, // rows 0 and 1 only
+            image_col: 0,
+            cw: 10,
+            ch: 24,
+        };
+        // y_px=36 → row 1, y_off=12, first_coverage=12, h_px=20 > 12
+        // next_row=2, not < max_rows (2) → no overflow slot
+        let rects = vec![rect(36, 20, false)];
+        let predicted = slots_from_predicate(&rects, &rgn);
+        let emitted = slots_from_emission(&rects, &rgn);
+        assert_eq!(predicted, emitted);
+        assert!(emitted.contains(&PlacementSlot::OverlayPrimary(7, 0)));
+        assert!(!emitted.contains(&PlacementSlot::OverlayOverflow(7, 0)));
+    }
+
+    #[test]
+    fn overlay_active_flip_emits_stale_delete_before_new_placement() {
+        // Scenario: a visible highlight rect flips is_active from false
+        // (yellow, image 200) to true (orange, image 204). The slot identity
+        // OverlayPrimary(tile, 0) is unchanged, but the image_id changed, so
+        // atomic in-place move does NOT apply — the old placement on image
+        // 200 must be explicitly deleted before the new a=p on image 204.
+        let rgn = TileRegion {
+            src_y: 0,
+            src_h: 200,
+            screen_row: 0,
+            max_rows: 8,
+            image_col: 0,
+            cw: 10,
+            ch: 24,
+        };
+        let mut loaded = DisplayState::new(4);
+        let mut out = Vec::<u8>::new();
+        let imgs = imgs_for_test();
+
+        // Frame 1: inactive rect.
+        place_rects_in_region(&mut out, &mut loaded, 7, &[rect(0, 20, false)], &imgs, &rgn)
+            .unwrap();
+        out.clear();
+
+        // Frame 2: same slot, is_active = true → image_id switches 200→204.
+        place_rects_in_region(&mut out, &mut loaded, 7, &[rect(0, 20, true)], &imgs, &rgn).unwrap();
+
+        let wire = String::from_utf8(out).unwrap();
+        let del_idx = wire
+            .find("a=d,d=i,i=200,p=1")
+            .expect("stale delete of old image_id must be emitted");
+        let place_idx = wire
+            .find("a=p,i=204,p=1")
+            .expect("new placement on active image_id must be emitted");
+        assert!(
+            del_idx < place_idx,
+            "stale delete must precede new placement; got {wire:?}"
+        );
+        assert_eq!(
+            loaded.live_slot_image(PlacementSlot::OverlayPrimary(7, 0)),
+            Some(204),
+        );
     }
 }
