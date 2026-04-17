@@ -304,9 +304,15 @@ impl DisplayState {
         self.highlight_images.as_ref()
     }
 
-    /// Reset all state after `delete_all_images()`. Both tile map and
-    /// highlight images must be re-uploaded since the terminal no longer
-    /// has any image data.
+    /// Reset all state when `RenderOp::DeleteAllImages` is about to issue
+    /// `terminal::delete_all_images()` in the *same* `DisplayState`'s
+    /// lifetime. Both tile map and highlight images must be re-uploaded
+    /// since the terminal no longer has any image data.
+    ///
+    /// Other `delete_all_images()` call-sites (Session resize / Navigate /
+    /// GoBack) do NOT call this — they drop the `DisplayState` wholesale at
+    /// the next iteration of the `'outer` loop in `viewer::run`, which
+    /// achieves the same invariant by replacement rather than mutation.
     pub(super) fn clear_all(&mut self) {
         self.map.clear();
         self.highlight_images = None;
