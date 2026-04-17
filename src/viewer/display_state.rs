@@ -2,12 +2,54 @@
 
 use log::debug;
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, Write};
 
 use super::layout::{Layout, ScrollState};
 use super::terminal;
 use crate::frame::{DocumentMeta, HighlightRect, HighlightSpec, TileCache, VisibleTiles};
 use crate::renderer::{TileRenderer, TileResponse};
+
+/// Logical identity for a KGP placement. One `PlacementSlot` maps to at most
+/// one live `a=p` on the terminal at any time, identified by
+/// `(image_id, slot.placement_id())`. Re-emitting `a=p` with the same
+/// `(image_id, placement_id)` is atomic in-place — no intermediate "placement
+/// absent" state, so no blink on scroll.
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+pub(super) enum PlacementSlot {
+    Content(usize),
+    Sidebar(usize),
+    OverlayPrimary(usize, usize),
+    OverlayOverflow(usize, usize),
+}
+
+impl PlacementSlot {
+    /// Stable KGP `p=` value. `placement_id` is scoped per-`image_id`, so
+    /// Content/Sidebar can share `p=1` safely; overlays share their tile/rect
+    /// image with peers, hence `2*rect_idx + {1,2}`.
+    pub(super) fn placement_id(self) -> u32 {
+        match self {
+            PlacementSlot::Content(_) | PlacementSlot::Sidebar(_) => 1,
+            PlacementSlot::OverlayPrimary(_, r) => (2 * r + 1) as u32,
+            PlacementSlot::OverlayOverflow(_, r) => (2 * r + 2) as u32,
+        }
+    }
+
+    pub(super) fn tile_idx(self) -> usize {
+        match self {
+            PlacementSlot::Content(i)
+            | PlacementSlot::Sidebar(i)
+            | PlacementSlot::OverlayPrimary(i, _)
+            | PlacementSlot::OverlayOverflow(i, _) => i,
+        }
+    }
+
+    fn is_overlay(self) -> bool {
+        matches!(
+            self,
+            PlacementSlot::OverlayPrimary(..) | PlacementSlot::OverlayOverflow(..)
+        )
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tile-aware content display
@@ -65,6 +107,11 @@ pub(super) struct DisplayState {
     overlay_rects: HashMap<usize, Vec<HighlightRect>>,
     /// KGP image IDs for highlight images (uploaded once).
     highlight_images: Option<HighlightImages>,
+    /// `slot → image_id` of every placement currently live on the terminal.
+    /// Enables atomic in-place move: unchanged slots are re-emitted with
+    /// the same `(i, p)` pair (no delete), disappeared slots are deleted
+    /// individually via `a=d,d=i,i=..,p=..`.
+    live_slots: HashMap<PlacementSlot, u32>,
 }
 
 /// Describes the actions needed to load a tile into the terminal.
@@ -92,6 +139,7 @@ impl DisplayState {
             evict_distance,
             overlay_rects: HashMap::new(),
             highlight_images: None,
+            live_slots: HashMap::new(),
         }
     }
 
@@ -141,6 +189,7 @@ impl DisplayState {
             .into_iter()
             .filter_map(|k| {
                 self.overlay_rects.remove(&k);
+                self.live_slots.retain(|slot, _| slot.tile_idx() != k);
                 self.map.remove(&k).map(|ids| (k, ids))
             })
             .collect();
@@ -261,6 +310,7 @@ impl DisplayState {
     pub(super) fn clear_all(&mut self) {
         self.map.clear();
         self.highlight_images = None;
+        self.live_slots.clear();
     }
 
     /// Clear overlay rect state only (no I/O).
@@ -269,38 +319,159 @@ impl DisplayState {
     }
 
     /// Delete highlight overlay placements from terminal (I/O only).
-    pub(super) fn delete_overlay_placements(&self) -> io::Result<()> {
+    /// Clears overlay-kind entries from the live-slot tracker as well, since
+    /// this path wipes every overlay placement regardless of slot membership.
+    pub(super) fn delete_overlay_placements(&mut self) -> io::Result<()> {
         if let Some(imgs) = &self.highlight_images {
             delete_placements_for_ids(&imgs.all_ids())?;
+        }
+        self.live_slots.retain(|slot, _| !slot.is_overlay());
+        Ok(())
+    }
+
+    /// Delete every currently-live placement (tiles + overlays), leaving
+    /// uploaded image data intact. Used when a modal screen overdraws the
+    /// viewer (TOC/URL/Grep/etc.) — the tiles are reused on mode exit.
+    pub(super) fn delete_placements(&mut self) -> io::Result<()> {
+        let mut out = std::io::stdout();
+        for (slot, image_id) in self.live_slots.drain() {
+            let pid = slot.placement_id();
+            write!(out, "\x1b_Ga=d,d=i,i={image_id},p={pid},q=2\x1b\\")?;
+        }
+        out.flush()
+    }
+
+    /// Record that `slot` is now live at `image_id`. If the slot was previously
+    /// live on a *different* image, emit a targeted delete for the stale
+    /// placement before the caller emits the new `a=p` — Kitty's atomic
+    /// in-place move only applies when the `(i, p)` pair is unchanged.
+    /// Returns the `p=` value the caller should embed in its `a=p` command.
+    pub(super) fn track_placement(
+        &mut self,
+        out: &mut impl Write,
+        slot: PlacementSlot,
+        image_id: u32,
+    ) -> io::Result<u32> {
+        let pid = slot.placement_id();
+        if let Some(old_id) = self.live_slots.insert(slot, image_id)
+            && old_id != image_id
+        {
+            write!(out, "\x1b_Ga=d,d=i,i={old_id},p={pid},q=2\x1b\\")?;
+        }
+        Ok(pid)
+    }
+
+    /// Emit `a=d,d=i,i=..,p=..` for every tracked slot absent from `keep`,
+    /// and drop those entries from the live-slot tracker. Used in redraw
+    /// Phase 2 to clear slots that no longer appear this frame.
+    pub(super) fn delete_stale_slots(
+        &mut self,
+        out: &mut impl Write,
+        keep: &HashSet<PlacementSlot>,
+    ) -> io::Result<()> {
+        let stale: Vec<PlacementSlot> = self
+            .live_slots
+            .keys()
+            .filter(|s| !keep.contains(*s))
+            .copied()
+            .collect();
+        for slot in stale {
+            if let Some(image_id) = self.live_slots.remove(&slot) {
+                let pid = slot.placement_id();
+                write!(out, "\x1b_Ga=d,d=i,i={image_id},p={pid},q=2\x1b\\")?;
+            }
         }
         Ok(())
     }
 
-    /// Delete all tile placements (content + sidebar + highlight overlay).
-    pub(super) fn delete_placements(&self) -> io::Result<()> {
-        use std::io::Write;
-        let mut out = std::io::stdout();
-        for ids in self.map.values() {
-            write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", ids.content_id)?;
-            write!(out, "\x1b_Ga=d,d=i,i={},q=2\x1b\\", ids.sidebar_id)?;
-        }
-        if let Some(imgs) = &self.highlight_images {
-            for id in imgs.all_ids() {
-                write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
-            }
-        }
-        out.flush()
+    #[cfg(test)]
+    pub(super) fn live_slot_count(&self) -> usize {
+        self.live_slots.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn live_slot_image(&self, slot: PlacementSlot) -> Option<u32> {
+        self.live_slots.get(&slot).copied()
     }
 }
 
 /// Delete placements for a set of image IDs.
 fn delete_placements_for_ids(ids: &[u32]) -> io::Result<()> {
-    use std::io::Write;
     let mut out = std::io::stdout();
     for &id in ids {
         write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
     }
     out.flush()
+}
+
+/// Collect the set of `PlacementSlot`s expected to be live this frame.
+///
+/// Tile slots come from `visible`. Overlay slots are enumerated from
+/// `overlay_rects` for each visible tile — matching the emission predicate
+/// used by `terminal::place_rects_in_region` (clip + row-fits checks).
+pub(super) fn collect_new_slots(
+    visible: &VisibleTiles,
+    loaded: &DisplayState,
+    layout: &Layout,
+    include_overlays: bool,
+) -> HashSet<PlacementSlot> {
+    use super::terminal::overlay_slots_for_tile;
+    let mut slots = HashSet::new();
+    match visible {
+        VisibleTiles::Single { idx, src_y, src_h } => {
+            slots.insert(PlacementSlot::Content(*idx));
+            slots.insert(PlacementSlot::Sidebar(*idx));
+            if include_overlays {
+                overlay_slots_for_tile(
+                    &mut slots,
+                    *idx,
+                    loaded.overlay_rects(*idx),
+                    *src_y,
+                    *src_h,
+                    0,
+                    layout.image_rows,
+                    layout.cell_h as u32,
+                );
+            }
+        }
+        VisibleTiles::Split {
+            top_idx,
+            top_src_y,
+            top_src_h,
+            bot_idx,
+            bot_src_h,
+        } => {
+            slots.insert(PlacementSlot::Content(*top_idx));
+            slots.insert(PlacementSlot::Sidebar(*top_idx));
+            slots.insert(PlacementSlot::Content(*bot_idx));
+            slots.insert(PlacementSlot::Sidebar(*bot_idx));
+            if include_overlays {
+                let (top_rows, bot_rows) =
+                    super::terminal::split_rows_pub(*top_src_h, layout.cell_h, layout.image_rows);
+                overlay_slots_for_tile(
+                    &mut slots,
+                    *top_idx,
+                    loaded.overlay_rects(*top_idx),
+                    *top_src_y,
+                    *top_src_h,
+                    0,
+                    top_rows,
+                    layout.cell_h as u32,
+                );
+                overlay_slots_for_tile(
+                    &mut slots,
+                    *bot_idx,
+                    loaded.overlay_rects(*bot_idx),
+                    0,
+                    *bot_src_h,
+                    top_rows,
+                    bot_rows,
+                    layout.cell_h as u32,
+                );
+            }
+        }
+    }
+    slots
 }
 
 /// Execute the I/O for a load action: send images to the terminal and evict distant tiles.
@@ -322,7 +493,12 @@ pub(super) struct ForkHandle<'a> {
 
 /// Full redraw: content tiles + sidebar + overlay + status bar.
 ///
-/// Ordering: ensure loaded (slow) → delete placements → place new (fast).
+/// Ordering:
+///   Phase 1 — ensure visible tiles are rendered and uploaded.
+///   Phase 2 — delete only the placement slots that are going away this
+///             frame (same slots that stay are updated in-place by Phase 3).
+///   Phase 3 — emit `a=p` with stable `(i, p)`; Kitty performs an atomic
+///             in-place move when the pair already exists.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn redraw(
     meta: &DocumentMeta,
@@ -333,6 +509,7 @@ pub(super) fn redraw(
     filename: &str,
     acc_peek: Option<u32>,
     flash: Option<&str>,
+    include_overlays: bool,
     rh: &mut ForkHandle<'_>,
 ) -> anyhow::Result<()> {
     let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
@@ -350,10 +527,15 @@ pub(super) fn redraw(
         }
     }
 
-    // Phase 2: Delete old placements atomically, then place new ones.
-    loaded.delete_placements()?;
+    // Phase 2: Delete only slots that disappear this frame.
+    let new_slots = collect_new_slots(&visible, loaded, layout, include_overlays);
+    {
+        let mut out = std::io::stdout();
+        loaded.delete_stale_slots(&mut out, &new_slots)?;
+        out.flush()?;
+    }
 
-    // Phase 3: Place content + sidebar + overlay + status bar
+    // Phase 3: Place content + sidebar + overlay + status bar.
     terminal::place_content_tiles(&visible, loaded, layout, scroll)?;
     terminal::place_sidebar_tiles(&visible, loaded, meta.sidebar_width_px, layout)?;
     terminal::place_overlay_rects(&visible, loaded, layout)?;
@@ -495,11 +677,23 @@ pub(super) fn redraw_and_prefetch(
 ) -> anyhow::Result<()> {
     drain_responses(rh, cache, display)?;
     redraw(
-        meta, cache, display, layout, scroll, filename, acc_peek, flash, rh,
+        meta,
+        cache,
+        display,
+        layout,
+        scroll,
+        filename,
+        acc_peek,
+        flash,
+        search_spec.is_some(),
+        rh,
     )?;
     if let Some(spec) = search_spec {
         update_overlays(meta, display, cache, scroll, spec, rh)?;
         let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
+        // update_overlays may have populated new rects; re-emit overlay
+        // placements. Stale slots (rects that vanished for the current
+        // tile set) were already pruned by Phase 2's delete_stale_slots.
         terminal::place_overlay_rects(&visible, display, layout)?;
     }
     send_prefetch(rh, meta, cache, scroll.y_offset);
@@ -560,5 +754,155 @@ mod tests {
         assert!(loaded.has_overlay(0));
         loaded.clear_overlay_state();
         assert!(!loaded.has_overlay(0));
+    }
+
+    #[test]
+    fn placement_id_is_stable_by_slot() {
+        assert_eq!(PlacementSlot::Content(0).placement_id(), 1);
+        assert_eq!(PlacementSlot::Content(42).placement_id(), 1);
+        assert_eq!(PlacementSlot::Sidebar(0).placement_id(), 1);
+        assert_eq!(PlacementSlot::OverlayPrimary(5, 0).placement_id(), 1);
+        assert_eq!(PlacementSlot::OverlayOverflow(5, 0).placement_id(), 2);
+        assert_eq!(PlacementSlot::OverlayPrimary(5, 3).placement_id(), 7);
+        assert_eq!(PlacementSlot::OverlayOverflow(5, 3).placement_id(), 8);
+    }
+
+    #[test]
+    fn track_placement_emits_no_delete_for_new_slot() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        let pid = loaded
+            .track_placement(&mut out, PlacementSlot::Content(0), 100)
+            .unwrap();
+        assert_eq!(pid, 1);
+        // No prior entry → no stale delete emitted.
+        assert!(out.is_empty());
+        assert_eq!(loaded.live_slot_image(PlacementSlot::Content(0)), Some(100));
+    }
+
+    #[test]
+    fn track_placement_emits_delete_when_image_changes() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        // Simulate overlay flipping from inactive (image 200) to active (image 204).
+        let slot = PlacementSlot::OverlayPrimary(3, 0);
+        loaded.track_placement(&mut out, slot, 200).unwrap();
+        out.clear();
+        loaded.track_placement(&mut out, slot, 204).unwrap();
+        // Old (i=200, p=1) must be deleted so it does not linger.
+        let emitted = String::from_utf8(out).unwrap();
+        assert!(
+            emitted.contains("a=d,d=i,i=200,p=1"),
+            "expected stale delete for old image_id; got {emitted:?}"
+        );
+        assert_eq!(loaded.live_slot_image(slot), Some(204));
+    }
+
+    #[test]
+    fn track_placement_same_image_is_noop() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        let slot = PlacementSlot::Content(0);
+        loaded.track_placement(&mut out, slot, 100).unwrap();
+        out.clear();
+        loaded.track_placement(&mut out, slot, 100).unwrap();
+        // Same (i, p) is atomic in-place — no extra delete should be emitted.
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn delete_stale_slots_removes_only_absent_slots() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        loaded
+            .track_placement(&mut out, PlacementSlot::Content(0), 100)
+            .unwrap();
+        loaded
+            .track_placement(&mut out, PlacementSlot::Content(1), 102)
+            .unwrap();
+        loaded
+            .track_placement(&mut out, PlacementSlot::Sidebar(0), 101)
+            .unwrap();
+        out.clear();
+
+        let mut keep = HashSet::new();
+        keep.insert(PlacementSlot::Content(0));
+        keep.insert(PlacementSlot::Sidebar(0));
+        loaded.delete_stale_slots(&mut out, &keep).unwrap();
+
+        let emitted = String::from_utf8(out).unwrap();
+        // Only Content(1) is stale → only image_id 102 gets deleted.
+        assert!(emitted.contains("i=102,p=1"), "got {emitted:?}");
+        assert!(!emitted.contains("i=100"));
+        assert!(!emitted.contains("i=101"));
+        assert_eq!(loaded.live_slot_count(), 2);
+    }
+
+    #[test]
+    fn eviction_drops_live_slots_for_evicted_tile() {
+        let mut loaded = DisplayState::new(2); // evict_distance = 2
+        loaded.plan_load(0);
+        let mut out = Vec::<u8>::new();
+        // Track a content placement for tile 0.
+        loaded
+            .track_placement(&mut out, PlacementSlot::Content(0), 100)
+            .unwrap();
+        // Load tile 5 — distance from 0 is 5 > 2, so tile 0 is evicted.
+        loaded.plan_load(5);
+        assert!(
+            loaded.live_slot_image(PlacementSlot::Content(0)).is_none(),
+            "evicted tile's live slots must be cleared"
+        );
+    }
+
+    #[test]
+    fn delete_overlay_placements_clears_overlay_slots_only() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        loaded
+            .track_placement(&mut out, PlacementSlot::Content(0), 100)
+            .unwrap();
+        loaded
+            .track_placement(&mut out, PlacementSlot::OverlayPrimary(0, 0), 200)
+            .unwrap();
+        // delete_overlay_placements needs highlight_images uploaded for I/O;
+        // without them it's a no-op on stdout — but still clears slot tracker.
+        loaded.delete_overlay_placements().unwrap();
+        assert_eq!(
+            loaded.live_slot_image(PlacementSlot::Content(0)),
+            Some(100),
+            "tile slots must survive overlay deletion"
+        );
+        assert!(
+            loaded
+                .live_slot_image(PlacementSlot::OverlayPrimary(0, 0))
+                .is_none(),
+            "overlay slots must be cleared"
+        );
+    }
+
+    #[test]
+    fn delete_placements_clears_all_live_slots() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        loaded
+            .track_placement(&mut out, PlacementSlot::Content(0), 100)
+            .unwrap();
+        loaded
+            .track_placement(&mut out, PlacementSlot::OverlayPrimary(0, 0), 200)
+            .unwrap();
+        loaded.delete_placements().unwrap();
+        assert_eq!(loaded.live_slot_count(), 0);
+    }
+
+    #[test]
+    fn clear_all_resets_live_slots() {
+        let mut loaded = DisplayState::new(3);
+        let mut out = Vec::<u8>::new();
+        loaded
+            .track_placement(&mut out, PlacementSlot::Content(0), 100)
+            .unwrap();
+        loaded.clear_all();
+        assert_eq!(loaded.live_slot_count(), 0);
     }
 }

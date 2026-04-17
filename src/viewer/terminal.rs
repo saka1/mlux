@@ -11,7 +11,7 @@ use std::io::{self, Write, stdout};
 use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
 
-use super::display_state::DisplayState;
+use super::display_state::{DisplayState, PlacementSlot};
 use super::layout::{Layout, ScrollState};
 use crate::frame::VisibleTiles;
 
@@ -158,15 +158,24 @@ fn split_rows(top_src_h: u32, cell_h: u16, image_rows: u16) -> (u16, u16) {
     (top, bot)
 }
 
+/// Exposed alias of `split_rows` for `display_state::collect_new_slots`.
+pub(super) fn split_rows_pub(top_src_h: u32, cell_h: u16, image_rows: u16) -> (u16, u16) {
+    split_rows(top_src_h, cell_h, image_rows)
+}
+
 /// Place tile(s) using Kitty Graphics Protocol.
 ///
-/// `get_id` selects which image ID to use from a `TileImageIds`.
+/// `get_id` selects which image ID to use from a `TileImageIds`;
+/// `make_slot(tile_idx)` builds the corresponding `PlacementSlot` so that
+/// the emitted `a=p` carries a stable `p=<placement_id>` and the live-slot
+/// tracker can handle future diffing.
 pub(super) fn place_tiles(
     visible: &VisibleTiles,
-    loaded: &DisplayState,
+    loaded: &mut DisplayState,
     layout: &Layout,
     params: &PlaceParams,
     get_id: fn(&super::display_state::TileImageIds) -> u32,
+    make_slot: fn(usize) -> PlacementSlot,
 ) -> io::Result<()> {
     let mut out = stdout();
     let w = params.img_width;
@@ -179,10 +188,12 @@ pub(super) fn place_tiles(
                 .ceil()
                 .min(layout.image_rows as f64) as u16;
             let rows = rows.max(1);
+            let slot = make_slot(*idx);
+            let pid = loaded.track_placement(&mut out, slot, id)?;
             out.queue(cursor::MoveTo(params.start_col, 0))?;
             write!(
                 out,
-                "\x1b_Ga=p,i={id},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,q=2\x1b\\",
+                "\x1b_Ga=p,i={id},p={pid},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,q=2\x1b\\",
             )?;
         }
         VisibleTiles::Split {
@@ -206,17 +217,19 @@ pub(super) fn place_tiles(
                 bot_display as f64 / *bot_src_h as f64,
             );
 
+            let top_slot = make_slot(*top_idx);
+            let top_pid = loaded.track_placement(&mut out, top_slot, top_id)?;
             out.queue(cursor::MoveTo(params.start_col, 0))?;
             write!(
                 out,
-                "\x1b_Ga=p,i={id},x=0,y={top_src_y},w={w},h={top_src_h},c={cols},r={top_rows},C=1,q=2\x1b\\",
-                id = top_id,
+                "\x1b_Ga=p,i={top_id},p={top_pid},x=0,y={top_src_y},w={w},h={top_src_h},c={cols},r={top_rows},C=1,q=2\x1b\\",
             )?;
+            let bot_slot = make_slot(*bot_idx);
+            let bot_pid = loaded.track_placement(&mut out, bot_slot, bot_id)?;
             out.queue(cursor::MoveTo(params.start_col, top_rows))?;
             write!(
                 out,
-                "\x1b_Ga=p,i={id},x=0,y=0,w={w},h={bot_src_h},c={cols},r={bot_rows},C=1,q=2\x1b\\",
-                id = bot_id,
+                "\x1b_Ga=p,i={bot_id},p={bot_pid},x=0,y=0,w={w},h={bot_src_h},c={cols},r={bot_rows},C=1,q=2\x1b\\",
             )?;
         }
     }
@@ -226,7 +239,7 @@ pub(super) fn place_tiles(
 /// Place content tile(s) based on visible_tiles result.
 pub(super) fn place_content_tiles(
     visible: &VisibleTiles,
-    loaded: &DisplayState,
+    loaded: &mut DisplayState,
     layout: &Layout,
     scroll: &ScrollState,
 ) -> io::Result<()> {
@@ -240,13 +253,14 @@ pub(super) fn place_content_tiles(
             img_width: scroll.vp_w,
         },
         |ids| ids.content_id,
+        PlacementSlot::Content,
     )
 }
 
 /// Place sidebar tile(s) based on the same visible_tiles as content.
 pub(super) fn place_sidebar_tiles(
     visible: &VisibleTiles,
-    loaded: &DisplayState,
+    loaded: &mut DisplayState,
     sidebar_width_px: u32,
     layout: &Layout,
 ) -> io::Result<()> {
@@ -260,6 +274,7 @@ pub(super) fn place_sidebar_tiles(
             img_width: sidebar_width_px,
         },
         |ids| ids.sidebar_id,
+        PlacementSlot::Sidebar,
     )
 }
 
@@ -270,11 +285,14 @@ pub(super) fn place_sidebar_tiles(
 /// and optionally a second placement on the next row for overflow coverage.
 pub(super) fn place_overlay_rects(
     visible: &VisibleTiles,
-    loaded: &DisplayState,
+    loaded: &mut DisplayState,
     layout: &Layout,
 ) -> io::Result<()> {
+    // Snapshot image IDs so we can hold `&mut loaded` while iterating rects.
+    // `HighlightImages` is 8 u32s — copying avoids a borrow conflict with
+    // `loaded.track_placement` inside `place_rects_in_region`.
     let imgs = match loaded.highlight_images() {
-        Some(imgs) => imgs,
+        Some(imgs) => HighlightImagesCopy::from(imgs),
         None => return Ok(()),
     };
 
@@ -288,10 +306,13 @@ pub(super) fn place_overlay_rects(
 
     match visible {
         VisibleTiles::Single { idx, src_y, src_h } => {
+            let rects = loaded.overlay_rects(*idx).to_vec();
             place_rects_in_region(
                 &mut out,
-                loaded.overlay_rects(*idx),
-                imgs,
+                loaded,
+                *idx,
+                &rects,
+                &imgs,
                 &TileRegion {
                     src_y: *src_y,
                     src_h: *src_h,
@@ -311,11 +332,15 @@ pub(super) fn place_overlay_rects(
             bot_src_h,
         } => {
             let (top_rows, bot_rows) = split_rows(*top_src_h, layout.cell_h, layout.image_rows);
+            let top_rects = loaded.overlay_rects(*top_idx).to_vec();
+            let bot_rects = loaded.overlay_rects(*bot_idx).to_vec();
 
             place_rects_in_region(
                 &mut out,
-                loaded.overlay_rects(*top_idx),
-                imgs,
+                loaded,
+                *top_idx,
+                &top_rects,
+                &imgs,
                 &TileRegion {
                     src_y: *top_src_y,
                     src_h: *top_src_h,
@@ -328,8 +353,10 @@ pub(super) fn place_overlay_rects(
             )?;
             place_rects_in_region(
                 &mut out,
-                loaded.overlay_rects(*bot_idx),
-                imgs,
+                loaded,
+                *bot_idx,
+                &bot_rects,
+                &imgs,
                 &TileRegion {
                     src_y: 0,
                     src_h: *bot_src_h,
@@ -345,6 +372,35 @@ pub(super) fn place_overlay_rects(
     out.flush()
 }
 
+/// Copy of `HighlightImages` for use during rect iteration while
+/// `&mut DisplayState` is held for slot tracking.
+#[derive(Clone, Copy)]
+struct HighlightImagesCopy {
+    full_id: u32,
+    p75_id: u32,
+    p50_id: u32,
+    p25_id: u32,
+    active_full_id: u32,
+    active_p75_id: u32,
+    active_p50_id: u32,
+    active_p25_id: u32,
+}
+
+impl From<&super::display_state::HighlightImages> for HighlightImagesCopy {
+    fn from(h: &super::display_state::HighlightImages) -> Self {
+        Self {
+            full_id: h.full_id,
+            p75_id: h.p75_id,
+            p50_id: h.p50_id,
+            p25_id: h.p25_id,
+            active_full_id: h.active_full_id,
+            active_p75_id: h.active_p75_id,
+            active_p50_id: h.active_p50_id,
+            active_p25_id: h.active_p25_id,
+        }
+    }
+}
+
 /// Describes a visible region of a tile mapped to screen rows.
 struct TileRegion {
     src_y: u32,
@@ -356,6 +412,92 @@ struct TileRegion {
     ch: u32,
 }
 
+/// Shared predicate used by both slot collection (display_state) and
+/// placement emission (below): decide whether a rect contributes a primary
+/// slot, and whether it additionally contributes an overflow slot.
+struct RectEmission {
+    row: u16,
+    col: u16,
+    y_off: u32,
+    x_off: u32,
+    cols: u16,
+    overflow_next_row: Option<u16>,
+}
+
+fn rect_emission(r: &crate::frame::HighlightRect, rgn: &TileRegion) -> Option<RectEmission> {
+    // Clip to visible region of tile
+    if r.y_px + r.h_px <= rgn.src_y || r.y_px >= rgn.src_y + rgn.src_h {
+        return None;
+    }
+
+    let screen_y_px = r.y_px.saturating_sub(rgn.src_y);
+    let row = rgn.screen_row + (screen_y_px / rgn.ch) as u16;
+    if row >= rgn.screen_row + rgn.max_rows {
+        return None;
+    }
+    let y_off = screen_y_px % rgn.ch;
+    let col = rgn.image_col + (r.x_px / rgn.cw) as u16;
+    let x_off = r.x_px % rgn.cw;
+    let cols = (r.w_px + x_off).div_ceil(rgn.cw).max(1) as u16;
+
+    let first_coverage = rgn.ch - y_off;
+    let overflow_next_row = if r.h_px > first_coverage {
+        let next_row = row + 1;
+        if next_row < rgn.screen_row + rgn.max_rows {
+            Some(next_row)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some(RectEmission {
+        row,
+        col,
+        y_off,
+        x_off,
+        cols,
+        overflow_next_row,
+    })
+}
+
+/// Populate `slots` with overlay `PlacementSlot`s that would be emitted
+/// for `rects` in the given region. Must stay in sync with the predicates
+/// used by `place_rects_in_region` — `rect_emission` is the shared gate.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn overlay_slots_for_tile(
+    slots: &mut std::collections::HashSet<PlacementSlot>,
+    tile_idx: usize,
+    rects: &[crate::frame::HighlightRect],
+    src_y: u32,
+    src_h: u32,
+    screen_row: u16,
+    max_rows: u16,
+    ch: u32,
+) {
+    // `cell_w` / `image_col` are irrelevant to slot identity (they affect
+    // `x_off` / `col`, not the rect → slot mapping), so use dummy values
+    // that still exercise the clip/row predicates faithfully.
+    let rgn = TileRegion {
+        src_y,
+        src_h,
+        screen_row,
+        max_rows,
+        image_col: 0,
+        cw: 1,
+        ch,
+    };
+    for (rect_idx, r) in rects.iter().enumerate() {
+        if let Some(e) = rect_emission(r, &rgn) {
+            slots.insert(PlacementSlot::OverlayPrimary(tile_idx, rect_idx));
+            if e.overflow_next_row.is_some() {
+                slots.insert(PlacementSlot::OverlayOverflow(tile_idx, rect_idx));
+            }
+        }
+    }
+}
+
 /// Place highlight rects for a single tile region.
 ///
 /// Uses Y sub-cell offset for pixel-precise vertical alignment. When a rect
@@ -363,8 +505,10 @@ struct TileRegion {
 /// transparency pattern covers the overflow.
 fn place_rects_in_region(
     out: &mut impl Write,
+    loaded: &mut DisplayState,
+    tile_idx: usize,
     rects: &[crate::frame::HighlightRect],
-    imgs: &super::display_state::HighlightImages,
+    imgs: &HighlightImagesCopy,
     rgn: &TileRegion,
 ) -> io::Result<()> {
     use crate::frame::{
@@ -372,11 +516,10 @@ fn place_rects_in_region(
         select_overflow_pattern,
     };
 
-    for r in rects {
-        // Clip to visible region of tile
-        if r.y_px + r.h_px <= rgn.src_y || r.y_px >= rgn.src_y + rgn.src_h {
+    for (rect_idx, r) in rects.iter().enumerate() {
+        let Some(e) = rect_emission(r, rgn) else {
             continue;
-        }
+        };
 
         // Select image IDs based on active state
         let full_id = if r.is_active {
@@ -400,63 +543,51 @@ fn place_rects_in_region(
             imgs.p25_id
         };
 
-        // Row + Y offset from top edge (not midpoint)
-        let screen_y_px = r.y_px.saturating_sub(rgn.src_y);
-        let row = rgn.screen_row + (screen_y_px / rgn.ch) as u16;
-        let y_off = screen_y_px % rgn.ch;
-        let col = rgn.image_col + (r.x_px / rgn.cw) as u16;
-
-        // Horizontal: sub-cell X offset for pixel-precise start.
-        let x_off = r.x_px % rgn.cw;
-        let cols = (r.w_px + x_off).div_ceil(rgn.cw).max(1) as u16;
-
         // Source-rect: crop to exact highlight width; use full image height.
         let src_w = r.w_px.min(HIGHLIGHT_PNG_WIDTH);
         let src_h = HIGHLIGHT_PNG_HEIGHT;
 
-        // Clamp to available screen space
-        if row >= rgn.screen_row + rgn.max_rows {
-            continue;
-        }
-
         debug!(
-            "hl: col={col} row={row} X={x_off} Y={y_off} c={cols} \
-             src={}x{} want={}x{} active={}",
-            src_w, src_h, r.w_px, r.h_px, r.is_active,
+            "hl: col={} row={} X={} Y={} c={} src={}x{} want={}x{} active={}",
+            e.col, e.row, e.x_off, e.y_off, e.cols, src_w, src_h, r.w_px, r.h_px, r.is_active,
         );
 
         // 1st placement: FULL image with Y sub-cell offset
-        out.queue(cursor::MoveTo(col, row))?;
+        let primary_slot = PlacementSlot::OverlayPrimary(tile_idx, rect_idx);
+        let primary_pid = loaded.track_placement(out, primary_slot, full_id)?;
+        out.queue(cursor::MoveTo(e.col, e.row))?;
         write!(
             out,
-            "\x1b_Ga=p,i={full_id},w={src_w},h={src_h},X={x_off},Y={y_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+            "\x1b_Ga=p,i={full_id},p={primary_pid},w={src_w},h={src_h},X={x_off},Y={y_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+            x_off = e.x_off,
+            y_off = e.y_off,
+            cols = e.cols,
         )?;
 
         // 2nd placement: overflow into next row (if any)
-        let first_coverage = rgn.ch - y_off;
-        if r.h_px > first_coverage {
-            let next_row = row + 1;
-            if next_row < rgn.screen_row + rgn.max_rows {
-                let overflow = (r.h_px - first_coverage).min(rgn.ch);
-                let pattern = select_overflow_pattern(overflow, rgn.ch);
+        if let Some(next_row) = e.overflow_next_row {
+            let first_coverage = rgn.ch - e.y_off;
+            let overflow = (r.h_px - first_coverage).min(rgn.ch);
+            let pattern = select_overflow_pattern(overflow, rgn.ch);
 
-                let (ov_id, ov_w, ov_h) = match pattern {
-                    PartialPattern::Full => (full_id, src_w, HIGHLIGHT_PNG_HEIGHT),
-                    PartialPattern::P75 => (p75_id, PATTERN_WIDTH, PATTERN_HEIGHT),
-                    PartialPattern::P50 => (p50_id, PATTERN_WIDTH, PATTERN_HEIGHT),
-                    PartialPattern::P25 => (p25_id, PATTERN_WIDTH, PATTERN_HEIGHT),
-                };
+            let (ov_id, ov_w, ov_h) = match pattern {
+                PartialPattern::Full => (full_id, src_w, HIGHLIGHT_PNG_HEIGHT),
+                PartialPattern::P75 => (p75_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                PartialPattern::P50 => (p50_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+                PartialPattern::P25 => (p25_id, PATTERN_WIDTH, PATTERN_HEIGHT),
+            };
 
-                debug!(
-                    "hl overflow: next_row={next_row} overflow={overflow}px pattern={pattern:?}",
-                );
+            debug!("hl overflow: next_row={next_row} overflow={overflow}px pattern={pattern:?}",);
 
-                out.queue(cursor::MoveTo(col, next_row))?;
-                write!(
-                    out,
-                    "\x1b_Ga=p,i={ov_id},w={ov_w},h={ov_h},X={x_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
-                )?;
-            }
+            let overflow_slot = PlacementSlot::OverlayOverflow(tile_idx, rect_idx);
+            let overflow_pid = loaded.track_placement(out, overflow_slot, ov_id)?;
+            out.queue(cursor::MoveTo(e.col, next_row))?;
+            write!(
+                out,
+                "\x1b_Ga=p,i={ov_id},p={overflow_pid},w={ov_w},h={ov_h},X={x_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+                x_off = e.x_off,
+                cols = e.cols,
+            )?;
         }
     }
     Ok(())

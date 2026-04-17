@@ -522,7 +522,7 @@ pub fn run(
                                 let (new_vp, render_ops) = vp.apply(effect, &ctx);
                                 vp = new_vp;
                                 if let Some(reason) =
-                                    effect::execute_render_ops(render_ops, &vp, &ctx)?
+                                    effect::execute_render_ops(render_ops, &mut vp, &ctx)?
                                 {
                                     stale_image_ids = vp.display.all_image_ids();
                                     return Ok((reason, vp.scroll.y_offset));
