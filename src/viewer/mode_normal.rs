@@ -386,6 +386,7 @@ fn open_url(ctx: &NormalCtx, line_num: u32) -> Vec<Effect> {
 #[cfg(test)]
 mod tests {
     use super::super::query::test_helpers::empty_ci;
+    use super::super::scroll_animator::ScrollAnimator;
     use super::*;
     use crate::frame::VisualLine;
 
@@ -419,22 +420,22 @@ mod tests {
     fn make_state(y_offset: u32) -> ScrollState {
         ScrollState {
             y_offset,
-            current_y: y_offset as f64,
             target_y: y_offset,
             img_h: 2000,
             vp_w: 800,
             vp_h: 600,
+            animator: ScrollAnimator::new_exp_decay(y_offset as f64),
         }
     }
 
     #[test]
     fn scroll_accumulates_onto_target_not_render_position() {
-        // Simulate mid-animation: render position (y_offset / current_y) is lagged
-        // behind target_y. A new ScrollDown must stack onto target_y so rapid
-        // keypresses accumulate correctly.
+        // Simulate mid-animation: render position (y_offset / animator.current)
+        // is lagged behind target_y. A new ScrollDown must stack onto target_y
+        // so rapid keypresses accumulate correctly.
         let mut state = make_state(0);
         state.target_y = 100;
-        state.current_y = 40.0;
+        state.animator = ScrollAnimator::new_exp_decay(40.0);
         state.y_offset = 40;
         let vls = vec![make_vl(0)];
         let ci = empty_ci();

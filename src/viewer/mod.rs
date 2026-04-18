@@ -31,6 +31,7 @@ mod mode_toc;
 mod mode_url;
 pub mod query;
 mod scroll;
+mod scroll_animator;
 mod scroll_policy;
 mod session;
 mod terminal;
@@ -284,17 +285,12 @@ pub fn run(
         // 6. Inner event loop
         let mut vp = Viewport {
             mode: ViewerMode::Normal,
-            scroll: {
-                let y = session.scroll_carry.min(meta.max_scroll(vp_h));
-                ScrollState {
-                    y_offset: y,
-                    current_y: y as f64,
-                    target_y: y,
-                    img_h,
-                    vp_w,
-                    vp_h,
-                }
-            },
+            scroll: ScrollState::new(
+                session.scroll_carry.min(meta.max_scroll(vp_h)),
+                img_h,
+                vp_w,
+                vp_h,
+            ),
             display: DisplayState::new_with_start_id(
                 app.config.viewer.evict_distance,
                 GEN_BASES[active_gen],
@@ -353,7 +349,7 @@ pub fn run(
             let mut last_tick = Instant::now();
 
             loop {
-                // Advance scroll animation (current_y → target_y) once per iteration.
+                // Advance scroll animation (animator → target_y) once per iteration.
                 // Frame-rate independent: dt is the actual elapsed wall-clock time.
                 let now = Instant::now();
                 let dt = now.duration_since(last_tick);

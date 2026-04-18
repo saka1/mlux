@@ -74,14 +74,7 @@ impl TestHarness {
 
         let viewport = Viewport {
             mode: ViewerMode::Normal,
-            scroll: ScrollState {
-                y_offset: 0,
-                current_y: 0.0,
-                target_y: 0,
-                img_h: meta.total_height_px,
-                vp_w,
-                vp_h,
-            },
+            scroll: ScrollState::new(0, meta.total_height_px, vp_w, vp_h),
             display: DisplayState::new(4),
             flash: None,
             dirty: false,
