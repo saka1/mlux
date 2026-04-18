@@ -4,8 +4,6 @@
 //! state machine whose `apply` method is a pure transition function returning
 //! `(Self, Vec<RenderOp>)`.
 
-use log::debug;
-
 use super::display_state::DisplayState;
 use super::effect::{Effect, ExitReason, RenderOp, ScreenRestore, ViewerMode};
 use super::layout::ScrollState;
@@ -36,6 +34,8 @@ impl Default for Viewport {
             mode: ViewerMode::Normal,
             scroll: ScrollState {
                 y_offset: 0,
+                current_y: 0.0,
+                target_y: 0,
                 img_h: 0,
                 vp_w: 0,
                 vp_h: 0,
@@ -71,15 +71,10 @@ impl Viewport {
         let mut ops = Vec::new();
         match effect {
             Effect::ScrollTo(y) => {
-                // Snap to cell_h boundary so that in the Split case of
-                // place_tiles, top_src_h is always a multiple of cell_h
-                // (prevents compression artifacts from round() mismatch).
-                let cell_h = ctx.layout.cell_h as u32;
-                let snapped = (y / cell_h) * cell_h;
-                if snapped != y {
-                    debug!("scroll snap: {y} -> {snapped} (cell_h={cell_h})");
-                }
-                self.scroll.y_offset = snapped;
+                // Only update the target — the inner loop steps current_y toward it
+                // each frame (sub-cell resolution). Split-case compression artifacts
+                // are handled per-frame in the redraw path, not by snapping here.
+                self.scroll.target_y = y;
                 self.dirty = true;
             }
             Effect::MarkDirty => {

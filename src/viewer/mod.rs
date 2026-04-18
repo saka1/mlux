@@ -284,11 +284,16 @@ pub fn run(
         // 6. Inner event loop
         let mut vp = Viewport {
             mode: ViewerMode::Normal,
-            scroll: ScrollState {
-                y_offset: session.scroll_carry.min(meta.max_scroll(vp_h)),
-                img_h,
-                vp_w,
-                vp_h,
+            scroll: {
+                let y = session.scroll_carry.min(meta.max_scroll(vp_h));
+                ScrollState {
+                    y_offset: y,
+                    current_y: y as f64,
+                    target_y: y,
+                    img_h,
+                    vp_w,
+                    vp_h,
+                }
             },
             display: DisplayState::new_with_start_id(
                 app.config.viewer.evict_distance,
@@ -345,11 +350,21 @@ pub fn run(
 
             // Inner event loop
             let mut last_render = Instant::now();
+            let mut last_tick = Instant::now();
 
             loop {
+                // Advance scroll animation (current_y → target_y) once per iteration.
+                // Frame-rate independent: dt is the actual elapsed wall-clock time.
+                let now = Instant::now();
+                let dt = now.duration_since(last_tick);
+                last_tick = now;
+                if vp.scroll.tick(dt) {
+                    vp.dirty = true;
+                }
+
                 let has_live_source = session.watcher.is_some()
                     || (matches!(&session.input, InputSource::Stdin(_)) && !stdin_eof);
-                let timeout = if vp.dirty {
+                let timeout = if vp.dirty || vp.scroll.is_animating() {
                     app.config
                         .viewer
                         .frame_budget

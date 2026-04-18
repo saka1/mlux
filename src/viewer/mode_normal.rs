@@ -114,35 +114,39 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         Action::ZoomOut => zoom_effects(ctx.current_scale, next_zoom_preset(ctx.current_scale, -1)),
         Action::ZoomReset => zoom_effects(ctx.current_scale, 1.0),
 
+        // Accumulating scrolls stack onto `target_y`, not `y_offset`, so that
+        // rapid keypresses during an in-flight animation add up correctly
+        // (otherwise each new press anchors off the lagged render position and
+        // the total travel under-shoots the intent).
         Action::ScrollDown(count) => {
-            let y = (ctx.scroll.y_offset + count * ctx.scroll_step).min(ctx.max_scroll);
+            let y = (ctx.scroll.target_y + count * ctx.scroll_step).min(ctx.max_scroll);
             debug!(
-                "scroll down: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.scroll.y_offset, y, ctx.scroll_step, ctx.max_scroll
+                "scroll down: target_y {} → {} (count={count}, step={}, max={})",
+                ctx.scroll.target_y, y, ctx.scroll_step, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
         Action::ScrollUp(count) => {
-            let y = ctx.scroll.y_offset.saturating_sub(count * ctx.scroll_step);
+            let y = ctx.scroll.target_y.saturating_sub(count * ctx.scroll_step);
             debug!(
-                "scroll up: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.scroll.y_offset, y, ctx.scroll_step, ctx.max_scroll
+                "scroll up: target_y {} → {} (count={count}, step={}, max={})",
+                ctx.scroll.target_y, y, ctx.scroll_step, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
         Action::HalfPageDown(count) => {
-            let y = (ctx.scroll.y_offset + count * ctx.half_page).min(ctx.max_scroll);
+            let y = (ctx.scroll.target_y + count * ctx.half_page).min(ctx.max_scroll);
             debug!(
-                "scroll half-down: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.scroll.y_offset, y, ctx.half_page, ctx.max_scroll
+                "scroll half-down: target_y {} → {} (count={count}, step={}, max={})",
+                ctx.scroll.target_y, y, ctx.half_page, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
         Action::HalfPageUp(count) => {
-            let y = ctx.scroll.y_offset.saturating_sub(count * ctx.half_page);
+            let y = ctx.scroll.target_y.saturating_sub(count * ctx.half_page);
             debug!(
-                "scroll half-up: y_offset {} → {} (count={count}, step={}, max={})",
-                ctx.scroll.y_offset, y, ctx.half_page, ctx.max_scroll
+                "scroll half-up: target_y {} → {} (count={count}, step={}, max={})",
+                ctx.scroll.target_y, y, ctx.half_page, ctx.max_scroll
             );
             vec![Effect::ScrollTo(y)]
         }
@@ -415,10 +419,32 @@ mod tests {
     fn make_state(y_offset: u32) -> ScrollState {
         ScrollState {
             y_offset,
+            current_y: y_offset as f64,
+            target_y: y_offset,
             img_h: 2000,
             vp_w: 800,
             vp_h: 600,
         }
+    }
+
+    #[test]
+    fn scroll_accumulates_onto_target_not_render_position() {
+        // Simulate mid-animation: render position (y_offset / current_y) is lagged
+        // behind target_y. A new ScrollDown must stack onto target_y so rapid
+        // keypresses accumulate correctly.
+        let mut state = make_state(0);
+        state.target_y = 100;
+        state.current_y = 40.0;
+        state.y_offset = 40;
+        let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
+        ctx.scroll_step = 50;
+        let effects = handle(Action::ScrollDown(1), &mut ctx);
+        // Expected: 100 (target) + 50 (step) = 150. NOT 40 (render) + 50 = 90.
+        assert!(matches!(effects[0], Effect::ScrollTo(y) if y == 150));
     }
 
     #[test]
