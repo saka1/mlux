@@ -78,8 +78,8 @@ struct Cli {
     scroll: Option<ScrollModeArg>,
 
     /// Scroll animation algorithm (downstream interpolation — experimental).
-    /// Currently only `exp-decay` is available; more variants will land as
-    /// the interpolation layer evolves.
+    /// `exp-decay` is the v1 baseline; `exp-decay-adaptive` stretches
+    /// the half-life on large jumps to keep gg/G trackable.
     #[arg(long, value_enum, global = true)]
     scroll_animation: Option<ScrollAnimationArg>,
 }
@@ -106,12 +106,14 @@ impl From<ScrollModeArg> for mlux::config::ScrollMode {
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum ScrollAnimationArg {
     ExpDecay,
+    ExpDecayAdaptive,
 }
 
 impl From<ScrollAnimationArg> for mlux::config::ScrollAnimation {
     fn from(v: ScrollAnimationArg) -> Self {
         match v {
             ScrollAnimationArg::ExpDecay => Self::ExpDecay,
+            ScrollAnimationArg::ExpDecayAdaptive => Self::ExpDecayAdaptive,
         }
     }
 }

@@ -35,6 +35,11 @@ pub enum ScrollAnimation {
     /// Exponential decay (closed-form), the v1 baseline.
     #[default]
     ExpDecay,
+    /// Exponential decay with distance-adaptive half-life.
+    /// `hl(d) = base × (1 + ln(1 + d/viewport))` — near distances
+    /// behave like `ExpDecay`, large jumps stretch sub-linearly so
+    /// gg/G stays trackable (design doc §3.4).
+    ExpDecayAdaptive,
 }
 
 pub struct ViewerConfig {

@@ -72,7 +72,9 @@ impl ScrollState {
     /// whether to redraw.
     pub fn tick(&mut self, dt: Duration) -> bool {
         let prev = self.y_offset;
-        let current = self.animator.tick(self.target_y as f64, dt);
+        let current = self
+            .animator
+            .tick(self.target_y as f64, self.vp_h as f64, dt);
         self.y_offset = current.round() as u32;
         self.y_offset != prev
     }
