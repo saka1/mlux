@@ -76,6 +76,12 @@ struct Cli {
     /// acceleration (see docs/2026-04-12-design-scroll-acceleration.md).
     #[arg(long, value_enum, global = true)]
     scroll: Option<ScrollModeArg>,
+
+    /// Scroll animation algorithm (downstream interpolation — experimental).
+    /// Currently only `exp-decay` is available; more variants will land as
+    /// the interpolation layer evolves.
+    #[arg(long, value_enum, global = true)]
+    scroll_animation: Option<ScrollAnimationArg>,
 }
 
 /// CLI-local mirror of [`mlux::config::ScrollMode`] — carries the clap
@@ -91,6 +97,21 @@ impl From<ScrollModeArg> for mlux::config::ScrollMode {
         match v {
             ScrollModeArg::Fixed => Self::Fixed,
             ScrollModeArg::Adaptive => Self::Adaptive,
+        }
+    }
+}
+
+/// CLI-local mirror of [`mlux::config::ScrollAnimation`]. Same rationale
+/// as [`ScrollModeArg`] — keeps the `ValueEnum` derive out of the lib crate.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ScrollAnimationArg {
+    ExpDecay,
+}
+
+impl From<ScrollAnimationArg> for mlux::config::ScrollAnimation {
+    fn from(v: ScrollAnimationArg) -> Self {
+        match v {
+            ScrollAnimationArg::ExpDecay => Self::ExpDecay,
         }
     }
 }
@@ -160,6 +181,7 @@ fn main() {
         scale: render_scale,
         allow_remote_images: cli.allow_remote_images,
         scroll_mode: cli.scroll.map(Into::into),
+        scroll_animation: cli.scroll_animation.map(Into::into),
     };
 
     let mut config = config::Config::default();

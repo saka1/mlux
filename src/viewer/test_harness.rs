@@ -74,7 +74,13 @@ impl TestHarness {
 
         let viewport = Viewport {
             mode: ViewerMode::Normal,
-            scroll: ScrollState::new(0, meta.total_height_px, vp_w, vp_h),
+            scroll: ScrollState::new(
+                0,
+                meta.total_height_px,
+                vp_w,
+                vp_h,
+                crate::config::ScrollAnimation::default(),
+            ),
             display: DisplayState::new(4),
             flash: None,
             dirty: false,

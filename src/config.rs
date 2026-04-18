@@ -26,9 +26,21 @@ pub enum ScrollMode {
     Adaptive,
 }
 
+/// Downstream interpolation algorithm selection — chooses the
+/// `ScrollAnimator` variant used to advance `current → target` each
+/// frame. Independent of [`ScrollMode`] (which governs the upstream
+/// target-delta accumulation layer).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollAnimation {
+    /// Exponential decay (closed-form), the v1 baseline.
+    #[default]
+    ExpDecay,
+}
+
 pub struct ViewerConfig {
     pub scroll_step: u32,
     pub scroll_mode: ScrollMode,
+    pub scroll_animation: ScrollAnimation,
     pub frame_budget: Duration,
     pub tile_height: f64,
     pub sidebar_cols: u16,
@@ -53,6 +65,7 @@ impl Default for ViewerConfig {
         Self {
             scroll_step: 3,
             scroll_mode: ScrollMode::default(),
+            scroll_animation: ScrollAnimation::default(),
             frame_budget: Duration::from_millis(32),
             tile_height: 500.0,
             sidebar_cols: 6,
@@ -95,6 +108,10 @@ impl Config {
             // = 2` for adaptive, which mixed user preference with
             // algorithm tuning — keeping them disjoint is the fix.
         }
+        if let Some(anim) = cli.scroll_animation {
+            debug!("config: CLI override scroll_animation={anim:?}");
+            self.viewer.scroll_animation = anim;
+        }
     }
 }
 
@@ -111,6 +128,7 @@ pub struct CliOverrides {
     pub scale: Option<f64>,
     pub allow_remote_images: bool,
     pub scroll_mode: Option<ScrollMode>,
+    pub scroll_animation: Option<ScrollAnimation>,
 }
 
 #[cfg(test)]
@@ -140,6 +158,7 @@ mod tests {
             scale: None,
             allow_remote_images: false,
             scroll_mode: None,
+            scroll_animation: None,
         };
         config.apply_cli(&cli);
         assert_eq!(config.theme, "dark");
@@ -158,6 +177,18 @@ mod tests {
         };
         config.apply_cli(&cli);
         assert_eq!(config.scale, 1.5);
+    }
+
+    #[test]
+    fn scroll_animation_override() {
+        let mut config = Config::default();
+        assert_eq!(config.viewer.scroll_animation, ScrollAnimation::ExpDecay);
+        let cli = CliOverrides {
+            scroll_animation: Some(ScrollAnimation::ExpDecay),
+            ..Default::default()
+        };
+        config.apply_cli(&cli);
+        assert_eq!(config.viewer.scroll_animation, ScrollAnimation::ExpDecay);
     }
 
     #[test]
