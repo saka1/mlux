@@ -32,14 +32,7 @@ impl Default for Viewport {
     fn default() -> Self {
         Self {
             mode: ViewerMode::Normal,
-            scroll: ScrollState {
-                y_offset: 0,
-                current_y: 0.0,
-                target_y: 0,
-                img_h: 0,
-                vp_w: 0,
-                vp_h: 0,
-            },
+            scroll: ScrollState::new(0, 0, 0, 0),
             display: DisplayState::new(0),
             flash: None,
             dirty: false,
@@ -71,10 +64,13 @@ impl Viewport {
         let mut ops = Vec::new();
         match effect {
             Effect::ScrollTo(y) => {
-                // Only update the target — the inner loop steps current_y toward it
-                // each frame (sub-cell resolution). Split-case compression artifacts
-                // are handled per-frame in the redraw path, not by snapping here.
+                // Only update the target — the animator steps toward it each frame
+                // (sub-cell resolution). Split-case compression artifacts are handled
+                // per-frame in the redraw path, not by snapping here. `set_target`
+                // is a no-op for ExpDecay but future animators (Bezier, ramp-up)
+                // reset internal timers here.
                 self.scroll.target_y = y;
+                self.scroll.animator.set_target(y as f64);
                 self.dirty = true;
             }
             Effect::MarkDirty => {
