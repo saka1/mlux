@@ -290,6 +290,7 @@ pub fn run(
                 img_h,
                 vp_w,
                 vp_h,
+                app.config.viewer.scroll_animation,
             ),
             display: DisplayState::new_with_start_id(
                 app.config.viewer.evict_distance,

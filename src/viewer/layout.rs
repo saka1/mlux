@@ -45,14 +45,20 @@ pub(super) struct ScrollState {
 
 impl ScrollState {
     /// Construct a `ScrollState` at rest at `initial_y` (no pending animation).
-    pub fn new(initial_y: u32, img_h: u32, vp_w: u32, vp_h: u32) -> Self {
+    pub fn new(
+        initial_y: u32,
+        img_h: u32,
+        vp_w: u32,
+        vp_h: u32,
+        animation: crate::config::ScrollAnimation,
+    ) -> Self {
         Self {
             y_offset: initial_y,
             target_y: initial_y,
             img_h,
             vp_w,
             vp_h,
-            animator: ScrollAnimator::new_exp_decay(initial_y as f64),
+            animator: ScrollAnimator::from_config(initial_y as f64, animation),
         }
     }
 

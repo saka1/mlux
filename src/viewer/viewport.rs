@@ -32,7 +32,7 @@ impl Default for Viewport {
     fn default() -> Self {
         Self {
             mode: ViewerMode::Normal,
-            scroll: ScrollState::new(0, 0, 0, 0),
+            scroll: ScrollState::new(0, 0, 0, 0, crate::config::ScrollAnimation::default()),
             display: DisplayState::new(0),
             flash: None,
             dirty: false,

@@ -50,6 +50,16 @@ impl ScrollAnimator {
         }
     }
 
+    /// Construct an animator for the algorithm selected in config.
+    /// Adding a [`crate::config::ScrollAnimation`] variant forces a new
+    /// arm here — that's the handoff point from user selection to
+    /// concrete strategy.
+    pub(super) fn from_config(initial: f64, cfg: crate::config::ScrollAnimation) -> Self {
+        match cfg {
+            crate::config::ScrollAnimation::ExpDecay => Self::new_exp_decay(initial),
+        }
+    }
+
     /// Current interpolated position (sub-pixel precision).
     pub(super) fn current(&self) -> f64 {
         match self {
@@ -179,6 +189,12 @@ mod tests {
         // No observable change to internal state for ExpDecay — it just
         // reads `target` each tick. Future variants will reset timers here.
         assert_eq!(a.current(), 10.0);
+    }
+
+    #[test]
+    fn from_config_dispatches_exp_decay() {
+        let a = ScrollAnimator::from_config(7.0, crate::config::ScrollAnimation::ExpDecay);
+        assert!(matches!(a, ScrollAnimator::ExpDecay { current, .. } if current == 7.0));
     }
 
     #[test]
