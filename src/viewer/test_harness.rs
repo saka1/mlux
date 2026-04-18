@@ -76,6 +76,8 @@ impl TestHarness {
             mode: ViewerMode::Normal,
             scroll: ScrollState {
                 y_offset: 0,
+                current_y: 0.0,
+                target_y: 0,
                 img_h: meta.total_height_px,
                 vp_w,
                 vp_h,
@@ -195,6 +197,15 @@ impl TestHarness {
             if has_exit {
                 break;
             }
+        }
+
+        // Drain the scroll animation: tests observe the final resting position
+        // rather than a partially-interpolated frame. The real loop ticks over
+        // many frames; the harness collapses that to a single step.
+        if self.viewport.scroll.is_animating() {
+            self.viewport
+                .scroll
+                .tick(std::time::Duration::from_secs(10));
         }
 
         self.render_ops = ops.clone();

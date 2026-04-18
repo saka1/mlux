@@ -1,5 +1,7 @@
 //! Terminal layout geometry, scroll state, and viewport math.
 
+use std::time::Duration;
+
 use crate::frame::VisualLine;
 
 // ---------------------------------------------------------------------------
@@ -23,10 +25,40 @@ pub(super) struct Layout {
 /// (`y_offset`), document height (`img_h`), and viewport dimensions
 /// (`vp_w`, `vp_h`).
 pub(super) struct ScrollState {
-    pub y_offset: u32, // スクロールオフセット（ピクセル）
-    pub img_h: u32,    // ドキュメント高さ（ピクセル）
-    pub vp_w: u32,     // ビューポート幅（ピクセル）
-    pub vp_h: u32,     // ビューポート高さ（ピクセル）
+    /// Rendered integer position (pixels). Always equals `current_y.round() as u32`.
+    /// Read widely by downstream code (status bar, visible_tiles, prefetch, etc.).
+    pub y_offset: u32,
+    /// Animation source of truth. Stepped each frame toward `target_y` via
+    /// `interpolate_step`. Allows sub-cell pixel precision during motion.
+    pub current_y: f64,
+    /// Desired final position set by ScrollTo effects.
+    pub target_y: u32,
+    pub img_h: u32, // ドキュメント高さ（ピクセル）
+    pub vp_w: u32,  // ビューポート幅（ピクセル）
+    pub vp_h: u32,  // ビューポート高さ（ピクセル）
+}
+
+impl ScrollState {
+    /// Whether an in-flight animation is still running.
+    pub fn is_animating(&self) -> bool {
+        (self.current_y - self.target_y as f64).abs() >= 0.5
+    }
+
+    /// Advance `current_y` toward `target_y` by one tick. Snaps to target when
+    /// the residual is sub-pixel. Returns true if `y_offset` (the rendered
+    /// integer position) changed — callers use this to decide whether to redraw.
+    pub fn tick(&mut self, dt: Duration) -> bool {
+        let prev = self.y_offset;
+        let target_f = self.target_y as f64;
+        let next = interpolate_step(self.current_y, target_f, dt);
+        self.current_y = if (next - target_f).abs() < 0.5 {
+            target_f
+        } else {
+            next
+        };
+        self.y_offset = self.current_y.round() as u32;
+        self.y_offset != prev
+    }
 }
 
 impl Layout {
@@ -78,6 +110,23 @@ pub(super) fn compute_layout(
     }
 }
 
+/// Half-life (ms) of the scroll interpolation. Residual distance halves every
+/// SCROLL_HALF_LIFE_MS, regardless of frame rate.
+const SCROLL_HALF_LIFE_MS: f64 = 40.0;
+
+/// Frame-rate independent exponential smoothing of `current` toward `target`.
+///
+/// Closed-form of `dx/dt = -λ (x - target)` with λ = ln(2) / half_life.
+/// Two half-`dt` steps compose to the same result as one full-`dt` step.
+pub(super) fn interpolate_step(current: f64, target: f64, dt: Duration) -> f64 {
+    if dt.is_zero() {
+        return current;
+    }
+    let dt_ms = dt.as_secs_f64() * 1000.0;
+    let alpha = 1.0 - 0.5_f64.powf(dt_ms / SCROLL_HALF_LIFE_MS);
+    current + (target - current) * alpha
+}
+
 pub(super) fn vp_dims(layout: &Layout, img_w: u32, img_h: u32) -> (u32, u32) {
     let vp_w = (layout.image_cols as u32 * layout.cell_w as u32).min(img_w);
     let vp_h = (layout.image_rows as u32 * layout.cell_h as u32).min(img_h);
@@ -103,6 +152,55 @@ pub(super) fn visual_line_offset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interpolate_step_half_life_behavior() {
+        // Starting at 0, target 100. After one half-life, residual halves → ~50.
+        let c = interpolate_step(
+            0.0,
+            100.0,
+            Duration::from_secs_f64(SCROLL_HALF_LIFE_MS / 1000.0),
+        );
+        assert!((c - 50.0).abs() < 0.01, "expected ~50, got {c}");
+    }
+
+    #[test]
+    fn interpolate_step_frame_rate_independent() {
+        // Two half-dt steps must equal one full-dt step (within tiny FP error).
+        let full = Duration::from_millis(40);
+        let half = Duration::from_millis(20);
+        let one_shot = interpolate_step(0.0, 100.0, full);
+        let c1 = interpolate_step(0.0, 100.0, half);
+        let two_shot = interpolate_step(c1, 100.0, half);
+        assert!(
+            (one_shot - two_shot).abs() < 1e-9,
+            "one_shot={one_shot} two_shot={two_shot}"
+        );
+    }
+
+    #[test]
+    fn interpolate_step_zero_dt_is_noop() {
+        let c = interpolate_step(10.0, 100.0, Duration::ZERO);
+        assert_eq!(c, 10.0);
+    }
+
+    #[test]
+    fn interpolate_step_converges_toward_target() {
+        // After ~10 half-lives the residual is < 0.1%.
+        let dt = Duration::from_secs_f64(SCROLL_HALF_LIFE_MS * 10.0 / 1000.0);
+        let c = interpolate_step(0.0, 100.0, dt);
+        assert!(c > 99.0 && c < 100.0, "expected near 100, got {c}");
+    }
+
+    #[test]
+    fn interpolate_step_handles_negative_direction() {
+        let c = interpolate_step(
+            100.0,
+            0.0,
+            Duration::from_secs_f64(SCROLL_HALF_LIFE_MS / 1000.0),
+        );
+        assert!((c - 50.0).abs() < 0.01, "expected ~50, got {c}");
+    }
 
     #[test]
     fn compute_layout_basic() {

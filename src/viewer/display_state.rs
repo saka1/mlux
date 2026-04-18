@@ -497,6 +497,34 @@ pub(super) struct ForkHandle<'a> {
     pub in_flight: &'a mut HashSet<usize>,
 }
 
+/// Compute the visible tiles for rendering, snapping `y` to a cell boundary
+/// only when the raw position would produce a `Split`. Sub-cell `y` on a
+/// `Single` placement is harmless (Kitty renders `h` at native resolution
+/// when `r * cell_h == h`, which always holds because `vp_h` is cell-aligned).
+/// In `Split`, `top_src_h = tile_h - src_y_in_tile` is not a cell multiple if
+/// `src_y_in_tile` is sub-cell, which forces Kitty to vertically compress the
+/// top image; we avoid that by snapping at tile boundaries only.
+fn visible_tiles_for_render(
+    meta: &DocumentMeta,
+    scroll: &ScrollState,
+    layout: &Layout,
+) -> VisibleTiles {
+    let y = scroll.y_offset;
+    let visible = meta.visible_tiles(y, scroll.vp_h);
+    match &visible {
+        VisibleTiles::Split { .. } => {
+            let cell_h = layout.cell_h as u32;
+            let snapped = (y / cell_h) * cell_h;
+            if snapped == y {
+                visible
+            } else {
+                meta.visible_tiles(snapped, scroll.vp_h)
+            }
+        }
+        VisibleTiles::Single { .. } => visible,
+    }
+}
+
 /// Full redraw: content tiles + sidebar + overlay + status bar.
 ///
 /// Ordering:
@@ -518,7 +546,7 @@ pub(super) fn redraw(
     include_overlays: bool,
     rh: &mut ForkHandle<'_>,
 ) -> anyhow::Result<()> {
-    let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
+    let visible = visible_tiles_for_render(meta, scroll, layout);
 
     // Phase 1: Ensure all needed tiles are rendered and sent to the terminal.
     match &visible {
@@ -592,11 +620,12 @@ pub(super) fn update_overlays(
     meta: &DocumentMeta,
     loaded: &mut DisplayState,
     cache: &mut TileCache,
+    layout: &Layout,
     scroll: &ScrollState,
     spec: &HighlightSpec,
     rh: &mut ForkHandle<'_>,
 ) -> anyhow::Result<()> {
-    let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
+    let visible = visible_tiles_for_render(meta, scroll, layout);
 
     let indices: Vec<usize> = match &visible {
         VisibleTiles::Single { idx, .. } => vec![*idx],
@@ -695,8 +724,8 @@ pub(super) fn redraw_and_prefetch(
         rh,
     )?;
     if let Some(spec) = search_spec {
-        update_overlays(meta, display, cache, scroll, spec, rh)?;
-        let visible = meta.visible_tiles(scroll.y_offset, scroll.vp_h);
+        update_overlays(meta, display, cache, layout, scroll, spec, rh)?;
+        let visible = visible_tiles_for_render(meta, scroll, layout);
         // update_overlays may have populated new rects; re-emit overlay
         // placements. Stale slots (rects that vanished for the current
         // tile set) were already pruned by Phase 2's delete_stale_slots.
