@@ -55,7 +55,7 @@
   text(12pt, weight: "bold", fill: rgb("#5c5f77"), it.body))
 
 // 数式: 本文フォントとのバランス調整
-#show math.equation: set text(font: "STIX Two Math", size: 13pt)
+#show math.equation: set text(font: ("STIX Two Math", "Noto Sans JP"), size: 13pt)
 
 // 水平線: Surface 2
 #show line: set line(stroke: 1pt + rgb("#acb0be"))
