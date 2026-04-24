@@ -64,13 +64,29 @@ impl Viewport {
         let mut ops = Vec::new();
         match effect {
             Effect::ScrollTo(y) => {
-                // Only update the target — the animator steps toward it each frame
-                // (sub-cell resolution). Split-case compression artifacts are handled
-                // per-frame in the redraw path, not by snapping here. `set_target`
-                // is a no-op for ExpDecay but future animators (Bezier, ramp-up)
-                // reset internal timers here.
+                // Absolute jump. Only update the target — the animator steps toward
+                // it each frame (sub-cell resolution). Split-case compression artifacts
+                // are handled per-frame in the redraw path, not by snapping here.
+                // `restart_ramp` is true only when the animation was settled so that
+                // continuous keypresses (j held down) don't re-trigger ease-in every frame.
+                let restart_ramp = !self
+                    .scroll
+                    .animator
+                    .is_animating(self.scroll.target_y as f64);
                 self.scroll.target_y = y;
-                self.scroll.animator.set_target(y as f64);
+                self.scroll.animator.set_target(restart_ramp);
+                self.dirty = true;
+            }
+            Effect::ScrollBy { target, impulse_px } => {
+                // Incremental scroll. Update target for position-chase animators,
+                // apply impulse to velocity-based animators (DampedSpring).
+                let restart_ramp = !self
+                    .scroll
+                    .animator
+                    .is_animating(self.scroll.target_y as f64);
+                self.scroll.target_y = target;
+                self.scroll.animator.set_target(restart_ramp);
+                self.scroll.animator.add_impulse(impulse_px as f64);
                 self.dirty = true;
             }
             Effect::MarkDirty => {
