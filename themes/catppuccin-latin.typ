@@ -1,5 +1,5 @@
 #set page(width: 660pt, height: auto, margin: 40pt, fill: rgb("#1e1e2e"))
-#set text(font: "Fira Sans", size: 12pt, fill: rgb("#cdd6f4"))
+#set text(font: "Fira Sans", size: 12pt, fill: rgb("#cdd6f4"), lang: "en")
 #set par(leading: 0.75em, justify: true, first-line-indent: 0pt)
 
 // 見出し (above: 1.4em, below: 0.9em — em はフォントサイズ基準)

@@ -15,7 +15,7 @@
 | **measure (欧文)** | ~96 cpl | 45-75 cpl 理想、最大 90 | 高 |
 | **和欧混植** | `cjk-latin-spacing` 未設定 | `auto` 必須 | 高 |
 | **`lang: "ja"`** | 未設定 | 設定で禁則処理が有効化 | 高 |
-| **justify / linebreaks** | `justify: true` のみ | `linebreaks: "optimized"` 併用（Knuth-Plass）| 中 |
+| ~~**justify / linebreaks**~~ | ~~`justify: true` のみ~~ | ~~`linebreaks: "optimized"` 併用（Knuth-Plass）~~ | ~~no-op~~ |
 | **見出し modular scale** | 24/20/16/14/13/12 は比率不均一 | 単一比（1.2 か 1.25）| 中 |
 | **見出し余白** | 自サイズの em | 本文 leading の整数倍（vertical rhythm）| 中 |
 | **inline raw の `/0.8` 補正** | 場当たり的 | `show raw: set text(size: 1em/0.8)` で一元化 | 中 |
@@ -38,7 +38,7 @@
 
 ### 既に使える knob
 - `text(cjk-latin-spacing: auto)`: 和欧間に四分アキ自動挿入（JLReq §3.8 準拠の近似）
-- `par(linebreaks: "optimized")`: Knuth-Plass。ragged でも行長が揃う
+- `par(linebreaks: "optimized")`: Knuth-Plass。ただし `linebreaks` のデフォルトは `auto` で、`justify: true` のとき自動的に `"optimized"` が選ばれる。本プロジェクトはすでに `justify: true` なので明示設定は **no-op**（2026-04-25 検証: レンダ結果がバイト一致）
 - `text(costs: (hyphenation: 150%))`: ハイフネーション抑制
 - `text(overhang: true)`: **右側のみ** ぶら下げ（デフォルト on）
 - `text(features: ("palt",))`: 約物詰め（Noto Sans JP 搭載）
@@ -100,7 +100,7 @@
 
 1. **leading 変更** (`1em` → `0.75em`): 最も効果が大きく、低リスク。A/B で見比べるのが容易
 2. **`cjk-latin-spacing: auto` + `lang: "ja"`** 追加: 和文 README のビジュアルが顕著に変わる
-3. **`linebreaks: "optimized"`**: ragged でも行端の凹凸が減る
+3. ~~**`linebreaks: "optimized"`**~~: `justify: true` のデフォルトと同一のため no-op（スキップ）
 4. **modular scale 見直し** (24/20/16/14/13/12 → 1.2 比 or 1.25 比で再設計)
 5. **inline raw の `/0.8` 補正を show-set へ**: コード重複が消える
 6. **emph 色変更 (h2 衝突回避)**: 1 行の機械的変更
