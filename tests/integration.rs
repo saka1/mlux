@@ -1106,8 +1106,10 @@ fn test_tile_hash_identical_builds_match() {
 
 #[test]
 fn test_tile_hash_merge_recovers_unchanged_tiles() {
-    // Build original document with multiple tiles
-    let lines: Vec<String> = (0..50).map(|i| format!("Line {i}\n")).collect();
+    // Build original document with multiple tiles.
+    // Uses blank-line-separated paragraphs so layout height is robust
+    // against changes to `par leading` in the theme.
+    let lines: Vec<String> = (0..50).map(|i| format!("Line {i}\n\n")).collect();
     let md_original: String = lines.iter().cloned().collect();
 
     let old_hashes = build_hashes(&md_original);
@@ -1170,7 +1172,7 @@ fn test_tile_hash_no_change_full_recovery() {
 /// With Span-excluding hashing, tiles before the edit should still match.
 #[test]
 fn test_tile_hash_mid_edit_recovers_early_tiles() {
-    let lines: Vec<String> = (0..50).map(|i| format!("Line {i}\n")).collect();
+    let lines: Vec<String> = (0..50).map(|i| format!("Line {i}\n\n")).collect();
     let md_original: String = lines.iter().cloned().collect();
 
     let old_hashes = build_hashes(&md_original);
@@ -1190,7 +1192,7 @@ fn test_tile_hash_mid_edit_recovers_early_tiles() {
 
     // Insert a line near the middle — this shifts Spans for all subsequent content
     let mut modified_lines = lines.clone();
-    modified_lines.insert(25, "INSERTED LINE\n".to_string());
+    modified_lines.insert(25, "INSERTED LINE\n\n".to_string());
     let md_modified: String = modified_lines.iter().cloned().collect();
 
     let new_hashes = build_hashes(&md_modified);
