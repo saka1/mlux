@@ -66,7 +66,18 @@ pub(super) enum ScreenRestore {
 /// Handlers return `Vec<Effect>` which the apply loop in `run()` executes.
 /// This separates "what to do" (handler) from "how to do it" (apply loop).
 pub(super) enum Effect {
+    /// Absolute scroll jump (gg, G, Ngg, TOC, search). Sets `target_y`
+    /// to the given absolute position; spring-based animators rely on
+    /// the attractive term alone to pull `current` toward target.
     ScrollTo(u32),
+    /// Incremental scroll (j, k, Ctrl-D, Ctrl-U). Carries both the
+    /// updated absolute `target` (for position-chase animators that
+    /// only consume target) and the signed `impulse_px` delta (for
+    /// velocity-based animators that accumulate impulses).
+    ScrollBy {
+        target: u32,
+        impulse_px: i32,
+    },
     MarkDirty,
     Flash(String),
     RedrawStatusBar,

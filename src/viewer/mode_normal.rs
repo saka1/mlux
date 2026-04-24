@@ -120,35 +120,51 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         // the total travel under-shoots the intent).
         Action::ScrollDown(count) => {
             let y = (ctx.scroll.target_y + count * ctx.scroll_step).min(ctx.max_scroll);
+            let impulse = y as i32 - ctx.scroll.target_y as i32;
             debug!(
-                "scroll down: target_y {} → {} (count={count}, step={}, max={})",
+                "scroll down: target_y {} → {} (count={count}, step={}, max={}, impulse={impulse})",
                 ctx.scroll.target_y, y, ctx.scroll_step, ctx.max_scroll
             );
-            vec![Effect::ScrollTo(y)]
+            vec![Effect::ScrollBy {
+                target: y,
+                impulse_px: impulse,
+            }]
         }
         Action::ScrollUp(count) => {
             let y = ctx.scroll.target_y.saturating_sub(count * ctx.scroll_step);
+            let impulse = y as i32 - ctx.scroll.target_y as i32;
             debug!(
-                "scroll up: target_y {} → {} (count={count}, step={}, max={})",
+                "scroll up: target_y {} → {} (count={count}, step={}, max={}, impulse={impulse})",
                 ctx.scroll.target_y, y, ctx.scroll_step, ctx.max_scroll
             );
-            vec![Effect::ScrollTo(y)]
+            vec![Effect::ScrollBy {
+                target: y,
+                impulse_px: impulse,
+            }]
         }
         Action::HalfPageDown(count) => {
             let y = (ctx.scroll.target_y + count * ctx.half_page).min(ctx.max_scroll);
+            let impulse = y as i32 - ctx.scroll.target_y as i32;
             debug!(
-                "scroll half-down: target_y {} → {} (count={count}, step={}, max={})",
+                "scroll half-down: target_y {} → {} (count={count}, step={}, max={}, impulse={impulse})",
                 ctx.scroll.target_y, y, ctx.half_page, ctx.max_scroll
             );
-            vec![Effect::ScrollTo(y)]
+            vec![Effect::ScrollBy {
+                target: y,
+                impulse_px: impulse,
+            }]
         }
         Action::HalfPageUp(count) => {
             let y = ctx.scroll.target_y.saturating_sub(count * ctx.half_page);
+            let impulse = y as i32 - ctx.scroll.target_y as i32;
             debug!(
-                "scroll half-up: target_y {} → {} (count={count}, step={}, max={})",
+                "scroll half-up: target_y {} → {} (count={count}, step={}, max={}, impulse={impulse})",
                 ctx.scroll.target_y, y, ctx.half_page, ctx.max_scroll
             );
-            vec![Effect::ScrollTo(y)]
+            vec![Effect::ScrollBy {
+                target: y,
+                impulse_px: impulse,
+            }]
         }
 
         Action::JumpToTop => {
@@ -445,7 +461,15 @@ mod tests {
         ctx.scroll_step = 50;
         let effects = handle(Action::ScrollDown(1), &mut ctx);
         // Expected: 100 (target) + 50 (step) = 150. NOT 40 (render) + 50 = 90.
-        assert!(matches!(effects[0], Effect::ScrollTo(y) if y == 150));
+        // Incremental scrolls now emit ScrollBy, carrying both absolute target
+        // and signed impulse delta (impulse = new_target - old_target = 50).
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollBy {
+                target: 150,
+                impulse_px: 50
+            }
+        ));
     }
 
     #[test]
@@ -458,7 +482,14 @@ mod tests {
         let mut ctx = make_ctx(&state, &doc, &mut ls);
         ctx.max_scroll = 1000;
         let effects = handle(Action::ScrollDown(1), &mut ctx);
-        assert!(matches!(effects[0], Effect::ScrollTo(y) if y == 1000));
+        // Clamped to 1000; impulse is the achieved delta (10), not the requested one.
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollBy {
+                target: 1000,
+                impulse_px: 10
+            }
+        ));
     }
 
     #[test]
@@ -470,7 +501,14 @@ mod tests {
         let mut ls = None;
         let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::ScrollUp(1), &mut ctx);
-        assert!(matches!(effects[0], Effect::ScrollTo(0)));
+        // Clamped; negative impulse reflects upward direction.
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollBy {
+                target: 0,
+                impulse_px: -10
+            }
+        ));
     }
 
     #[test]
@@ -482,7 +520,13 @@ mod tests {
         let mut ls = None;
         let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::HalfPageDown(1), &mut ctx);
-        assert!(matches!(effects[0], Effect::ScrollTo(200)));
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollBy {
+                target: 200,
+                impulse_px: 200
+            }
+        ));
     }
 
     #[test]
@@ -494,7 +538,13 @@ mod tests {
         let mut ls = None;
         let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::HalfPageUp(2), &mut ctx);
-        assert!(matches!(effects[0], Effect::ScrollTo(100)));
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollBy {
+                target: 100,
+                impulse_px: -400
+            }
+        ));
     }
 
     #[test]

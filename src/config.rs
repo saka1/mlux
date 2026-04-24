@@ -40,6 +40,12 @@ pub enum ScrollAnimation {
     /// behave like `ExpDecay`, large jumps stretch sub-linearly so
     /// gg/G stays trackable (design doc §3.4).
     ExpDecayAdaptive,
+    /// Critically-damped spring with explicit velocity state.
+    /// Position follows `dv/dt = ω²(target - current) - 2ω·v`, giving
+    /// natural ease-in (zero initial velocity), no overshoot, and
+    /// velocity accumulation across rapid incremental inputs (impulse
+    /// model, design doc §2.2 / §4.3).
+    DampedSpring,
 }
 
 pub struct ViewerConfig {
