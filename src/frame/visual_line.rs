@@ -256,13 +256,20 @@ fn has_dominant_child_group(frame: &Frame) -> bool {
 /// when it's not, only bare Text items remain. This function detects
 /// the latter case so that `should_recurse` can split them into
 /// individual visual lines.
+///
+/// Also recurses into direct child Groups — the theme's
+/// `show raw.where(block: true)` wraps raw content in a `block(...)`,
+/// so the raw frame (with line tags) sits one level down from the outer
+/// block. Without this recursion, short raw blocks may be emitted as a
+/// single visual line when the inner Group falls below the
+/// `has_dominant_child_group` threshold.
 fn has_raw_line_tags(frame: &Frame) -> bool {
-    frame.items().any(|(_, item)| {
-        if let FrameItem::Tag(Tag::Start(content, _)) = item {
-            content.elem().name() == "line"
-        } else {
-            false
-        }
+    fn is_line_tag(item: &FrameItem) -> bool {
+        matches!(item, FrameItem::Tag(Tag::Start(c, _)) if c.elem().name() == "line")
+    }
+    frame.items().any(|(_, item)| match item {
+        FrameItem::Group(g) => g.frame.items().any(|(_, inner)| is_line_tag(inner)),
+        _ => is_line_tag(item),
     })
 }
 
