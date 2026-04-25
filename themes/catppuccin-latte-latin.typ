@@ -9,10 +9,10 @@
 // Headings (above: 1.4em, below: 0.9em — em is relative to font size)
 #show heading.where(level: 1): it => text(24pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#8839ef"), it.body)))
-#show heading.where(level: 2): it => text(20pt,
+#show heading.where(level: 2): it => text(21pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#ea76cb"), it.body)))
-#show heading.where(level: 3): it => text(16pt,
-  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#dc8a78"), it.body)))
+#show heading.where(level: 3): it => text(18pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#7287fd"), it.body)))
 
 // Code block
 #show raw.where(block: true): it => block(
@@ -48,9 +48,9 @@
 #show strike: set strike(stroke: 1pt + rgb("#5c5f77"))
 
 // Headings h4-h6
-#show heading.where(level: 4): it => text(14pt,
+#show heading.where(level: 4): it => text(16pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#e64553"), it.body)))
-#show heading.where(level: 5): it => text(13pt,
+#show heading.where(level: 5): it => text(14pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#df8e1d"), it.body)))
 #show heading.where(level: 6): it => text(12pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#5c5f77"), it.body)))
