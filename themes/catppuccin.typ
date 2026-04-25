@@ -1,9 +1,14 @@
 #set page(width: 660pt, height: auto, margin: 40pt, fill: rgb("#1e1e2e"))
 #set text(font: "Noto Sans JP", size: 12pt, fill: rgb("#cdd6f4"),
   lang: "ja", cjk-latin-spacing: auto)
-#set par(leading: 0.75em, justify: true, first-line-indent: 0pt)
+// Leading: JLReq §3.2.3 says line gap = 50-100% of em, and "one em spacing or
+// close to it is more appropriate when the line length is longer than 35
+// characters". The kihon-hanmen here is 580pt / 12pt ≈ 48 chars, so ~1em is
+// indicated; 1.0em felt slightly slack, so we take "close to it" as 0.9em.
+// Typst's par.leading is the inter-line gap only → 0.9em ≈ 190% line-height.
+#set par(leading: 0.9em, justify: true, first-line-indent: 0pt)
 
-// 見出し (above: 1.4em, below: 0.9em — em はフォントサイズ基準)
+// Headings (above: 1.4em, below: 0.9em — em is relative to font size)
 #show heading.where(level: 1): it => text(24pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#cba6f7"), it.body)))
 #show heading.where(level: 2): it => text(20pt,
@@ -11,43 +16,43 @@
 #show heading.where(level: 3): it => text(16pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#f5e0dc"), it.body)))
 
-// コードブロック
+// Code block
 #show raw.where(block: true): it => block(
   fill: rgb("#313244"), inset: 12pt, radius: 6pt, width: 100%,
   text(font: ("DejaVu Sans Mono", "Noto Sans JP"), size: 10pt, it))
 
-// インラインコード (raw の ShowSet が size: 0.8em を適用するため / 0.8 で補正)
+// Inline code (raw's ShowSet applies size: 0.8em, so divide by 0.8 to compensate)
 #show raw.where(block: false): it => box(
   fill: rgb("#313244"), inset: (x: 0.3em / 0.8), outset: (y: 0.15em / 0.8), radius: 3pt,
   text(font: ("DejaVu Sans Mono", "Noto Sans JP"), size: 0.85em / 0.8, it))
 
-// リスト
+// Lists
 #set list(marker: ([•], [‣], [–]), indent: 1em, body-indent: 0.7em)
 #set enum(indent: 1em, body-indent: 0.7em)
 
-// 引用ブロック
+// Block quote
 #show quote.where(block: true): it => block(
   inset: (left: 16pt, y: 8pt),
   stroke: (left: 3pt + rgb("#89b4fa")),
   text(fill: rgb("#a6adc8"), it.body))
 
-// テーブル
+// Tables
 #set table(stroke: 0.5pt + rgb("#585b70"), inset: 8pt,
   fill: (_, y) => if y == 0 { rgb("#313244") } else { none })
 
-// リンク
+// Links
 #show link: it => text(fill: rgb("#89b4fa"), underline(it))
 
-// 強調（bold）: 本文と同色、太さのみ変える
+// Strong (bold): same color as body, only weight differs
 #show strong: set text(fill: rgb("#cdd6f4"))
 
-// 斜体: Teal（寒色で「退く」印象 — italic の控えめな強調に対応）
+// Italic: Teal — cool tones recede, matching italic's subdued emphasis
 #show emph: set text(fill: rgb("#94e2d5"))
 
-// 打ち消し線: Subtext 1 のストローク
+// Strikethrough: Subtext 1 stroke
 #show strike: set strike(stroke: 1pt + rgb("#a6adc8"))
 
-// 見出し h4-h6
+// Headings h4-h6
 #show heading.where(level: 4): it => text(14pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#eba0ac"), it.body)))
 #show heading.where(level: 5): it => text(13pt,
@@ -55,14 +60,14 @@
 #show heading.where(level: 6): it => text(12pt,
   block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#a6adc8"), it.body)))
 
-// 数式: 本文フォントとのバランス調整
+// Math: tuned to balance with body font
 #show math.equation: set text(font: "STIX Two Math", size: 13pt)
 
-// 水平線: Surface 2
+// Horizontal rule: Surface 2
 #show line: set line(stroke: 1pt + rgb("#585b70"))
 
-// 画像プレースホルダー: Surface 2 ボーダー
+// Image placeholder: Surface 2 border
 #let image-placeholder(path) = block(stroke: 0.5pt + rgb("#585b70"), inset: 8pt, radius: 4pt)[Image: #path]
 
-// コードブロック: Catppuccin Mocha シンタックスハイライト
+// Code block: Catppuccin Mocha syntax highlighting
 #set raw(theme: "catppuccin-mocha.tmTheme")

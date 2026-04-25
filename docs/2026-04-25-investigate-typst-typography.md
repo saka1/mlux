@@ -155,6 +155,49 @@
 | フレーズ単位の CJK 改行 (`word-break: auto-phrase`) | [#8097 open](https://github.com/typst/typst/issues/8097) | 新規提案（2026-04） |
 | Noto Sans JP italic なし | font の仕様 | emph の italic 化は Latin テーマでのみ有効（CJK テーマは色変更で代替） |
 
+## Appendix A. 実サイトとの比較 — GitHub の line-height
+
+レビュー中の議論で「0.75em は詰まって感じる」という感覚検証のため、実運用サイトの値を確認したメモ。
+
+### GitHub.com の本文
+
+ブラウザの DevTools で `<body>` の計算済みスタイルを確認:
+
+```
+font-size:   16px
+line-height: 24px
+→ 総 line-height = 24/16 = 1.5em (150%)
+→ Typst 換算: par.leading ≈ 0.5em
+```
+
+CSS の `line-height` はベースライン間距離そのもの、Typst の `par.leading` は line-box 間のギャップ。ほとんどのフォントで line-box ≈ 1em なので `leading = 総 − 1em` が近似的に成り立つ（±0.05em 程度のフォント metrics 依存あり）。
+
+### 既知の基準と並べた位置付け
+
+| 基準/実装 | 総 line-height | Typst leading 換算 |
+|---|---|---|
+| Butterick 推奨下限 | 120% | 0.2em |
+| Butterick 推奨上限 | 145% | 0.45em |
+| **GitHub 本文** | **150%** | **0.5em** |
+| Typst `par.leading` デフォルト | ~165% | 0.65em |
+| **mlux 現行** | **~175%** | **0.75em** |
+| JLReq 中央値 (gap 75%) | 175% | 0.75em |
+| JLReq 上限 (gap 100%, 長い行) | 200% | 1em |
+| mlux 旧設定 (2026-04 以前) | ~200% | 1em |
+
+### 解釈
+
+- **GitHub の 150% は Latin 前提の値**。system-ui スタック (`-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif`) は和文フォントに最適化されておらず、日本語表示時に詰まって見える問題は広く知られている。
+- **mlux を GitHub と同じ 150% にするのは CJK 主体では過小**。JLReq 下限 (150%) は「短い行長 (~30 字)」向けで、現行 48 字の行長には不足。
+- **Latin テーマ** (`catppuccin-latin.typ` / `catppuccin-latte-latin.typ`) **を GitHub-like の 0.5em へ下げる選択肢は合理的**。Butterick 上限 (145%) の直上で、Markdown ビューアの典型的なコンテンツ密度にも適合する。CJK テーマと分離する方針の一部として検討余地あり。
+- **§4 の JLReq 観点**とあわせると、CJK テーマは **据え置き or 0.85em へ引き上げ**、Latin テーマは **0.5em 前後へ引き下げ** が素直なデザイン分岐。現行は 4 テーマ共通 0.75em で Latin/CJK 規範の交点を狙った妥協値という位置付け。
+
+### CSS/Typst 単位系のズレに関する注意
+
+- CSS `line-height: 1.5` は厳密に baseline-to-baseline = 1.5 × font-size
+- Typst `par.leading: 0.5em` は line-box 間ギャップ。line-box は font の ascender + descender 由来で、Noto Sans JP / Fira Sans とも概ね 1em だが厳密には ±0.05em 程度ぶれる
+- 変換式 `leading ≈ total − 1em` は実用近似。pixel-perfect な一致が要るなら実測すること
+
 ## 参考文献
 
 - [Butterick – Practical Typography: line-length](https://practicaltypography.com/line-length.html)、[line-spacing](https://practicaltypography.com/line-spacing.html)、[justified-text](https://practicaltypography.com/justified-text.html)
