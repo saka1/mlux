@@ -18,6 +18,7 @@
 | `cjk-latin-spacing: auto` | `3307a46` | 検証済み: これは `text` の **デフォルト**なので明示設定は冗長（害は無い、ドキュメント目的として残してよい） |
 | `lang: "ja"` / `lang: "en"` | `3307a46` | `lang` 単独では kinsoku は駆動されない (後述 §3) ＝ 実効は英語ハイフネーション選択と smart-quote |
 | `linebreaks: "optimized"` 明示不要 | `3307a46` 注記 | 再検証 2026-04-25: HEAD で `linebreaks` を追加/非追加の 2 ビルドを byte-compare → SHA256 一致 (`c7e5db02…`)。`justify: true` のとき `linebreaks: auto` は `"optimized"` に解決される |
+| 見出し余白を流派 B（proportional）で 4 テーマ統一 | 2026-04-25 (本セッション) | latte 系の `block(..., text(Npt, ...))` 構造（em が body 解決）を mocha 系 `text(Npt, block(...))`（em が heading 解決）に揃え、全レベル `above:1.4em / below:0.9em` 共通へ。テーマ間の挙動差（色のみ違いが本来意図のはずが余白も別物だった bug）を解消 |
 
 ## 1. 残存する乖離箇所（影響大→小）
 
@@ -28,8 +29,7 @@
 | **measure (欧文)** | 580pt / 12pt ≈ 96 cpl | Bringhurst 45-75（66 理想）、Butterick 45-90、Bringhurst 30×font-size ルールで上限 40× = 480pt | 高 |
 | **行長 (和文)** | 580pt / 12pt ≈ 48 全角字 | JLReq: **横組み 40 字以下推奨**（縦組みは 52 字以下）— 現行は横組み上限超過 | 高 |
 | **見出し modular scale** | 24/20/16/14/13/12（比 1.200/1.250/1.143/1.077/1.083） | 単一比 1.2 なら 12/14.4/17.3/20.7/24.9 / 1.25 なら 12/15/18.75/23.44/29.3 | 中 |
-| **見出し余白 (mocha)** | `catppuccin.typ` / `catppuccin-latin.typ` は全 level 一律 above:1.4em, below:0.9em | 本文 leading の整数倍 + above:below は asymmetric（例 3:1 や 2:1）で Gestalt proximity を作る | 中 |
-| **見出し余白 (latte)** | `catppuccin-latte*.typ` は 2.2/1.9/1.6/1.3/1.2/1.0em（テーパー済） | leading = 0.75em × 12pt = 9pt へ整数倍でスナップするとより良い | 中 |
+| **見出し余白（4 テーマ統一済 / 2026-04-25）** | 全テーマ `text(Npt, block(above:1.4em, below:0.9em, text(...)))` 構造で統一。em は heading フォントに解決され、流派 B（proportional）でフォントサイズ比例 taper（h1: 33.6/21.6pt → h6: 16.8/10.8pt） | modular scale 比 1.2 系（12/14.4/17.3/20.7/24.9）の本文サイズ系列とも合わせるなら、現行 24/20/16/14/13/12pt も再設計余地あり | 中 |
 | **inline raw の `/0.8` 補正** | 3 テーマ全てで手書き | `show raw.where(block: false): set text(size: 1em / 0.8)` で一元化（Typst docs の推奨イディオム） | 中 |
 | **link underline offset** | デフォルト（`evade: true` で descender は自動回避済み） | 読みやすさ志向なら `offset: 2pt` を明示 | 低 |
 | **数式サイズ** | 13pt（STIX Two Math） | 12pt でも STIX の x-height が高いため本文と整合する可能性 → A/B 推奨 | 低 |
@@ -43,7 +43,12 @@
 
 - **measure**: Bringhurst は 45-75（66 字を理想）、Butterick は 45-90 で設定。580pt / 12pt = 96 cpl は両者の上限を超過。解決は (a) 版面幅を 480-540pt に狭める、(b) 本文を 11pt に縮める、(c) マルチカラム化のいずれか（出典: [Practical Typography – line-length](https://practicaltypography.com/line-length.html)、Bringhurst §2.1.2）。
 - **leading**: Butterick の 120-145% は **総 line-height** 基準。Typst `par.leading` はギャップ（下端↔上端）のみであり、概ね line-box ≈ 1em + gap = 総 line-height。つまり `leading: 0.5em` ≈ 総 150%、`leading: 0.75em` ≈ 総 175% に相当する。現行 0.75em は Butterick 上限（145%）をわずかに上回るが、スクロール UX を考慮すれば許容範囲（出典: [Practical Typography – line-spacing](https://practicaltypography.com/line-spacing.html)、[Typst docs – par](https://typst.app/docs/reference/model/par/)）。
-- **vertical rhythm**: 見出し余白の合計は本文 leading の整数倍。Bringhurst は asymmetric（例 1.5 + 0.5 lines）を明示的に許容。原理は Gestalt proximity — 見出しは後続コンテンツとグループ化すべきなので above > below（比 2:1 は慣習、規範ではない）。出典: [webtypography.net §2.2.2](http://webtypography.net/2.2.2)。
+- **vertical rhythm（流派が分かれる）**: 見出し余白の決め方には少なくとも 3 つの流派があり、どれが「正しい」というものではない。
+  - **A. baseline grid（絶対値固定）**: 余白を本文 leading の整数倍に snap し、ページ全体で行が grid に乗るようにする。Bringhurst / Müller-Brockmann (Swiss) の流れ。多段組や脚注の baseline 整合がある印刷物で威力を発揮。
+  - **B. proportional（em 固定）**: 余白を heading フォントサイズに比例させる（`above: 1.4em` を全レベルで使うと、h1 大余白 / h6 小余白に自動 taper）。Tim Brown『Flexible Typesetting』、modular scale 系、Tailwind / Material Design の typography スケールの流れ。文字サイズと余白が同一の比例系で整う「optical hierarchy」志向。
+  - **C. constant-effective**: HTML5 UA stylesheet が採る方式で、em 値を level 毎に逆スケールして実効値を概ね一定に保つ。
+  - **mlux の選択（2026-04-25）**: 流派 B を採用。単段スクロール式 Markdown ビューアという用途で、流派 A の baseline grid 整合の利点（多段・脚注）が効かず、modular scale との harmony を優先する判断。`above: 1.4em / below: 0.9em` を全 6 レベルで共通化し、em が heading フォントに解決されることでフォントサイズ比例 taper を得る。
+  - 補足: Bringhurst が asymmetric な余白（例 1.5 + 0.5 lines、`above > below`）を許容する根拠は Gestalt proximity — 見出しは後続コンテンツとグループ化すべきという原理。流派 B でも `1.4em : 0.9em ≈ 1.55 : 1` で同じ非対称性を保っている。出典: [webtypography.net §2.2.2](http://webtypography.net/2.2.2)。
 - **modular scale**: 比 1.2 / 1.25 / 1.333 / 1.414 / 1.5 / 1.618 が定番。Spencer Mortensen 公式 `f_i = f_0 · r^(i/n)` が対数等間隔を保証（出典: [The typographic scale](https://www.spencermortensen.com/articles/typographic-scale/)）。
 - **justification**: Butterick「justify するならハイフネーション必須」は canonical。cpl 下限は Butterick 自身は言及無し — 40-45 cpl + hyphen / 60 cpl なしが実務 folklore。
 
@@ -106,8 +111,12 @@
 // 見出し (modular scale 1.2 ベース)
 // 本文 line-height ≈ 12pt + 0.75em×12pt = 21pt を 1 単位として、
 // above:below = 2:1（heading は後続コンテンツ寄り）
-// 注: block() の above/below の em 解決は surrounding/heading のどちらか
-// 検証が必要。確実性を優先するなら pt で書く: above: 42pt, below: 21pt
+//
+// em 解決の挙動（2026-04-25 検証済）:
+//   text(Npt, block(above: 1em, ...))  → block は text スコープ内 → em = N pt（heading 基準）
+//   block(above: 1em, text(Npt, ...))  → block は text スコープ外 → em = body 基準
+// 現行の mocha は前者（フォント比例 taper）、latte は後者（手書き taper）。pt 直書きすれば
+// この差を回避でき、テーマ間で挙動を揃えやすい。
 #show heading: it => block(above: 42pt, below: 21pt, it)
 #show heading.where(level: 1): set text(24.9pt, weight: "bold")
 #show heading.where(level: 2): set text(20.7pt, weight: "bold")
@@ -137,7 +146,7 @@
 
 ## 6. 次の実験順序（未実施のもの）
 
-1. **見出し余白 & modular scale 再設計**: `catppuccin.typ` / `catppuccin-latin.typ` は level 一律 1.4em のため最も効果大。latte 版を先にベンチとして比較可能
+1. **見出し文字サイズの modular scale 再設計**: 流派 B（heading 余白統一）は完了したので、次は本文 12pt を起点とした文字サイズ系列の再設計。現行 24/20/16/14/13/12pt は h1→h2 (1.2x) と h5→h6 (1.083x) で比が不揃い。比 1.2 統一（12/14.4/17.3/20.7/24.9）or 1.25（12/15/18.75/23.44/29.3）が候補
 2. **inline raw の `/0.8` を `show raw: set text` へ**: 4 テーマで重複している 3 行がそれぞれ 1 行に減る。リファクタ
 3. **`par(justification-limits)` 追加**: word-space 肥大の実サンプルで A/B。改善が見えない場面では省略
 4. **版面幅 narrow の実験**: 580 → 540pt（80 cpl 圏内に収める）。和欧両方の可読性を改善するが、スクロール UX と tile サイズとの相互作用を確認必要

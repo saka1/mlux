@@ -6,13 +6,13 @@
 // theme (catppuccin-latte.typ) which uses 0.9em (~190%).
 #set par(leading: 0.75em, justify: true, first-line-indent: 0pt)
 
-// Headings
-#show heading.where(level: 1): it => block(below: 1em, above: 2.2em,
-  text(24pt, weight: "bold", fill: rgb("#8839ef"), it.body))
-#show heading.where(level: 2): it => block(below: 1em, above: 1.9em,
-  text(20pt, weight: "bold", fill: rgb("#ea76cb"), it.body))
-#show heading.where(level: 3): it => block(below: 1em, above: 1.6em,
-  text(16pt, weight: "bold", fill: rgb("#dc8a78"), it.body))
+// Headings (above: 1.4em, below: 0.9em — em is relative to font size)
+#show heading.where(level: 1): it => text(24pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#8839ef"), it.body)))
+#show heading.where(level: 2): it => text(20pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#ea76cb"), it.body)))
+#show heading.where(level: 3): it => text(16pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#dc8a78"), it.body)))
 
 // Code block
 #show raw.where(block: true): it => block(
@@ -48,12 +48,12 @@
 #show strike: set strike(stroke: 1pt + rgb("#5c5f77"))
 
 // Headings h4-h6
-#show heading.where(level: 4): it => block(below: 1em, above: 1.3em,
-  text(14pt, weight: "bold", fill: rgb("#e64553"), it.body))
-#show heading.where(level: 5): it => block(below: 1em, above: 1.2em,
-  text(13pt, weight: "bold", fill: rgb("#df8e1d"), it.body))
-#show heading.where(level: 6): it => block(below: 1em, above: 1.0em,
-  text(12pt, weight: "bold", fill: rgb("#5c5f77"), it.body))
+#show heading.where(level: 4): it => text(14pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#e64553"), it.body)))
+#show heading.where(level: 5): it => text(13pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#df8e1d"), it.body)))
+#show heading.where(level: 6): it => text(12pt,
+  block(below: 0.9em, above: 1.4em, text(weight: "bold", fill: rgb("#5c5f77"), it.body)))
 
 // Math: tuned to balance with body font
 #show math.equation: set text(font: "STIX Two Math", size: 13pt)
