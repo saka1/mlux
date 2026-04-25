@@ -76,6 +76,15 @@ cargo clippy --all-targets   # zero warnings (must include tests — CI runs --a
 cargo test                   # all tests pass
 ```
 
+## Theme files
+
+The 4 theme files in `themes/` form a 2×2 matrix and should differ ONLY along these two axes:
+
+- **Color palette**: `catppuccin*` = mocha (dark) / `catppuccin-latte*` = latte (light)
+- **Font / lang**: bare = CJK (Noto Sans JP, lang: ja) / `*-latin` = Latin (Fira Sans, lang: en)
+
+Everything else — heading structure (`text(Npt, block(above:1.4em, below:0.9em, ...))` with em resolved against heading font, see `docs/2026-04-25-investigate-typst-typography.md` §2 流派 B), raw block / inline code formatting, list / quote / table styling, link / strong / emph rules — must be identical across all 4 files. Adding or modifying a typography knob means changing all 4 in lock-step. Behavioral or structural divergence between same-axis themes is a bug, even when it renders without errors.
+
 ## Non-obvious Notes
 
 - Theme is inlined into main.typ (not #include) — set-rule propagation doesn't work with separate virtual files in typst 0.14
