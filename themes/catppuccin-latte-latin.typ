@@ -1,8 +1,12 @@
 #set page(width: 660pt, height: auto, margin: 40pt, fill: rgb("#eff1f5"))
 #set text(font: "Fira Sans", size: 12pt, fill: rgb("#4c4f69"), lang: "en")
+// Leading: 0.75em (~169% line-height). Butterick's 120-145% is print-oriented
+// and reads tight on screen (KGP @ 144 PPI); Fira Sans's tall x-height also
+// pushes us toward looser values. Keeps visual contrast small against the CJK
+// theme (catppuccin-latte.typ) which uses 0.9em (~190%).
 #set par(leading: 0.75em, justify: true, first-line-indent: 0pt)
 
-// 見出し
+// Headings
 #show heading.where(level: 1): it => block(below: 1em, above: 2.2em,
   text(24pt, weight: "bold", fill: rgb("#8839ef"), it.body))
 #show heading.where(level: 2): it => block(below: 1em, above: 1.9em,
@@ -10,40 +14,40 @@
 #show heading.where(level: 3): it => block(below: 1em, above: 1.6em,
   text(16pt, weight: "bold", fill: rgb("#dc8a78"), it.body))
 
-// コードブロック
+// Code block
 #show raw.where(block: true): it => block(
   fill: rgb("#e6e9ef"), inset: 12pt, radius: 6pt, width: 100%,
   text(font: "Fira Mono", size: 10pt, it))
 
-// インラインコード (raw の ShowSet が size: 0.8em を適用するため / 0.8 で補正)
+// Inline code (raw's ShowSet applies size: 0.8em, so divide by 0.8 to compensate)
 #show raw.where(block: false): it => box(
   fill: rgb("#e6e9ef"), inset: (x: 0.3em / 0.8), outset: (y: 0.15em / 0.8), radius: 3pt,
   text(font: "Fira Mono", size: 0.85em / 0.8, it))
 
-// リスト
+// Lists
 #set list(marker: ([•], [‣], [–]), indent: 1em, body-indent: 0.7em)
 #set enum(indent: 1em, body-indent: 0.7em)
 
-// 引用ブロック
+// Block quote
 #show quote.where(block: true): it => block(
   inset: (left: 16pt, y: 8pt),
   stroke: (left: 3pt + rgb("#1e66f5")),
   text(fill: rgb("#6c6f85"), it.body))
 
-// テーブル
+// Tables
 #set table(stroke: 0.5pt + rgb("#acb0be"), inset: 8pt,
   fill: (_, y) => if y == 0 { rgb("#ccd0da") } else { none })
 
-// リンク
+// Links
 #show link: it => text(fill: rgb("#1e66f5"), underline(it))
 
-// 強調（bold）: 本文と同色、太さのみ変える
+// Strong (bold): same color as body, only weight differs
 #show strong: set text(fill: rgb("#4c4f69"))
 
-// 打ち消し線: Subtext 1 のストローク
+// Strikethrough: Subtext 1 stroke
 #show strike: set strike(stroke: 1pt + rgb("#5c5f77"))
 
-// 見出し h4-h6
+// Headings h4-h6
 #show heading.where(level: 4): it => block(below: 1em, above: 1.3em,
   text(14pt, weight: "bold", fill: rgb("#e64553"), it.body))
 #show heading.where(level: 5): it => block(below: 1em, above: 1.2em,
@@ -51,14 +55,14 @@
 #show heading.where(level: 6): it => block(below: 1em, above: 1.0em,
   text(12pt, weight: "bold", fill: rgb("#5c5f77"), it.body))
 
-// 数式: 本文フォントとのバランス調整
+// Math: tuned to balance with body font
 #show math.equation: set text(font: "STIX Two Math", size: 13pt)
 
-// 水平線: Surface 2
+// Horizontal rule: Surface 2
 #show line: set line(stroke: 1pt + rgb("#acb0be"))
 
-// 画像プレースホルダー: Surface 2 ボーダー
+// Image placeholder: Surface 2 border
 #let image-placeholder(path) = block(stroke: 0.5pt + rgb("#acb0be"), inset: 8pt, radius: 4pt)[Image: #path]
 
-// コードブロック: Catppuccin Latte シンタックスハイライト
+// Code block: Catppuccin Latte syntax highlighting
 #set raw(theme: "catppuccin-latte.tmTheme")
