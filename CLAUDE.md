@@ -85,6 +85,12 @@ The 4 theme files in `themes/` form a 2×2 matrix and should differ ONLY along t
 
 Everything else — heading structure / sizes / colors, raw block / inline code formatting, list / quote / table styling, link / strong / emph rules — must be identical across all 4 files. Adding or modifying a typography knob means changing all 4 in lock-step. Behavioral or structural divergence between same-axis themes is a bug, even when it renders without errors. The rationale behind the magic numbers (font sizes, leading, heading scale, color choices) is captured in `docs/design/typography.md`.
 
+## Language Conventions
+
+- **Code comments**: English only.
+- **Commit messages**: English only.
+- **Docs (`docs/`)**: Japanese by default; English is also acceptable.
+
 ## Non-obvious Notes
 
 - Theme is inlined into main.typ (not #include) — set-rule propagation doesn't work with separate virtual files in typst 0.14
