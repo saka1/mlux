@@ -19,9 +19,25 @@ use super::viewport::{ViewContext, Viewport};
 #[derive(Debug, Clone)]
 pub(super) enum ExitReason {
     Quit,
-    Resize { new_cols: u16, new_rows: u16 },
+    Resize {
+        new_cols: u16,
+        new_rows: u16,
+    },
     Reload,
-    Navigate { path: std::path::PathBuf },
+    /// Scale (zoom) factor changed; outer loop must rebuild with the new value.
+    /// Carries `old` so the scroll position can be scaled to keep the same
+    /// point in the document anchored after the rebuild.
+    SetScale {
+        old: f64,
+        new: f64,
+        /// Status-bar flash text to surface after the rebuild (e.g. "zoom: 125%").
+        /// Carried via `Session::pending_flash` so the indicator survives the
+        /// document rebuild that any scale change triggers.
+        flash: Option<String>,
+    },
+    Navigate {
+        path: std::path::PathBuf,
+    },
     GoBack,
 }
 

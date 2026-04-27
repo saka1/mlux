@@ -10,6 +10,7 @@ pub struct Config {
     pub theme: String,
     pub width: f64,
     pub ppi: f32,
+    pub scale: f64,
     pub viewer: ViewerConfig,
 }
 
@@ -41,6 +42,7 @@ impl Default for Config {
             theme: crate::theme::DEFAULT_THEME.into(),
             width: 660.0,
             ppi: 144.0,
+            scale: 1.0,
             viewer: ViewerConfig::default(),
         }
     }
@@ -79,6 +81,10 @@ impl Config {
             debug!("config: CLI override tile_height={v}");
             self.viewer.tile_height = v;
         }
+        if let Some(v) = cli.scale {
+            debug!("config: CLI override scale={v}");
+            self.scale = v;
+        }
         if let Some(mode) = cli.scroll_mode {
             debug!("config: CLI override scroll_mode={mode:?}");
             self.viewer.scroll_mode = mode;
@@ -96,12 +102,13 @@ impl Config {
 // CliOverrides — values from CLI args
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CliOverrides {
     pub theme: Option<String>,
     pub width: Option<f64>,
     pub ppi: Option<f32>,
     pub tile_height: Option<f64>,
+    pub scale: Option<f64>,
     pub allow_remote_images: bool,
     pub scroll_mode: Option<ScrollMode>,
 }
@@ -130,6 +137,7 @@ mod tests {
             width: None,
             ppi: Some(288.0),
             tile_height: None,
+            scale: None,
             allow_remote_images: false,
             scroll_mode: None,
         };
@@ -137,6 +145,19 @@ mod tests {
         assert_eq!(config.theme, "dark");
         assert_eq!(config.ppi, 288.0);
         assert_eq!(config.width, 660.0); // unchanged
+        assert_eq!(config.scale, 1.0); // unchanged
+    }
+
+    #[test]
+    fn scale_default_and_override() {
+        let mut config = Config::default();
+        assert_eq!(config.scale, 1.0);
+        let cli = CliOverrides {
+            scale: Some(1.5),
+            ..Default::default()
+        };
+        config.apply_cli(&cli);
+        assert_eq!(config.scale, 1.5);
     }
 
     #[test]

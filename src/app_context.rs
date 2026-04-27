@@ -44,6 +44,7 @@ impl AppContext {
             sidebar_width_pt,
             tile_height_pt,
             ppi: self.config.ppi,
+            scale: self.config.scale,
             fonts: self.font_cache,
             allow_remote_images: self.cli_overrides.allow_remote_images,
             fast_png,

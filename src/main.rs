@@ -118,6 +118,10 @@ enum Command {
         #[arg(long)]
         tile_height: Option<f64>,
 
+        /// Typography zoom factor (1.0 = default; e.g. 1.5 for 150%)
+        #[arg(long)]
+        scale: Option<f64>,
+
         /// Dump frame tree to stderr
         #[arg(long)]
         dump: bool,
@@ -135,15 +139,16 @@ fn main() {
     };
     let log_buffer = mlux::log::init(cli.debug, log_file);
 
-    // Extract render-subcommand CLI overrides (width/ppi/tile_height)
-    let (render_width, render_ppi, render_tile_height) = match &cli.command {
+    // Extract render-subcommand CLI overrides (width/ppi/tile_height/scale)
+    let (render_width, render_ppi, render_tile_height, render_scale) = match &cli.command {
         Some(Command::Render {
             width,
             ppi,
             tile_height,
+            scale,
             ..
-        }) => (*width, *ppi, *tile_height),
-        None => (None, None, None),
+        }) => (*width, *ppi, *tile_height, *scale),
+        None => (None, None, None, None),
     };
 
     // Build CliOverrides
@@ -152,6 +157,7 @@ fn main() {
         width: render_width,
         ppi: render_ppi,
         tile_height: render_tile_height,
+        scale: render_scale,
         allow_remote_images: cli.allow_remote_images,
         scroll_mode: cli.scroll.map(Into::into),
     };

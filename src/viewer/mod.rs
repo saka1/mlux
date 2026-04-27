@@ -79,7 +79,7 @@ const FAST_THRESHOLD: Duration = Duration::from_millis(100);
 /// `watch` enables automatic reload on file change.
 /// `no_sandbox` disables Landlock sandbox (fork is always used).
 pub fn run(
-    app: AppContext,
+    mut app: AppContext,
     input: InputSource,
     initial_markdown: String,
     watch: bool,
@@ -324,7 +324,7 @@ pub fn run(
                 &vp.scroll,
                 &session.filename,
                 acc.peek(),
-                None,
+                vp.flash.as_deref(),
                 search_spec.as_ref(),
                 &mut ForkHandle {
                     renderer: &mut renderer,
@@ -412,6 +412,7 @@ pub fn run(
                                                 * session.layout.cell_h as u32,
                                             last_search: &mut vp.last_search,
                                             current_file: session.current_file_path(),
+                                            current_scale: app.config.scale,
                                         };
                                         mode_normal::handle(a, &mut ctx)
                                     }
@@ -607,16 +608,24 @@ pub fn run(
         renderer.shutdown();
         let (exit, scroll_y) = exit?;
 
-        // Discard cache on navigation (reload/resize keeps it for merge_generation)
+        // Apply scale change before tile cache decision, so the next build uses it.
+        // Scale change invalidates all tile hashes (theme pt × scale changes Frame
+        // tree), so the cache merge below would be a no-op anyway — clear it.
+        if let ExitReason::SetScale { new, .. } = &exit {
+            app.config.scale = *new;
+            tile_cache.clear();
+        }
+
+        // Discard cache on navigation (reload/resize/scale keeps it for merge_generation)
         match &exit {
-            ExitReason::Reload | ExitReason::Resize { .. } => {}
+            ExitReason::Reload | ExitReason::Resize { .. } | ExitReason::SetScale { .. } => {}
             _ => {
                 tile_cache.clear();
             }
         }
 
-        // Double-buffer: toggle generation on reload, reset on everything else
-        if matches!(&exit, ExitReason::Reload) {
+        // Double-buffer: toggle generation on reload/scale, reset on everything else
+        if matches!(&exit, ExitReason::Reload | ExitReason::SetScale { .. }) {
             active_gen ^= 1;
             debug!(
                 "double-buffer: gen {} → {}, stale {} IDs (base={})",

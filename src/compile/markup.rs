@@ -1561,8 +1561,10 @@ mod tests {
         let available: HashSet<String> = ["photo.png".to_string()].into_iter().collect();
         let typst = markdown_to_typst(md, Some(&available)).0;
         assert!(
-            typst.contains("#align(center)[#image(\"photo.png\")]"),
-            "should contain #image() call, got: {typst}"
+            typst.contains(
+                "#align(center)[#std.scale(scale * 100%, reflow: true)[#image(\"photo.png\")]]"
+            ),
+            "should contain wrapped #image() call, got: {typst}"
         );
     }
 

@@ -59,6 +59,7 @@ impl TestHarness {
             sidebar_width_pt,
             tile_height_pt,
             ppi: PPI,
+            scale: 1.0,
             fonts: font_cache,
             allow_remote_images: false,
             fast_png: true,
@@ -125,6 +126,7 @@ impl TestHarness {
                         half_page: self.half_page,
                         last_search: &mut self.viewport.last_search,
                         current_file: None,
+                        current_scale: 1.0,
                     };
                     super::mode_normal::handle(action, &mut ctx)
                 }
