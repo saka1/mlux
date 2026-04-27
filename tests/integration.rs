@@ -36,6 +36,7 @@ fn test_paragraph_ja_renders() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );
@@ -69,6 +70,7 @@ fn test_empty_input() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );
@@ -92,6 +94,7 @@ fn test_full_document_renders() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );
@@ -145,6 +148,7 @@ fn source_map_pipeline(md: &str) -> Vec<mlux::frame::VisualLine> {
         mlux::theme::data_files("catppuccin"),
         &content,
         WIDTH_PT,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );
@@ -781,6 +785,7 @@ fn test_all_features_renders() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );
@@ -858,6 +863,7 @@ fn test_image_renders() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         image_files,
     );
@@ -918,6 +924,7 @@ fn test_mermaid_diagram_renders() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         image_files,
     );
@@ -986,6 +993,7 @@ fn test_mermaid_fixture_renders() {
         mlux::theme::data_files("catppuccin"),
         &content,
         800.0,
+        1.0,
         font_cache,
         image_files,
     );
@@ -1077,6 +1085,7 @@ fn build_hashes(md: &str) -> Vec<TileHash> {
         sidebar_width_pt: 50.0,
         tile_height_pt: 200.0,
         ppi: PPI,
+        scale: 1.0,
         fonts: font_cache,
         allow_remote_images: false,
         fast_png: false,
@@ -1639,6 +1648,7 @@ fn test_content_index_md_to_main_ranges_e2e() {
         mlux::theme::data_files("catppuccin"),
         &content,
         WIDTH_PT,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );
@@ -1689,6 +1699,7 @@ fn test_content_index_md_to_main_ranges_with_escapes() {
         mlux::theme::data_files("catppuccin"),
         &content,
         WIDTH_PT,
+        1.0,
         font_cache,
         LoadedImages::default(),
     );

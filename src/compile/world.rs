@@ -138,19 +138,24 @@ impl MluxWorld {
     /// - `data_files`: additional virtual files for the theme (e.g. tmTheme)
     /// - `content_text`: Typst markup converted from Markdown
     /// - `width`: page width in pt
+    /// - `scale`: typography zoom factor (1.0 = default; themes multiply pt values by this)
     /// - `fonts`: cached font search results
     pub fn new(
         theme_text: &str,
         data_files: crate::theme::DataFiles,
         content_text: &str,
         width: f64,
+        scale: f64,
         fonts: &'static FontCache,
         image_files: super::image::LoadedImages,
     ) -> Self {
         let start = Instant::now();
-        // Inline theme + mitex compat shims + width override + content into a single source
+        // Inline scale + theme + mitex compat shims + width override + content.
+        // `#let scale` must precede theme_text because themes reference the variable.
         let mitex_compat = include_str!("../../themes/mitex-compat.typ");
-        let prefix = format!("{theme_text}\n{mitex_compat}\n#set page(width: {width}pt)\n");
+        let prefix = format!(
+            "#let scale = {scale}\n{theme_text}\n{mitex_compat}\n#set page(width: {width}pt)\n"
+        );
         let content_offset = prefix.len();
         let main_text = format!("{prefix}{content_text}\n");
 

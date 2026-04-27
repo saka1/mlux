@@ -74,6 +74,9 @@ pub(super) enum Action {
     SearchPrevMatch,
     GoBack,
     CancelInput,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
     /// A digit was accumulated; caller should redraw status bar.
     Digit,
 }
@@ -194,6 +197,20 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
         (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
             acc.reset();
             Some(Action::SearchPrevMatch)
+        }
+
+        // Zoom: + 拡大 / - 縮小 / = リセット
+        (KeyCode::Char('+'), _) => {
+            acc.reset();
+            Some(Action::ZoomIn)
+        }
+        (KeyCode::Char('-'), _) => {
+            acc.reset();
+            Some(Action::ZoomOut)
+        }
+        (KeyCode::Char('='), _) => {
+            acc.reset();
+            Some(Action::ZoomReset)
         }
 
         _ => {
@@ -744,6 +761,38 @@ mod tests {
     fn test_toc_unknown_returns_none() {
         let a = map_toc_key(simple_key(KeyCode::Tab));
         assert!(a.is_none());
+    }
+
+    // --- Zoom hotkeys ---
+
+    #[test]
+    fn test_plus_zoom_in() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('+')), &mut acc);
+        assert!(matches!(a, Some(Action::ZoomIn)));
+    }
+
+    #[test]
+    fn test_minus_zoom_out() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('-')), &mut acc);
+        assert!(matches!(a, Some(Action::ZoomOut)));
+    }
+
+    #[test]
+    fn test_equals_zoom_reset() {
+        let mut acc = InputAccumulator::new();
+        let a = map_key_event(simple_key(KeyCode::Char('=')), &mut acc);
+        assert!(matches!(a, Some(Action::ZoomReset)));
+    }
+
+    #[test]
+    fn test_zoom_resets_accumulator() {
+        let mut acc = InputAccumulator::new();
+        map_key_event(simple_key(KeyCode::Char('5')), &mut acc);
+        assert!(acc.is_active());
+        map_key_event(simple_key(KeyCode::Char('+')), &mut acc);
+        assert!(!acc.is_active());
     }
 
     // --- Command mode: map_command_key ---

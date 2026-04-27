@@ -24,6 +24,7 @@ pub struct BuildParams {
     pub sidebar_width_pt: f64,
     pub tile_height_pt: f64,
     pub ppi: f32,
+    pub scale: f64,
     pub fonts: &'static FontCache,
     pub allow_remote_images: bool,
     pub fast_png: bool,
@@ -82,6 +83,7 @@ fn compile_content(
         data_files,
         &content_text,
         params.width_pt,
+        params.scale,
         params.fonts,
         image_files,
     );
@@ -192,6 +194,7 @@ pub(crate) fn compile_and_tile(
         page_height_pt,
         &theme_name,
         &deletion_gaps,
+        params.scale,
     );
     let sidebar_world = MluxWorld::new_raw(&sidebar_source, params.fonts);
     let sidebar_doc = compile_document(&sidebar_world)?;
@@ -227,8 +230,11 @@ pub fn generate_sidebar_typst(
     page_height_pt: f64,
     theme_name: &str,
     deletion_gaps: &[f64],
+    scale: f64,
 ) -> String {
     let (bg, fg) = crate::theme::sidebar_colors(theme_name);
+    let font_size = 8.0 * scale;
+    let ascent_offset = 6.0 * scale;
     let mut src = String::new();
     writeln!(
         src,
@@ -237,7 +243,7 @@ pub fn generate_sidebar_typst(
     .unwrap();
     writeln!(
         src,
-        "#set text(font: \"Fira Mono\", size: 8pt, fill: rgb(\"{fg}\"))"
+        "#set text(font: \"Fira Mono\", size: {font_size}pt, fill: rgb(\"{fg}\"))"
     )
     .unwrap();
 
@@ -265,10 +271,10 @@ pub fn generate_sidebar_typst(
         }
 
         // Place at baseline Y; use top+right alignment with ascent offset.
-        // 8pt text has ~6pt ascent, so shift up to align baselines.
+        // ~0.75 * font_size ascent, so shift up by ascent_offset to align baselines.
         writeln!(
             src,
-            "#place(top + right, dy: {dy}pt - 6pt, dx: -4pt)[#text(size: 8pt)[{line_num}]]"
+            "#place(top + right, dy: {dy}pt - {ascent_offset}pt, dx: -4pt)[#text(size: {font_size}pt)[{line_num}]]"
         )
         .unwrap();
     }
@@ -277,7 +283,7 @@ pub fn generate_sidebar_typst(
     for &gap_y in deletion_gaps {
         // Draw a downward-pointing triangle (wedge) to indicate deleted lines.
         // The triangle is 8pt wide × 5pt tall, positioned at the left edge.
-        let dy = gap_y - 6.0; // same ascent adjustment
+        let dy = gap_y - ascent_offset; // same ascent adjustment
         writeln!(
             src,
             "#place(top + left, dy: {dy:.1}pt - 5pt, dx: 0pt)[#polygon(fill: rgb(\"#f38ba8\"), (0pt, 0pt), (8pt, 0pt), (4pt, 5pt))]"

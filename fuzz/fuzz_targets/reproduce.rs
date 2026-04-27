@@ -45,6 +45,7 @@ fn main() {
             mlux::theme::data_files("catppuccin"),
             &typst_content,
             660.0,
+            1.0,
             &font_cache,
             LoadedImages::default(),
         );

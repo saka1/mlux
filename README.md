@@ -59,6 +59,7 @@ cat README.md | mlux -
 
 # Export to PNG
 mlux render input.md -o output.png
+mlux render --scale=1.5 input.md -o output.png
 
 # Debug logging
 mlux --log /tmp/mlux.log input.md
@@ -81,6 +82,7 @@ mlux --debug input.md
 | `Ctrl-O` | Pop jump stack |
 | `[N]y` / `[N]Y` | Yank line / block N |
 | `t` | Table of contents |
+| `+` / `-` / `=` | Zoom in / out / reset |
 | `:` | Command mode (`:q` `:reload` `:grep` `:open` `:back` `:log` `:noh`) |
 | `q` | Quit |
 

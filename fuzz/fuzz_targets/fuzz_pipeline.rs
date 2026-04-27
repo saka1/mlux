@@ -21,6 +21,7 @@ fuzz_target!(|data: &[u8]| {
         mlux::theme::data_files("catppuccin"),
         &typst_content,
         660.0,
+        1.0,
         fonts,
         LoadedImages::default(),
     );

@@ -32,9 +32,15 @@ pub(super) fn escape_typst_string_literal(s: &str) -> String {
 }
 
 /// Render an image path as a Typst `#image()` call (centered).
+///
+/// Each image is wrapped in `#scale(reflow: true)` so the global zoom
+/// factor (`scale` variable, defined by `MluxWorld` prefix) applies
+/// uniformly to images alongside text. Per-image wrapping (vs. wrapping
+/// the whole document) keeps `tile.rs` compatible — see
+/// `docs/2026-04-28-investigate-zoom-feasibility.md`.
 pub(super) fn typst_image(path: &str) -> String {
     let escaped = escape_typst_string_literal(path);
-    format!("#align(center)[#image(\"{escaped}\")]\n")
+    format!("#align(center)[#std.scale(scale * 100%, reflow: true)[#image(\"{escaped}\")]]\n")
 }
 
 /// Render a placeholder block for an unavailable image.
@@ -78,7 +84,7 @@ mod tests {
     fn test_typst_image() {
         assert_eq!(
             typst_image("photo.png"),
-            "#align(center)[#image(\"photo.png\")]\n"
+            "#align(center)[#std.scale(scale * 100%, reflow: true)[#image(\"photo.png\")]]\n"
         );
     }
 
@@ -86,7 +92,7 @@ mod tests {
     fn test_typst_image_with_special_chars() {
         assert_eq!(
             typst_image("path\\to\"img.png"),
-            "#align(center)[#image(\"path\\\\to\\\"img.png\")]\n"
+            "#align(center)[#std.scale(scale * 100%, reflow: true)[#image(\"path\\\\to\\\"img.png\")]]\n"
         );
     }
 

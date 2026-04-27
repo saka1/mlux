@@ -40,6 +40,66 @@ pub(super) struct NormalCtx<'a> {
     pub half_page: u32,
     pub last_search: &'a mut Option<LastSearch>,
     pub current_file: Option<&'a Path>,
+    pub current_scale: f64,
+}
+
+/// Discrete zoom levels — `+`/`-` cycle through these.
+/// Chrome-style asymmetric curve: finer steps near 100%, coarser at extremes.
+/// Rationale and trial history: docs/design/zoom.md § "Preset Curve Design".
+const ZOOM_PRESETS: &[f64] = &[0.50, 0.67, 0.85, 1.00, 1.10, 1.25, 1.50, 2.00];
+
+/// Find the next preset in `dir` direction (1 = up, -1 = down).
+/// If `current` is between presets, snaps to nearest in the chosen direction.
+/// Returns current value if already at the edge.
+fn next_zoom_preset(current: f64, dir: i32) -> f64 {
+    debug_assert!(dir == 1 || dir == -1);
+    // ±1e-9 excludes the current value so an exact-preset match advances rather than stalling
+    if dir > 0 {
+        ZOOM_PRESETS
+            .iter()
+            .copied()
+            .find(|&p| p > current + 1e-9)
+            .unwrap_or(current)
+    } else {
+        ZOOM_PRESETS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&p| p < current - 1e-9)
+            .unwrap_or(current)
+    }
+}
+
+fn format_zoom(scale: f64) -> String {
+    format!("zoom: {}%", (scale * 100.0).round() as i32)
+}
+
+fn zoom_effects(current: f64, target: f64) -> Vec<Effect> {
+    if (target - current).abs() < 1e-9 {
+        let label = if ZOOM_PRESETS
+            .last()
+            .is_some_and(|&m| (target - m).abs() < 1e-9)
+        {
+            "max"
+        } else if ZOOM_PRESETS
+            .first()
+            .is_some_and(|&m| (target - m).abs() < 1e-9)
+        {
+            "min"
+        } else {
+            "no change"
+        };
+        vec![
+            Effect::Flash(format!("{} ({label})", format_zoom(target))),
+            Effect::RedrawStatusBar,
+        ]
+    } else {
+        vec![Effect::Exit(ExitReason::SetScale {
+            old: current,
+            new: target,
+            flash: Some(format_zoom(target)),
+        })]
+    }
 }
 
 pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
@@ -49,6 +109,10 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
         Action::CancelInput => vec![Effect::RedrawStatusBar],
 
         Action::Digit => vec![Effect::RedrawStatusBar],
+
+        Action::ZoomIn => zoom_effects(ctx.current_scale, next_zoom_preset(ctx.current_scale, 1)),
+        Action::ZoomOut => zoom_effects(ctx.current_scale, next_zoom_preset(ctx.current_scale, -1)),
+        Action::ZoomReset => zoom_effects(ctx.current_scale, 1.0),
 
         Action::ScrollDown(count) => {
             let y = (ctx.scroll.y_offset + count * ctx.scroll_step).min(ctx.max_scroll);
@@ -344,6 +408,7 @@ mod tests {
             half_page: 200,
             last_search,
             current_file: None,
+            current_scale: 1.0,
         }
     }
 
@@ -503,5 +568,85 @@ mod tests {
         let mut ctx = make_ctx(&state, &doc, &mut ls);
         let effects = handle(Action::GoBack, &mut ctx);
         assert!(matches!(effects[0], Effect::GoBack));
+    }
+
+    // --- next_zoom_preset ---
+
+    #[test]
+    fn next_zoom_preset_exact_up() {
+        assert_eq!(next_zoom_preset(1.0, 1), 1.10);
+    }
+
+    #[test]
+    fn next_zoom_preset_exact_down() {
+        assert_eq!(next_zoom_preset(1.0, -1), 0.85);
+    }
+
+    #[test]
+    fn next_zoom_preset_top_edge_clamp() {
+        assert_eq!(next_zoom_preset(2.0, 1), 2.0);
+    }
+
+    #[test]
+    fn next_zoom_preset_bottom_edge_clamp() {
+        assert_eq!(next_zoom_preset(0.5, -1), 0.5);
+    }
+
+    #[test]
+    fn next_zoom_preset_off_preset_snap_up() {
+        assert_eq!(next_zoom_preset(0.7, 1), 0.85);
+    }
+
+    #[test]
+    fn next_zoom_preset_off_preset_snap_down() {
+        assert_eq!(next_zoom_preset(0.7, -1), 0.67);
+    }
+
+    // --- zoom_effects ---
+
+    #[test]
+    fn zoom_effects_no_change_flashes() {
+        let effects = zoom_effects(1.0, 1.0);
+        assert_eq!(effects.len(), 2);
+        assert!(matches!(
+            &effects[0],
+            Effect::Flash(msg) if msg.contains("no change") && msg.contains("100%")
+        ));
+        assert!(matches!(&effects[1], Effect::RedrawStatusBar));
+    }
+
+    #[test]
+    fn zoom_effects_at_max_flashes_max() {
+        let effects = zoom_effects(2.0, 2.0);
+        assert_eq!(effects.len(), 2);
+        assert!(matches!(
+            &effects[0],
+            Effect::Flash(msg) if msg.contains("max") && msg.contains("200%")
+        ));
+        assert!(matches!(&effects[1], Effect::RedrawStatusBar));
+    }
+
+    #[test]
+    fn zoom_effects_at_min_flashes_min() {
+        let effects = zoom_effects(0.5, 0.5);
+        assert_eq!(effects.len(), 2);
+        assert!(matches!(
+            &effects[0],
+            Effect::Flash(msg) if msg.contains("min") && msg.contains("50%")
+        ));
+        assert!(matches!(&effects[1], Effect::RedrawStatusBar));
+    }
+
+    #[test]
+    fn zoom_effects_change_emits_exit_with_flash() {
+        let effects = zoom_effects(1.0, 1.25);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(
+            &effects[0],
+            Effect::Exit(ExitReason::SetScale { old, new, flash })
+                if (*old - 1.0).abs() < 1e-9
+                && (*new - 1.25).abs() < 1e-9
+                && flash.as_deref() == Some("zoom: 125%")
+        ));
     }
 }
