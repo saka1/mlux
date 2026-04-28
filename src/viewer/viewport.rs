@@ -26,6 +26,10 @@ pub(super) struct Viewport {
     pub dirty: bool,
     pub last_search: Option<LastSearch>,
     pub highlights_visible: bool,
+    /// Accumulated Ctrl+wheel zoom steps awaiting flush by the outer loop.
+    /// Positive = zoom in, negative = zoom out. Drained at frame-budget
+    /// boundaries to avoid one full document rebuild per wheel notch.
+    pub pending_zoom_delta: i32,
 }
 
 impl Default for Viewport {
@@ -38,6 +42,7 @@ impl Default for Viewport {
             dirty: false,
             last_search: None,
             highlights_visible: true,
+            pending_zoom_delta: 0,
         }
     }
 }
@@ -56,6 +61,15 @@ pub(super) struct ViewContext<'a> {
 }
 
 impl Viewport {
+    /// Accumulate a Ctrl+wheel zoom step and request a frame-budget-bounded
+    /// flush. Marking dirty switches the next `event::poll` timeout from the
+    /// long `watch_interval` to `frame_budget`, which is where the outer loop
+    /// drains `pending_zoom_delta` into a single SetScale rebuild.
+    pub(super) fn accumulate_zoom_delta(&mut self, delta: i32) {
+        self.pending_zoom_delta = self.pending_zoom_delta.saturating_add(delta);
+        self.dirty = true;
+    }
+
     /// Pure state transition. Returns updated viewport and render ops.
     ///
     /// No Result, no &mut self — takes ownership and returns new state.
@@ -254,7 +268,39 @@ impl Viewport {
             Effect::Exit(reason) => {
                 ops.push(RenderOp::Exit(reason));
             }
+            Effect::AccumulateZoom(delta) => {
+                self.accumulate_zoom_delta(delta);
+            }
         }
         (self, ops)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accumulate_zoom_delta_increments_pending_and_marks_dirty() {
+        let mut vp = Viewport::default();
+        assert_eq!(vp.pending_zoom_delta, 0);
+        assert!(!vp.dirty);
+
+        vp.accumulate_zoom_delta(2);
+        assert_eq!(vp.pending_zoom_delta, 2);
+        assert!(vp.dirty);
+
+        vp.accumulate_zoom_delta(-3);
+        assert_eq!(vp.pending_zoom_delta, -1);
+        assert!(vp.dirty);
+    }
+
+    #[test]
+    fn accumulate_zoom_delta_saturates_on_overflow() {
+        let mut vp = Viewport::default();
+        vp.accumulate_zoom_delta(i32::MAX);
+        // Adding another positive delta must not panic; saturating_add clamps.
+        vp.accumulate_zoom_delta(10);
+        assert_eq!(vp.pending_zoom_delta, i32::MAX);
     }
 }

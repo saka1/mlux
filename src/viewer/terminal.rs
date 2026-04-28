@@ -3,6 +3,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crossterm::{
     ExecutableCommand, QueueableCommand, cursor,
+    event::{DisableMouseCapture, EnableMouseCapture},
     style::{self, Stylize},
     terminal,
 };
@@ -21,14 +22,21 @@ use crate::frame::VisibleTiles;
 
 pub(super) struct RawGuard {
     cleaned: bool,
+    mouse: bool,
 }
 
 impl RawGuard {
-    pub(super) fn enter() -> io::Result<Self> {
+    pub(super) fn enter(mouse: bool) -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         stdout().execute(terminal::EnterAlternateScreen)?;
+        if mouse {
+            stdout().execute(EnableMouseCapture)?;
+        }
         stdout().execute(cursor::Hide)?;
-        Ok(Self { cleaned: false })
+        Ok(Self {
+            cleaned: false,
+            mouse,
+        })
     }
 
     pub(super) fn cleanup(&mut self) {
@@ -39,6 +47,9 @@ impl RawGuard {
         let mut out = stdout();
         let _ = write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\");
         let _ = out.execute(cursor::Show);
+        if self.mouse {
+            let _ = out.execute(DisableMouseCapture);
+        }
         let _ = out.execute(terminal::LeaveAlternateScreen);
         let _ = terminal::disable_raw_mode();
     }

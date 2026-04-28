@@ -109,6 +109,10 @@ pub(super) enum Effect {
     HideHighlights,
     ShowHighlights,
     ToggleWatch,
+    /// Accumulate signed zoom delta (in preset steps) into the upper loop.
+    /// Coalesced into a single `Effect::Exit(SetScale)` per frame budget so
+    /// burst Ctrl+wheel input doesn't trigger one full rebuild per notch.
+    AccumulateZoom(i32),
 }
 
 /// Terminal I/O operations separated from state mutation.

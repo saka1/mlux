@@ -76,6 +76,12 @@ pub struct ViewerConfig {
     pub sidebar_cols: u16,
     pub evict_distance: usize,
     pub watch_interval: Duration,
+    /// Enable mouse wheel input (and Ctrl+wheel zoom) in viewer.
+    /// Off by default — toggling on disables terminal-native text selection.
+    pub mouse: bool,
+    /// Wheel notches per cell-height step. Independent from `scroll_step`
+    /// so adaptive keyboard scrolling isn't polluted by wheel cadence.
+    pub wheel_step: u32,
 }
 
 impl Default for Config {
@@ -101,6 +107,8 @@ impl Default for ViewerConfig {
             sidebar_cols: 6,
             evict_distance: 4,
             watch_interval: Duration::from_millis(200),
+            mouse: false,
+            wheel_step: 2,
         }
     }
 }
@@ -149,6 +157,10 @@ impl Config {
             debug!("config: CLI override scroll_animation={anim:?}");
             self.viewer.scroll_animation = anim;
         }
+        if cli.mouse {
+            debug!("config: CLI override mouse=true");
+            self.viewer.mouse = true;
+        }
     }
 }
 
@@ -167,6 +179,8 @@ pub struct CliOverrides {
     pub scroll_mode: Option<ScrollMode>,
     pub scroll_animation: Option<ScrollAnimation>,
     pub exp_preset: Option<ExpPreset>,
+    /// Presence-flag (`--mouse`); `true` flips `viewer.mouse` on, `false` is no-op.
+    pub mouse: bool,
 }
 
 #[cfg(test)]
@@ -183,6 +197,19 @@ mod tests {
         assert_eq!(config.viewer.scroll_mode, ScrollMode::Fixed);
         assert_eq!(config.viewer.sidebar_cols, 6);
         assert_eq!(config.viewer.evict_distance, 4);
+        assert!(!config.viewer.mouse);
+        assert_eq!(config.viewer.wheel_step, 2);
+    }
+
+    #[test]
+    fn mouse_cli_override() {
+        let mut config = Config::default();
+        let cli = CliOverrides {
+            mouse: true,
+            ..Default::default()
+        };
+        config.apply_cli(&cli);
+        assert!(config.viewer.mouse);
     }
 
     #[test]
@@ -198,6 +225,7 @@ mod tests {
             scroll_mode: None,
             scroll_animation: None,
             exp_preset: None,
+            mouse: false,
         };
         config.apply_cli(&cli);
         assert_eq!(config.theme, "dark");

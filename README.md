@@ -99,6 +99,11 @@ to the previous location with scroll position restored.
 adjusts step size to input frequency and uses kinetic (momentum)
 interpolation. The exact behavior may change between releases.
 
+### Mouse wheel (experimental)
+
+`--mouse` enables mouse wheel input. Scroll with the wheel; zoom in/out
+with Ctrl+wheel.
+
 ## How it works
 
 mlux converts Markdown to Typst markup, then renders each page as a PNG

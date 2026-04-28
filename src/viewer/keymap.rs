@@ -2,7 +2,7 @@
 //!
 //! Pure logic, no I/O. All functions are deterministic and testable.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 const MAX_LINE_NUM: u32 = 999_999;
 
@@ -77,6 +77,15 @@ pub(super) enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    /// Mouse wheel scroll down by `n` notches (Normal mode only).
+    WheelDown(u32),
+    /// Mouse wheel scroll up by `n` notches.
+    WheelUp(u32),
+    /// Ctrl + wheel up — accumulated by the upper loop and coalesced into
+    /// a single `Effect::Exit(SetScale)` per frame budget.
+    WheelZoomIn(u32),
+    /// Ctrl + wheel down (zoom out).
+    WheelZoomOut(u32),
     /// A digit was accumulated; caller should redraw status bar.
     Digit,
 }
@@ -221,6 +230,24 @@ pub(super) fn map_key_event(key: KeyEvent, acc: &mut InputAccumulator) -> Option
                 None
             }
         }
+    }
+}
+
+/// Map a mouse event to a Normal-mode `Action`.
+///
+/// Stateless: wheel input never feeds the digit accumulator. Only vertical
+/// wheel scroll is mapped today; horizontal wheel, drag, and click events
+/// are deliberately ignored (return `None`). Ctrl distinguishes zoom from
+/// scroll — that pair maps to dedicated `WheelZoom*` variants so the upper
+/// loop can coalesce them before triggering a rebuild.
+pub(super) fn map_mouse_event(me: MouseEvent) -> Option<Action> {
+    let ctrl = me.modifiers.contains(KeyModifiers::CONTROL);
+    match me.kind {
+        MouseEventKind::ScrollDown if ctrl => Some(Action::WheelZoomOut(1)),
+        MouseEventKind::ScrollUp if ctrl => Some(Action::WheelZoomIn(1)),
+        MouseEventKind::ScrollDown => Some(Action::WheelDown(1)),
+        MouseEventKind::ScrollUp => Some(Action::WheelUp(1)),
+        _ => None,
     }
 }
 
@@ -985,5 +1012,49 @@ mod tests {
             map_log_key(simple_key(KeyCode::Backspace), true),
             Some(LogAction::Backspace)
         );
+    }
+
+    // --- map_mouse_event ---
+
+    fn mouse(kind: MouseEventKind, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn wheel_down_no_modifier_maps_to_wheel_down() {
+        let a = map_mouse_event(mouse(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert!(matches!(a, Some(Action::WheelDown(1))));
+    }
+
+    #[test]
+    fn wheel_up_no_modifier_maps_to_wheel_up() {
+        let a = map_mouse_event(mouse(MouseEventKind::ScrollUp, KeyModifiers::NONE));
+        assert!(matches!(a, Some(Action::WheelUp(1))));
+    }
+
+    #[test]
+    fn ctrl_wheel_down_maps_to_zoom_out() {
+        let a = map_mouse_event(mouse(MouseEventKind::ScrollDown, KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(Action::WheelZoomOut(1))));
+    }
+
+    #[test]
+    fn ctrl_wheel_up_maps_to_zoom_in() {
+        let a = map_mouse_event(mouse(MouseEventKind::ScrollUp, KeyModifiers::CONTROL));
+        assert!(matches!(a, Some(Action::WheelZoomIn(1))));
+    }
+
+    #[test]
+    fn mouse_click_returns_none() {
+        let a = map_mouse_event(mouse(
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            KeyModifiers::NONE,
+        ));
+        assert!(a.is_none());
     }
 }
