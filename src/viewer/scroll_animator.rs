@@ -50,12 +50,11 @@ const SPRING_OMEGA: f64 = 10.0;
 
 /// Impulse gain: velocity kick (px/s) per pixel of incremental input.
 ///
-/// For a critically-damped spring with `ω`, a velocity impulse `v₀` from
-/// rest decays to a net additional displacement of `v₀ / (2ω)`. Choosing
-/// `gain = 2ω` makes one unit of `impulse_px` add exactly one pixel to the
-/// eventual settled position — i.e. `add_impulse(N)` ≈ scrolling N extra
-/// pixels, compounding naturally across rapid calls.
-const SPRING_IMPULSE_GAIN: f64 = 2.0 * SPRING_OMEGA;
+/// The no-overshoot condition for a critically-damped spring is `v₀ ≤ ω·T`,
+/// where `v₀ = impulse_px × gain` and `T ≈ impulse_px`. This simplifies to
+/// `gain ≤ ω`. Setting `gain = ω` is the boundary: the spring reaches target
+/// in the fastest monotone trajectory (`x(t) = T·(1 - e^(-ωt))`).
+const SPRING_IMPULSE_GAIN: f64 = SPRING_OMEGA;
 
 /// Velocity magnitude (px/s) below which a settled spring snaps.
 ///
@@ -670,7 +669,7 @@ mod tests {
         assert!(c < 1.0, "expected tiny initial step, got {c}");
     }
 
-    /// Critically-damped spring must not overshoot target.
+    /// Critically-damped spring must not overshoot target from rest.
     #[test]
     fn damped_spring_no_overshoot() {
         let a = ScrollAnimator::new_damped_spring(0.0);
@@ -680,6 +679,21 @@ mod tests {
             .map(|(_, c, _)| *c)
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(max <= 100.0 + 0.5, "overshoot detected: max={max}");
+    }
+
+    /// With gain = ω, a single impulse of N px into a target of N px must not
+    /// overshoot. This is the boundary condition: v₀ = gain × N = ω × N = ω × T.
+    #[test]
+    fn damped_spring_no_overshoot_with_impulse() {
+        let target = 48.0; // Normal scroll step at cell_h=24
+        let mut a = ScrollAnimator::new_damped_spring(0.0);
+        a.add_impulse(target);
+        let trace = spring_trace(a, target, 500, 2.0);
+        let max = trace
+            .iter()
+            .map(|(_, c, _)| *c)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(max <= target + 0.5, "overshoot with impulse: max={max}");
     }
 
     /// Peak velocity of a step response should occur near `t = 1/ω`.

@@ -48,6 +48,25 @@ pub enum ScrollAnimation {
     DampedSpring,
 }
 
+/// Experimental preset bundling several scroll-related settings.
+/// Behavior is subject to change between versions; explicit individual
+/// flags (`scroll_mode`, `scroll_animation`) override preset values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpPreset {
+    /// `scroll_mode = Adaptive` + `scroll_animation = DampedSpring`.
+    /// Pairs input-density step scaling with velocity-based interpolation.
+    Adaptive,
+}
+
+impl ExpPreset {
+    /// Map preset to the concrete (scroll_mode, scroll_animation) pair.
+    fn resolve(self) -> (ScrollMode, ScrollAnimation) {
+        match self {
+            Self::Adaptive => (ScrollMode::Adaptive, ScrollAnimation::DampedSpring),
+        }
+    }
+}
+
 pub struct ViewerConfig {
     pub scroll_step: u32,
     pub scroll_mode: ScrollMode,
@@ -109,6 +128,13 @@ impl Config {
             debug!("config: CLI override scale={v}");
             self.scale = v;
         }
+        // Apply preset first so individual flags below can override it.
+        if let Some(preset) = cli.exp_preset {
+            let (mode, anim) = preset.resolve();
+            debug!("config: CLI override exp_preset={preset:?} → mode={mode:?}, anim={anim:?}");
+            self.viewer.scroll_mode = mode;
+            self.viewer.scroll_animation = anim;
+        }
         if let Some(mode) = cli.scroll_mode {
             debug!("config: CLI override scroll_mode={mode:?}");
             self.viewer.scroll_mode = mode;
@@ -140,6 +166,7 @@ pub struct CliOverrides {
     pub allow_remote_images: bool,
     pub scroll_mode: Option<ScrollMode>,
     pub scroll_animation: Option<ScrollAnimation>,
+    pub exp_preset: Option<ExpPreset>,
 }
 
 #[cfg(test)]
@@ -170,6 +197,7 @@ mod tests {
             allow_remote_images: false,
             scroll_mode: None,
             scroll_animation: None,
+            exp_preset: None,
         };
         config.apply_cli(&cli);
         assert_eq!(config.theme, "dark");
@@ -199,6 +227,36 @@ mod tests {
             ..Default::default()
         };
         config.apply_cli(&cli);
+        assert_eq!(config.viewer.scroll_animation, ScrollAnimation::ExpDecay);
+    }
+
+    #[test]
+    fn exp_preset_adaptive_sets_both_layers() {
+        let mut config = Config::default();
+        let cli = CliOverrides {
+            exp_preset: Some(ExpPreset::Adaptive),
+            ..Default::default()
+        };
+        config.apply_cli(&cli);
+        assert_eq!(config.viewer.scroll_mode, ScrollMode::Adaptive);
+        assert_eq!(
+            config.viewer.scroll_animation,
+            ScrollAnimation::DampedSpring
+        );
+    }
+
+    #[test]
+    fn individual_flags_override_exp_preset() {
+        // Preset says Adaptive+DampedSpring, but explicit flags must win.
+        let mut config = Config::default();
+        let cli = CliOverrides {
+            exp_preset: Some(ExpPreset::Adaptive),
+            scroll_mode: Some(ScrollMode::Fixed),
+            scroll_animation: Some(ScrollAnimation::ExpDecay),
+            ..Default::default()
+        };
+        config.apply_cli(&cli);
+        assert_eq!(config.viewer.scroll_mode, ScrollMode::Fixed);
         assert_eq!(config.viewer.scroll_animation, ScrollAnimation::ExpDecay);
     }
 
