@@ -84,6 +84,12 @@ struct Cli {
     /// impulses across rapid keypresses (Edge-style).
     #[arg(long, value_enum, global = true)]
     scroll_animation: Option<ScrollAnimationArg>,
+
+    /// Experimental preset bundling several scroll-related settings.
+    /// Behavior may change between releases. Individual `--scroll` /
+    /// `--scroll-animation` flags override values selected by the preset.
+    #[arg(long, value_enum, global = true)]
+    exp_preset: Option<ExpPresetArg>,
 }
 
 /// CLI-local mirror of [`mlux::config::ScrollMode`] — carries the clap
@@ -118,6 +124,20 @@ impl From<ScrollAnimationArg> for mlux::config::ScrollAnimation {
             ScrollAnimationArg::ExpDecay => Self::ExpDecay,
             ScrollAnimationArg::ExpDecayAdaptive => Self::ExpDecayAdaptive,
             ScrollAnimationArg::DampedSpring => Self::DampedSpring,
+        }
+    }
+}
+
+/// CLI-local mirror of [`mlux::config::ExpPreset`].
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ExpPresetArg {
+    Adaptive,
+}
+
+impl From<ExpPresetArg> for mlux::config::ExpPreset {
+    fn from(v: ExpPresetArg) -> Self {
+        match v {
+            ExpPresetArg::Adaptive => Self::Adaptive,
         }
     }
 }
@@ -188,6 +208,7 @@ fn main() {
         allow_remote_images: cli.allow_remote_images,
         scroll_mode: cli.scroll.map(Into::into),
         scroll_animation: cli.scroll_animation.map(Into::into),
+        exp_preset: cli.exp_preset.map(Into::into),
     };
 
     let mut config = config::Config::default();

@@ -93,11 +93,12 @@ matches with `n` / `N`. `:noh` clears highlights.
 Links to local `.md` files navigate inline, and `Ctrl-O` pops back
 to the previous location with scroll position restored.
 
-### Adaptive scroll (experimental)
+### Experimental presets
 
-`--scroll-mode=adaptive` adjusts scroll speed to input frequency —
-faster when keys are pressed rapidly, slower when you ease off. Default
-is `fixed`.
+`--exp-preset=adaptive` enables an experimental scroll behavior that
+adjusts step size to input frequency and uses a velocity-based spring
+for smooth interpolation. The exact behavior may change between
+releases.
 
 ## How it works
 

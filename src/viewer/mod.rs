@@ -351,9 +351,11 @@ pub fn run(
 
             loop {
                 // Advance scroll animation (animator → target_y) once per iteration.
-                // Frame-rate independent: dt is the actual elapsed wall-clock time.
+                // Frame-rate independent: dt is the actual elapsed wall-clock time,
+                // clamped to avoid numerical blow-up in the DampedSpring integrator
+                // after long idle waits (e.g. ω·dt >> 2 destabilises semi-implicit Euler).
                 let now = Instant::now();
-                let dt = now.duration_since(last_tick);
+                let dt = now.duration_since(last_tick).min(Duration::from_millis(64));
                 last_tick = now;
                 if vp.scroll.tick(dt) {
                     vp.dirty = true;
