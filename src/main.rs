@@ -79,9 +79,9 @@ struct Cli {
 
     /// Scroll animation algorithm (downstream interpolation — experimental).
     /// `exp-decay` is the v1 baseline; `exp-decay-adaptive` stretches
-    /// the half-life on large jumps to keep gg/G trackable; `damped-spring`
-    /// is a velocity-based critically-damped spring that accumulates
-    /// impulses across rapid keypresses (Edge-style).
+    /// the half-life on large jumps to keep gg/G trackable; `kinetic`
+    /// is iOS-style momentum scroll with velocity friction-decay,
+    /// stacking impulses across rapid keypresses.
     #[arg(long, value_enum, global = true)]
     scroll_animation: Option<ScrollAnimationArg>,
 
@@ -115,7 +115,7 @@ impl From<ScrollModeArg> for mlux::config::ScrollMode {
 enum ScrollAnimationArg {
     ExpDecay,
     ExpDecayAdaptive,
-    DampedSpring,
+    Kinetic,
 }
 
 impl From<ScrollAnimationArg> for mlux::config::ScrollAnimation {
@@ -123,7 +123,7 @@ impl From<ScrollAnimationArg> for mlux::config::ScrollAnimation {
         match v {
             ScrollAnimationArg::ExpDecay => Self::ExpDecay,
             ScrollAnimationArg::ExpDecayAdaptive => Self::ExpDecayAdaptive,
-            ScrollAnimationArg::DampedSpring => Self::DampedSpring,
+            ScrollAnimationArg::Kinetic => Self::Kinetic,
         }
     }
 }

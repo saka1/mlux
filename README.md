@@ -96,9 +96,8 @@ to the previous location with scroll position restored.
 ### Experimental presets
 
 `--exp-preset=adaptive` enables an experimental scroll behavior that
-adjusts step size to input frequency and uses a velocity-based spring
-for smooth interpolation. The exact behavior may change between
-releases.
+adjusts step size to input frequency and uses kinetic (momentum)
+interpolation. The exact behavior may change between releases.
 
 ## How it works
 
