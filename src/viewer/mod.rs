@@ -62,7 +62,7 @@ use effect::{Effect, ExitReason, ViewerMode};
 use input_history::ScrollDirection;
 use keymap::{
     Action, InputAccumulator, map_command_key, map_grep_key, map_inline_search_key, map_key_event,
-    map_log_key, map_toc_key, map_url_key,
+    map_log_key, map_mouse_event, map_toc_key, map_url_key,
 };
 use layout::ScrollState;
 use query::DocumentQuery;
@@ -102,7 +102,7 @@ pub fn run(
         );
     }
 
-    let mut guard = terminal::RawGuard::enter()?;
+    let mut guard = terminal::RawGuard::enter(app.config.viewer.mouse)?;
 
     // Session: persistent state across document rebuilds
     let watcher_init = if watch {
@@ -300,6 +300,7 @@ pub fn run(
             dirty: false,
             last_search: None,
             highlights_visible: true,
+            pending_zoom_delta: 0,
         };
 
         // in_flight: set of tile indices sent to the child but not yet received.
@@ -422,6 +423,8 @@ pub fn run(
                                             doc: &doc,
                                             max_scroll: max_y,
                                             scroll_step,
+                                            wheel_step: app.config.viewer.wheel_step
+                                                * session.layout.cell_h as u32,
                                             half_page: (session.layout.image_rows as u32 / 2)
                                                 .max(1)
                                                 * session.layout.cell_h as u32,
@@ -546,6 +549,61 @@ pub fn run(
                             }
                         }
 
+                        Event::Mouse(me) if app.config.viewer.mouse => {
+                            let max_y = meta.max_scroll(vp.scroll.vp_h);
+                            let doc = DocumentQuery::new(
+                                &markdown,
+                                &meta.visual_lines,
+                                &meta.content_index,
+                                meta.content_offset,
+                            );
+
+                            // Wheel input is Normal-mode-only; other modes ignore it.
+                            let effects = match &mut vp.mode {
+                                ViewerMode::Normal => match map_mouse_event(me) {
+                                    Some(a) => {
+                                        let mut ctx = mode_normal::NormalCtx {
+                                            scroll: &vp.scroll,
+                                            doc: &doc,
+                                            max_scroll: max_y,
+                                            scroll_step: app.config.viewer.scroll_step
+                                                * session.layout.cell_h as u32,
+                                            wheel_step: app.config.viewer.wheel_step
+                                                * session.layout.cell_h as u32,
+                                            half_page: (session.layout.image_rows as u32 / 2)
+                                                .max(1)
+                                                * session.layout.cell_h as u32,
+                                            last_search: &mut vp.last_search,
+                                            current_file: session.current_file_path(),
+                                            current_scale: app.config.scale,
+                                        };
+                                        mode_normal::handle(a, &mut ctx)
+                                    }
+                                    None => vec![],
+                                },
+                                _ => vec![],
+                            };
+
+                            let ctx = ViewContext {
+                                layout: &session.layout,
+                                acc_value: acc.peek(),
+                                filename: &session.filename,
+                                jump_stack: &session.jump_stack,
+                                doc: &doc,
+                                log_buffer: &session.log_buffer,
+                            };
+                            for effect in effects {
+                                let (new_vp, render_ops) = vp.apply(effect, &ctx);
+                                vp = new_vp;
+                                if let Some(reason) =
+                                    effect::execute_render_ops(render_ops, &mut vp, &ctx)?
+                                {
+                                    stale_image_ids = vp.display.all_image_ids();
+                                    return Ok((reason, vp.scroll.y_offset));
+                                }
+                            }
+                        }
+
                         Event::Resize(new_cols, new_rows) => {
                             stale_image_ids = vp.display.all_image_ids();
                             return Ok((
@@ -557,6 +615,48 @@ pub fn run(
                         _ => {}
                     }
                     continue;
+                }
+
+                // Poll timed out → frame budget elapsed without new input. Flush
+                // any accumulated Ctrl+wheel zoom delta before redrawing so a
+                // burst of wheel notches collapses into a single SetScale rebuild.
+                if vp.pending_zoom_delta != 0 {
+                    let target =
+                        mode_normal::compute_zoom_target(app.config.scale, vp.pending_zoom_delta);
+                    vp.pending_zoom_delta = 0;
+
+                    // No-op flush (already at preset edge): clear dirty so we
+                    // don't trigger a wasted full redraw_and_prefetch below —
+                    // AccumulateZoom set dirty=true to shorten the next poll
+                    // timeout, but no tile content actually changed.
+                    let no_op = (target - app.config.scale).abs() < 1e-9;
+                    if no_op {
+                        vp.dirty = false;
+                    }
+
+                    let doc = DocumentQuery::new(
+                        &markdown,
+                        &meta.visual_lines,
+                        &meta.content_index,
+                        meta.content_offset,
+                    );
+                    let ctx = ViewContext {
+                        layout: &session.layout,
+                        acc_value: acc.peek(),
+                        filename: &session.filename,
+                        jump_stack: &session.jump_stack,
+                        doc: &doc,
+                        log_buffer: &session.log_buffer,
+                    };
+                    for effect in mode_normal::zoom_effects(app.config.scale, target) {
+                        let (new_vp, render_ops) = vp.apply(effect, &ctx);
+                        vp = new_vp;
+                        if let Some(reason) = effect::execute_render_ops(render_ops, &mut vp, &ctx)?
+                        {
+                            stale_image_ids = vp.display.all_image_ids();
+                            return Ok((reason, vp.scroll.y_offset));
+                        }
+                    }
                 }
 
                 // poll timeout → frame budget elapsed, execute redraw

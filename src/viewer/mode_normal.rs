@@ -38,6 +38,10 @@ pub(super) struct NormalCtx<'a> {
     pub doc: &'a DocumentQuery<'a>,
     pub max_scroll: u32,
     pub scroll_step: u32,
+    /// Per-notch wheel scroll distance in pixels (`wheel_step * cell_h`),
+    /// kept disjoint from `scroll_step` so adaptive keyboard scrolling
+    /// isn't disturbed by wheel input.
+    pub wheel_step: u32,
     pub half_page: u32,
     pub last_search: &'a mut Option<LastSearch>,
     pub current_file: Option<&'a Path>,
@@ -52,7 +56,7 @@ const ZOOM_PRESETS: &[f64] = &[0.50, 0.67, 0.85, 1.00, 1.10, 1.25, 1.50, 2.00];
 /// Find the next preset in `dir` direction (1 = up, -1 = down).
 /// If `current` is between presets, snaps to nearest in the chosen direction.
 /// Returns current value if already at the edge.
-fn next_zoom_preset(current: f64, dir: i32) -> f64 {
+pub(super) fn next_zoom_preset(current: f64, dir: i32) -> f64 {
     debug_assert!(dir == 1 || dir == -1);
     // ±1e-9 excludes the current value so an exact-preset match advances rather than stalling
     if dir > 0 {
@@ -75,7 +79,24 @@ fn format_zoom(scale: f64) -> String {
     format!("zoom: {}%", (scale * 100.0).round() as i32)
 }
 
-fn zoom_effects(current: f64, target: f64) -> Vec<Effect> {
+/// Walk the preset curve `delta` steps from `current`. Saturates at the
+/// edges. `delta == 0` returns `current` unchanged. Used by the wheel-zoom
+/// coalesce path in `mod.rs::run` to fold a burst of Ctrl+wheel notches into
+/// a single SetScale rebuild — kept here so it shares the preset curve and
+/// edge semantics with `+`/`-` hotkeys.
+pub(super) fn compute_zoom_target(current: f64, delta: i32) -> f64 {
+    if delta == 0 {
+        return current;
+    }
+    let dir = delta.signum();
+    let mut target = current;
+    for _ in 0..delta.unsigned_abs() {
+        target = next_zoom_preset(target, dir);
+    }
+    target
+}
+
+pub(super) fn zoom_effects(current: f64, target: f64) -> Vec<Effect> {
     if (target - current).abs() < 1e-9 {
         let label = if ZOOM_PRESETS
             .last()
@@ -146,6 +167,35 @@ pub(super) fn handle(action: Action, ctx: &mut NormalCtx) -> Vec<Effect> {
                 direction: ScrollDirection::Up,
             }]
         }
+
+        Action::WheelDown(n) => {
+            let cur = ctx.scroll.derived_target(ctx.max_scroll);
+            let y = (cur + n * ctx.wheel_step).min(ctx.max_scroll);
+            let delta = y as i32 - cur as i32;
+            debug!(
+                "wheel down: target {cur} → {y} (n={n}, step={}, max={}, delta={delta})",
+                ctx.wheel_step, ctx.max_scroll
+            );
+            vec![Effect::ScrollImpulse {
+                delta_px: delta,
+                direction: ScrollDirection::Down,
+            }]
+        }
+        Action::WheelUp(n) => {
+            let cur = ctx.scroll.derived_target(ctx.max_scroll);
+            let y = cur.saturating_sub(n * ctx.wheel_step);
+            let delta = y as i32 - cur as i32;
+            debug!(
+                "wheel up: target {cur} → {y} (n={n}, step={}, max={}, delta={delta})",
+                ctx.wheel_step, ctx.max_scroll
+            );
+            vec![Effect::ScrollImpulse {
+                delta_px: delta,
+                direction: ScrollDirection::Up,
+            }]
+        }
+        Action::WheelZoomIn(n) => vec![Effect::AccumulateZoom(n as i32)],
+        Action::WheelZoomOut(n) => vec![Effect::AccumulateZoom(-(n as i32))],
         Action::HalfPageDown(count) => {
             let cur = ctx.scroll.derived_target(ctx.max_scroll);
             let y = (cur + count * ctx.half_page).min(ctx.max_scroll);
@@ -432,6 +482,7 @@ mod tests {
             doc,
             max_scroll: 1000,
             scroll_step: 30,
+            wheel_step: 24,
             half_page: 200,
             last_search,
             current_file: None,
@@ -688,6 +739,44 @@ mod tests {
         assert_eq!(next_zoom_preset(0.7, -1), 0.67);
     }
 
+    // --- compute_zoom_target ---
+
+    #[test]
+    fn compute_zoom_target_zero_delta_is_identity() {
+        assert_eq!(compute_zoom_target(1.0, 0), 1.0);
+        assert_eq!(compute_zoom_target(0.85, 0), 0.85);
+    }
+
+    #[test]
+    fn compute_zoom_target_walks_up_n_presets() {
+        // 1.0 → 1.10 → 1.25 → 1.50
+        assert_eq!(compute_zoom_target(1.0, 3), 1.50);
+    }
+
+    #[test]
+    fn compute_zoom_target_walks_down_n_presets() {
+        // 1.0 → 0.85 → 0.67
+        assert_eq!(compute_zoom_target(1.0, -2), 0.67);
+    }
+
+    #[test]
+    fn compute_zoom_target_saturates_at_max() {
+        // 1.5 → 2.0 → (clamp) 2.0
+        assert_eq!(compute_zoom_target(1.5, 5), 2.0);
+    }
+
+    #[test]
+    fn compute_zoom_target_saturates_at_min() {
+        // 0.67 → 0.50 → (clamp) 0.50
+        assert_eq!(compute_zoom_target(0.67, -5), 0.50);
+    }
+
+    #[test]
+    fn compute_zoom_target_off_preset_snaps_first() {
+        // 0.7 + delta=2 → first snap to 0.85 then 1.00
+        assert_eq!(compute_zoom_target(0.7, 2), 1.00);
+    }
+
     // --- zoom_effects ---
 
     #[test]
@@ -721,6 +810,88 @@ mod tests {
             Effect::Flash(msg) if msg.contains("min") && msg.contains("50%")
         ));
         assert!(matches!(&effects[1], Effect::RedrawStatusBar));
+    }
+
+    // --- Wheel actions ---
+
+    #[test]
+    fn wheel_down_advances_by_wheel_step() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &doc, &mut ls); // wheel_step = 24
+        let effects = handle(Action::WheelDown(2), &mut ctx);
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollImpulse {
+                delta_px: 48,
+                direction: ScrollDirection::Down,
+            }
+        ));
+    }
+
+    #[test]
+    fn wheel_down_clamps_to_max() {
+        let state = make_state(990);
+        let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
+        ctx.max_scroll = 1000;
+        let effects = handle(Action::WheelDown(5), &mut ctx);
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollImpulse {
+                delta_px: 10,
+                direction: ScrollDirection::Down,
+            }
+        ));
+    }
+
+    #[test]
+    fn wheel_up_clamps_to_zero() {
+        let state = make_state(10);
+        let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
+        let effects = handle(Action::WheelUp(2), &mut ctx);
+        assert!(matches!(
+            effects[0],
+            Effect::ScrollImpulse {
+                delta_px: -10,
+                direction: ScrollDirection::Up,
+            }
+        ));
+    }
+
+    #[test]
+    fn wheel_zoom_in_emits_accumulate() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
+        let effects = handle(Action::WheelZoomIn(1), &mut ctx);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(effects[0], Effect::AccumulateZoom(1)));
+    }
+
+    #[test]
+    fn wheel_zoom_out_emits_negative_accumulate() {
+        let state = make_state(0);
+        let vls = vec![make_vl(0)];
+        let ci = empty_ci();
+        let doc = DocumentQuery::new("", &vls, &ci, 0);
+        let mut ls = None;
+        let mut ctx = make_ctx(&state, &doc, &mut ls);
+        let effects = handle(Action::WheelZoomOut(1), &mut ctx);
+        assert!(matches!(effects[0], Effect::AccumulateZoom(-1)));
     }
 
     #[test]

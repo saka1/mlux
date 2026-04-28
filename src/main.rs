@@ -90,6 +90,10 @@ struct Cli {
     /// `--scroll-animation` flags override values selected by the preset.
     #[arg(long, value_enum, global = true)]
     exp_preset: Option<ExpPresetArg>,
+
+    /// Enable mouse wheel input in the viewer (scroll: wheel; zoom: Ctrl+wheel).
+    #[arg(long, global = true)]
+    mouse: bool,
 }
 
 /// CLI-local mirror of [`mlux::config::ScrollMode`] — carries the clap
@@ -209,6 +213,7 @@ fn main() {
         scroll_mode: cli.scroll.map(Into::into),
         scroll_animation: cli.scroll_animation.map(Into::into),
         exp_preset: cli.exp_preset.map(Into::into),
+        mouse: cli.mouse,
     };
 
     let mut config = config::Config::default();

@@ -86,6 +86,7 @@ impl TestHarness {
             dirty: false,
             last_search: None,
             highlights_visible: true,
+            pending_zoom_delta: 0,
         };
 
         Self {
@@ -124,6 +125,7 @@ impl TestHarness {
                         doc: &doc,
                         max_scroll: max_y,
                         scroll_step: self.scroll_step,
+                        wheel_step: self.layout.cell_h as u32,
                         half_page: self.half_page,
                         last_search: &mut self.viewport.last_search,
                         current_file: None,
