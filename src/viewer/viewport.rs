@@ -64,9 +64,10 @@ impl Viewport {
         let mut ops = Vec::new();
         match effect {
             Effect::ScrollTo(y) => {
-                // Absolute jump. Only update the target — the animator steps toward
-                // it each frame (sub-cell resolution). Split-case compression artifacts
-                // are handled per-frame in the redraw path, not by snapping here.
+                // Absolute jump (gg/G/search/TOC). Position-chase animators
+                // chase the new target; Kinetic overrides velocity via
+                // set_landing so a flick already in progress is cancelled
+                // and the glide lands at y (iOS scroll-to-top semantics).
                 // `restart_ramp` is true only when the animation was settled so that
                 // continuous keypresses (j held down) don't re-trigger ease-in every frame.
                 let restart_ramp = !self
@@ -75,11 +76,13 @@ impl Viewport {
                     .is_animating(self.scroll.target_y as f64);
                 self.scroll.target_y = y;
                 self.scroll.animator.set_target(restart_ramp);
+                self.scroll.animator.set_landing(y as f64);
                 self.dirty = true;
             }
             Effect::ScrollBy { target, impulse_px } => {
-                // Incremental scroll. Update target for position-chase animators,
-                // apply impulse to velocity-based animators (DampedSpring).
+                // Incremental scroll (j/k/Ctrl-D/Ctrl-U). Update target for
+                // position-chase animators, apply impulse for Kinetic so
+                // rapid keypresses stack as momentum.
                 let restart_ramp = !self
                     .scroll
                     .animator

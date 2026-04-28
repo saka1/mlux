@@ -40,12 +40,12 @@ pub enum ScrollAnimation {
     /// behave like `ExpDecay`, large jumps stretch sub-linearly so
     /// gg/G stays trackable (design doc §3.4).
     ExpDecayAdaptive,
-    /// Critically-damped spring with explicit velocity state.
-    /// Position follows `dv/dt = ω²(target - current) - 2ω·v`, giving
-    /// natural ease-in (zero initial velocity), no overshoot, and
-    /// velocity accumulation across rapid incremental inputs (impulse
-    /// model, design doc §2.2 / §4.3).
-    DampedSpring,
+    /// iOS-style kinetic / momentum scroll. Velocity decays with
+    /// friction time constant τ; position glides as
+    /// `x(t) = x₀ + v·τ·(1 - e^(-t/τ))`. Incremental keypresses (j/k)
+    /// stack as velocity impulses → "throw" momentum; absolute jumps
+    /// (gg/G/search) override velocity to land at target.
+    Kinetic,
 }
 
 /// Experimental preset bundling several scroll-related settings.
@@ -53,7 +53,7 @@ pub enum ScrollAnimation {
 /// flags (`scroll_mode`, `scroll_animation`) override preset values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpPreset {
-    /// `scroll_mode = Adaptive` + `scroll_animation = DampedSpring`.
+    /// `scroll_mode = Adaptive` + `scroll_animation = Kinetic`.
     /// Pairs input-density step scaling with velocity-based interpolation.
     Adaptive,
 }
@@ -62,7 +62,7 @@ impl ExpPreset {
     /// Map preset to the concrete (scroll_mode, scroll_animation) pair.
     fn resolve(self) -> (ScrollMode, ScrollAnimation) {
         match self {
-            Self::Adaptive => (ScrollMode::Adaptive, ScrollAnimation::DampedSpring),
+            Self::Adaptive => (ScrollMode::Adaptive, ScrollAnimation::Kinetic),
         }
     }
 }
@@ -239,15 +239,12 @@ mod tests {
         };
         config.apply_cli(&cli);
         assert_eq!(config.viewer.scroll_mode, ScrollMode::Adaptive);
-        assert_eq!(
-            config.viewer.scroll_animation,
-            ScrollAnimation::DampedSpring
-        );
+        assert_eq!(config.viewer.scroll_animation, ScrollAnimation::Kinetic);
     }
 
     #[test]
     fn individual_flags_override_exp_preset() {
-        // Preset says Adaptive+DampedSpring, but explicit flags must win.
+        // Preset says Adaptive+Kinetic, but explicit flags must win.
         let mut config = Config::default();
         let cli = CliOverrides {
             exp_preset: Some(ExpPreset::Adaptive),

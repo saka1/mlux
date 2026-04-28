@@ -67,13 +67,14 @@ pub(super) enum ScreenRestore {
 /// This separates "what to do" (handler) from "how to do it" (apply loop).
 pub(super) enum Effect {
     /// Absolute scroll jump (gg, G, Ngg, TOC, search). Sets `target_y`
-    /// to the given absolute position; spring-based animators rely on
-    /// the attractive term alone to pull `current` toward target.
+    /// to the given absolute position; velocity-based animators
+    /// (Kinetic) override their velocity via `set_landing` so any
+    /// in-flight momentum is cancelled.
     ScrollTo(u32),
     /// Incremental scroll (j, k, Ctrl-D, Ctrl-U). Carries both the
     /// updated absolute `target` (for position-chase animators that
     /// only consume target) and the signed `impulse_px` delta (for
-    /// velocity-based animators that accumulate impulses).
+    /// velocity-based animators that accumulate impulses as momentum).
     ScrollBy {
         target: u32,
         impulse_px: i32,
