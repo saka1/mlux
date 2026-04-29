@@ -63,33 +63,54 @@ impl Viewport {
     pub(super) fn apply(mut self, effect: Effect, ctx: &ViewContext) -> (Self, Vec<RenderOp>) {
         let mut ops = Vec::new();
         match effect {
-            Effect::ScrollTo(y) => {
-                // Absolute jump (gg/G/search/TOC). Position-chase animators
-                // chase the new target; Kinetic overrides velocity via
-                // set_landing so a flick already in progress is cancelled
-                // and the glide lands at y (iOS scroll-to-top semantics).
-                // `restart_ramp` is true only when the animation was settled so that
-                // continuous keypresses (j held down) don't re-trigger ease-in every frame.
-                let restart_ramp = !self
-                    .scroll
-                    .animator
-                    .is_animating(self.scroll.target_y as f64);
-                self.scroll.target_y = y;
-                self.scroll.animator.set_target(restart_ramp);
-                self.scroll.animator.set_landing(y as f64);
+            Effect::ScrollImpulse {
+                delta_px,
+                direction,
+            } => {
+                let now = std::time::Instant::now();
+                // restart_ramp captures whether the animation was settled
+                // BEFORE this impulse — used by ExpDecay's ease-in.
+                let was_settled = !self.scroll.animator.is_animating(
+                    self.scroll.anchor,
+                    &self.scroll.input_history,
+                    now,
+                );
+                // Push to history; convolve evicted entries into the
+                // permanent anchor using their actual contribution at
+                // this instant (exact for Kinetic, full δ for ExpDecay).
+                let evicted = self.scroll.input_history.record(direction, delta_px);
+                for r in &evicted {
+                    self.scroll.anchor += self.scroll.animator.eviction_contribution(r, now);
+                }
+                self.scroll.animator.restart_ease_in_if_settled(was_settled);
                 self.dirty = true;
             }
-            Effect::ScrollBy { target, impulse_px } => {
-                // Incremental scroll (j/k/Ctrl-D/Ctrl-U). Update target for
-                // position-chase animators, apply impulse for Kinetic so
-                // rapid keypresses stack as momentum.
-                let restart_ramp = !self
+            Effect::ScrollAnchor(y) => {
+                // iOS scroll-to-top semantics: cancel residual momentum,
+                // pin the anchor to the current sub-pixel position, then
+                // push a single (y - current) impulse so velocity-based
+                // animators glide smoothly to y.  ExpDecay variants chase
+                // (anchor + Σδ = y) the same way.
+                let now = std::time::Instant::now();
+                let current = self
                     .scroll
-                    .animator
-                    .is_animating(self.scroll.target_y as f64);
-                self.scroll.target_y = target;
-                self.scroll.animator.set_target(restart_ramp);
-                self.scroll.animator.add_impulse(impulse_px as f64);
+                    .current_position(now)
+                    .clamp(0.0, self.scroll.img_h as f64);
+                let was_settled = !self.scroll.animator.is_animating(
+                    self.scroll.anchor,
+                    &self.scroll.input_history,
+                    now,
+                );
+                self.scroll.input_history.drain();
+                self.scroll.anchor = current;
+                let delta = (y as i32) - (current.round() as i32);
+                let direction = if delta >= 0 {
+                    super::input_history::ScrollDirection::Down
+                } else {
+                    super::input_history::ScrollDirection::Up
+                };
+                let _ = self.scroll.input_history.record(direction, delta);
+                self.scroll.animator.restart_ease_in_if_settled(was_settled);
                 self.dirty = true;
             }
             Effect::MarkDirty => {

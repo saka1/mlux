@@ -116,9 +116,11 @@ impl ScrollPolicy {
         let state = classify(history, dir);
         let base = ADAPTIVE_BASE_CELLS * cell_h;
         let effective = ((base as f32) * state.multiplier()).round() as u32;
-        let density = history.count_in_window(dir, DENSITY_WINDOW);
-        let fast = history.count_in_window(dir, HIGH_WINDOW);
-        let sustain = history.count_in_window(dir, SUSTAIN_WINDOW);
+        // Display the projected counts (with +1 for the about-to-fire event)
+        // so the log matches the classifier's view of the world.
+        let density = history.count_in_window(dir, DENSITY_WINDOW) + 1;
+        let fast = history.count_in_window(dir, HIGH_WINDOW) + 1;
+        let sustain = history.count_in_window(dir, SUSTAIN_WINDOW) + 1;
         let gap_ms = history
             .last_gap(dir)
             .map(|d| d.as_millis() as i64)
@@ -132,20 +134,24 @@ impl ScrollPolicy {
 }
 
 fn classify(history: &InputHistory, dir: ScrollDirection) -> ScrollState {
-    // Normal is just "not enough recent activity".  No time-gap check
-    // is needed: once the user pauses longer than DENSITY_WINDOW, the
-    // old events fall outside the window and density naturally drops
-    // below MID_THRESHOLD.  This replaces an earlier explicit
-    // `last_gap > DECAY_GATE` check that caused Mid↔Normal oscillation
-    // at cadences near the gate width (e.g. 300-400ms tapping with a
-    // 300ms gate would flip state on every other event).
-    let density = history.count_in_window(dir, DENSITY_WINDOW);
+    // Classify with a +1 projection: the caller's about-to-fire event
+    // is assumed to count toward the window, even though it has not
+    // been pushed to history yet.  This preserves the boundary
+    // semantics of the legacy push-then-classify flow now that the
+    // push is deferred to `apply(Effect::ScrollImpulse)`.
+    //
+    // Window-based decay is unchanged: once the user pauses longer
+    // than DENSITY_WINDOW the prior events age out and the projected
+    // density (= 0 + 1 = 1) falls below MID_THRESHOLD → Normal.  The
+    // earlier explicit `last_gap > DECAY_GATE` check caused Mid↔Normal
+    // oscillation at cadences near the gate width and remains absent.
+    let density = history.count_in_window(dir, DENSITY_WINDOW) + 1;
     if density < MID_THRESHOLD {
         return ScrollState::Normal;
     }
 
-    let fast = history.count_in_window(dir, HIGH_WINDOW);
-    let sustain = history.count_in_window(dir, SUSTAIN_WINDOW);
+    let fast = history.count_in_window(dir, HIGH_WINDOW) + 1;
+    let sustain = history.count_in_window(dir, SUSTAIN_WINDOW) + 1;
     if fast >= HIGH_FAST_THRESHOLD && sustain >= HIGH_SUSTAIN_THRESHOLD {
         ScrollState::High
     } else {
@@ -171,17 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn single_press_is_normal() {
-        // 1 event in DENSITY_WINDOW < MID_THRESHOLD=2 → Normal.
+    fn single_prior_press_promotes_to_mid() {
+        // With +1 projection: 1 prior event + 1 current = density 2
+        // → reaches MID_THRESHOLD → Mid.
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         let _ = h.record(ScrollDirection::Down, 0);
-        assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 48);
+        assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 77);
     }
 
     #[test]
-    fn two_rapid_events_enter_mid() {
-        // 2 events within DENSITY_WINDOW → reaches MID_THRESHOLD → Mid.
+    fn prior_pair_stays_mid() {
+        // 2 prior events + 1 current projection = density 3 → still Mid
+        // (fast=3 < 6, sustain=3 < 10 → not High).
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         let _ = h.record(ScrollDirection::Down, 0);
@@ -217,20 +225,21 @@ mod tests {
 
     #[test]
     fn idle_past_density_window_returns_to_normal() {
-        // After a burst of High-qualifying input, pause longer than
-        // DENSITY_WINDOW.  Old events age out → density < MID_THRESHOLD
-        // → Normal.  This is the stateless replacement for the old
-        // explicit decay gate: precision recovery falls out of the
-        // window mechanics.
+        // Stateless precision recovery: after a burst of high-cadence
+        // input, when the user pauses past DENSITY_WINDOW, the next
+        // query (which classifies the about-to-fire event with +1
+        // projection over 0 prior events still inside the density
+        // window) lands at density=1 < MID_THRESHOLD → Normal.
+        //
+        // This is the call-site flow: at keypress time, mod.rs invokes
+        // effective_step *before* the push to history, so a single
+        // post-pause press sees zero priors in the density window.
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         for _ in 0..12 {
             let _ = h.record(ScrollDirection::Down, 0);
         }
         thread::sleep(DENSITY_WINDOW + Duration::from_millis(50));
-        let _ = h.record(ScrollDirection::Down, 0);
-        // Only this single post-idle event is inside DENSITY_WINDOW →
-        // density=1 < 2 → Normal.
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 48);
     }
 

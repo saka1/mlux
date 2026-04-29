@@ -384,7 +384,7 @@ pub(super) fn handle(
             let flash = format!("match {}/{}", gs.selected + 1, gs.matches.len());
             vec![
                 Effect::SetLastSearch(last),
-                Effect::ScrollTo(y),
+                Effect::ScrollAnchor(y),
                 Effect::Flash(flash),
                 Effect::ExitToNormal(ScreenRestore::FullRefresh),
             ]
@@ -403,7 +403,7 @@ pub(super) fn handle(
             let flash = format!("match {}/{}", gs.selected + 1, gs.matches.len());
             vec![
                 Effect::SetLastSearch(last),
-                Effect::ScrollTo(y),
+                Effect::ScrollAnchor(y),
                 Effect::Flash(flash),
                 Effect::ExitToNormal(ScreenRestore::FullRefresh),
             ]
@@ -620,7 +620,7 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::SetLastSearch(_)))
         );
-        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollAnchor(_))));
         assert!(
             effects
                 .iter()

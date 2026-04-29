@@ -43,11 +43,7 @@ impl InputHistory {
     /// Record a scroll event. Returns the records that were evicted by
     /// this call (cap-based or time-based) so the caller can convolve
     /// their displacement into a permanent anchor before they are forgotten.
-    pub(super) fn record(
-        &mut self,
-        direction: ScrollDirection,
-        delta_px: i32,
-    ) -> Vec<InputRecord> {
+    pub(super) fn record(&mut self, direction: ScrollDirection, delta_px: i32) -> Vec<InputRecord> {
         let mut evicted = Vec::new();
         self.prune(&mut evicted);
         if self.records.len() >= self.max_entries
@@ -95,10 +91,10 @@ impl InputHistory {
     /// "was the user already pressing this direction, or did they just
     /// start?"  Returns `None` if fewer than two such events exist.
     ///
-    /// Unlike [`Self::time_since_last`], this is meaningful to call *after*
-    /// recording the current event: the "last" record is the current event
-    /// (dt ≈ 0), but the gap between the last two tells you the real
-    /// inter-press interval.
+    /// Meaningful to call *after* recording the current event: the newest
+    /// record is the just-recorded event (dt ≈ 0), so the gap between the
+    /// two most recent same-direction entries gives the real inter-press
+    /// interval.
     pub(super) fn last_gap(&self, dir: ScrollDirection) -> Option<Duration> {
         let mut same_dir = self.records.iter().rev().filter(|r| r.direction == dir);
         let newest = same_dir.next()?;
@@ -251,10 +247,7 @@ mod tests {
         let v: Vec<_> = h.iter().map(|r| (r.direction, r.delta_px)).collect();
         assert_eq!(
             v,
-            vec![
-                (ScrollDirection::Down, 42),
-                (ScrollDirection::Up, -17),
-            ]
+            vec![(ScrollDirection::Down, 42), (ScrollDirection::Up, -17),]
         );
     }
 

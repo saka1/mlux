@@ -13,7 +13,9 @@
 //! means adding a variant; the compiler then points out every `match` that
 //! needs to handle it.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use super::input_history::InputHistory;
 
 /// Default half-life for the ExpDecay algorithm (ms).
 ///
@@ -60,20 +62,75 @@ const DEFAULT_KINETIC_TAU_MS: f64 = 50.0;
 /// eliminate.
 const KINETIC_SNAP_VELOCITY: f64 = 30.0;
 
+/// Pure parameters for the Kinetic animator.  Persists no state — every
+/// query is a closed-form function of `(anchor, history, now)`.
+///
+/// Physical model: `dv/dt = -v/τ` with impulses at times tᵢ adding
+/// `δᵢ/τ` to velocity.  Integrating gives the closed forms below;
+/// they are exact for any `dt` (frame-rate independent by construction).
+///
+/// ```text
+/// x(t) = anchor + Σᵢ δᵢ · (1 - e^(-(t - tᵢ)/τ))
+/// v(t) = Σᵢ (δᵢ / τ) · e^(-(t - tᵢ)/τ)
+/// ```
+///
+/// Old impulses (>5τ) contribute essentially their full δ to position
+/// and ~0 to velocity; eviction from the input history convolves their
+/// δ into a permanent anchor (see `viewport.rs`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct KineticParams {
+    pub tau_ms: f64,
+}
+
+impl KineticParams {
+    pub fn new() -> Self {
+        Self {
+            tau_ms: DEFAULT_KINETIC_TAU_MS,
+        }
+    }
+
+    /// Closed-form position at `now` given `anchor` and the impulse
+    /// history recorded so far.
+    pub fn position_at(&self, anchor: f64, history: &InputHistory, now: Instant) -> f64 {
+        let tau_s = self.tau_ms / 1000.0;
+        anchor
+            + history
+                .iter()
+                .map(|r| {
+                    let elapsed = now.saturating_duration_since(r.timestamp).as_secs_f64();
+                    r.delta_px as f64 * (1.0 - (-elapsed / tau_s).exp())
+                })
+                .sum::<f64>()
+    }
+
+    /// Closed-form velocity (px/s) at `now`.
+    pub fn velocity_at(&self, history: &InputHistory, now: Instant) -> f64 {
+        let tau_s = self.tau_ms / 1000.0;
+        history
+            .iter()
+            .map(|r| {
+                let elapsed = now.saturating_duration_since(r.timestamp).as_secs_f64();
+                (r.delta_px as f64 / tau_s) * (-elapsed / tau_s).exp()
+            })
+            .sum()
+    }
+}
+
 /// Pluggable scroll interpolation.
 ///
-/// Each variant owns the state its algorithm needs. Callers drive the
-/// animator via [`Self::tick`] per frame and [`Self::set_target`] when
-/// the desired position changes (some algorithms reset internal timers
-/// on target change).
+/// All variants share the unified [`Self::tick`] API
+/// `(anchor, history, viewport, now, dt) → f64`.  Position-chase
+/// variants (ExpDecay / ExpDecayAdaptive) compute their target as
+/// `anchor + Σ history.delta_px` and update internal `current` per
+/// frame.  Kinetic is stateless: its position is a closed-form
+/// function of `(anchor, history, now)` (see [`KineticParams`]).
 pub(super) enum ScrollAnimator {
     /// Exponential decay toward target with ease-in ramp on new scroll.
     ///
     /// Closed-form of `dx/dt = -λ(t)(x - target)` where `λ(t)` ramps from
     /// `ln(2) / (RAMP_INITIAL_SCALE × half_life_ms)` up to
     /// `ln(2) / half_life_ms` over `RAMP_DURATION_MS` via smoothstep.
-    /// After the ramp the frame-rate-independence property holds
-    /// (verified by `exp_decay_frame_rate_independent`).
+    /// After the ramp the frame-rate-independence property holds.
     ExpDecay {
         current: f64,
         half_life_ms: f64,
@@ -93,26 +150,15 @@ pub(super) enum ScrollAnimator {
     },
 
     /// Kinetic (iOS-style momentum scroll) — velocity-driven with
-    /// pure friction decay.
+    /// pure friction decay.  Stateless: position and velocity at any
+    /// `now` are evaluated from `(anchor, history)` via [`KineticParams`].
     ///
-    /// Solves the 1st-order ODE `dv/dt = -v/τ` exactly per frame:
-    /// `v(t+dt) = v(t)·e^(-dt/τ)`,
-    /// `x(t+dt) = x(t) + v(t)·τ·(1 - e^(-dt/τ))`.
-    /// No restoring force toward target — landing position is
-    /// `x_∞ = x₀ + v·τ`, set implicitly by velocity.
-    ///
-    /// Two velocity injection paths preserve the invariant
-    /// `target == current + velocity·τ`:
-    /// - [`Self::add_impulse`] for incremental scroll (j/k): adds
-    ///   `delta_px / τ`, so impulses stack as momentum.
-    /// - [`Self::set_landing`] for absolute jumps (gg/G/search):
-    ///   replaces velocity with `(target - current) / τ`, overriding
-    ///   any prior momentum (matches iOS "scroll-to-top" semantics).
-    Kinetic {
-        current: f64,
-        velocity: f64,
-        tau_ms: f64,
-    },
+    /// Impulses arrive as history entries (`Effect::ScrollImpulse`).
+    /// `Effect::ScrollAnchor` flushes history and pins anchor to the
+    /// current position, then re-pushes a single landing impulse —
+    /// equivalent to the legacy iOS "scroll-to-top" `set_landing`
+    /// semantics, but without persistent velocity state.
+    Kinetic(KineticParams),
 }
 
 impl ScrollAnimator {
@@ -136,13 +182,10 @@ impl ScrollAnimator {
         }
     }
 
-    /// Construct a Kinetic animator at rest at `initial`.
-    pub(super) fn new_kinetic(initial: f64) -> Self {
-        Self::Kinetic {
-            current: initial,
-            velocity: 0.0,
-            tau_ms: DEFAULT_KINETIC_TAU_MS,
-        }
+    /// Construct a Kinetic animator.  Initial position is carried by
+    /// `ScrollState::anchor`, not the animator (the variant is stateless).
+    pub(super) fn new_kinetic(_initial: f64) -> Self {
+        Self::Kinetic(KineticParams::new())
     }
 
     /// Construct an animator for the algorithm selected in config.
@@ -159,99 +202,101 @@ impl ScrollAnimator {
         }
     }
 
-    /// Current interpolated position (sub-pixel precision).
-    pub(super) fn current(&self) -> f64 {
+    /// Current sub-pixel position at `now` given `anchor` and `history`.
+    /// For Kinetic this is a closed-form evaluation; for ExpDecay
+    /// variants it returns the animator's internal `current`.
+    pub(super) fn current_position(
+        &self,
+        anchor: f64,
+        history: &InputHistory,
+        now: Instant,
+    ) -> f64 {
         match self {
-            Self::ExpDecay { current, .. }
-            | Self::ExpDecayAdaptive { current, .. }
-            | Self::Kinetic { current, .. } => *current,
+            Self::ExpDecay { current, .. } | Self::ExpDecayAdaptive { current, .. } => *current,
+            Self::Kinetic(params) => params.position_at(anchor, history, now),
         }
     }
 
-    /// Whether the animator has motion left toward `target`.
+    /// Whether the animator has motion left toward the derived target
+    /// (`anchor + Σ history.delta_px`).
+    ///
     /// Returns false once residual is below [`SNAP_THRESHOLD_PX`].
-    /// `Kinetic` also requires velocity below [`KINETIC_SNAP_VELOCITY`]
-    /// so a fast glide passing target doesn't prematurely snap.
-    pub(super) fn is_animating(&self, target: f64) -> bool {
-        let close = (self.current() - target).abs() < SNAP_THRESHOLD_PX;
+    /// `Kinetic` additionally requires |velocity| below
+    /// [`KINETIC_SNAP_VELOCITY`] so a fast glide passing through target
+    /// doesn't prematurely report settled.
+    pub(super) fn is_animating(&self, anchor: f64, history: &InputHistory, now: Instant) -> bool {
+        let target_sum: i64 = history.iter().map(|r| r.delta_px as i64).sum();
+        let target = anchor + target_sum as f64;
         match self {
-            Self::Kinetic { velocity, .. } => !(close && velocity.abs() < KINETIC_SNAP_VELOCITY),
-            _ => !close,
-        }
-    }
-
-    /// Notify the animator that the scroll target has changed.
-    ///
-    /// `restart_ramp` should be `true` iff the animation was settled before
-    /// this call (i.e. `!is_animating(old_target)`). When true, the ease-in
-    /// ramp resets: the effective half-life starts at `RAMP_INITIAL_SCALE ×`
-    /// base and smoothly decays to base over `RAMP_DURATION_MS`, compensating
-    /// for pursuit-onset latency. When false (already scrolling), the ramp is
-    /// left as-is — the eye is already tracking, so no ease-in is needed.
-    pub(super) fn set_target(&mut self, restart_ramp: bool) {
-        match self {
-            Self::ExpDecay {
-                ramp_elapsed_ms, ..
-            } => {
-                if restart_ramp {
-                    *ramp_elapsed_ms = 0.0;
-                }
+            Self::ExpDecay { current, .. } | Self::ExpDecayAdaptive { current, .. } => {
+                (*current - target).abs() >= SNAP_THRESHOLD_PX
             }
-            Self::ExpDecayAdaptive { .. } => {}
-            // Kinetic responds via add_impulse / set_landing instead;
-            // bare target-change notification carries no useful signal.
-            Self::Kinetic { .. } => {}
-        }
-    }
-
-    /// Apply a velocity impulse, in units of pixels of asymptotic
-    /// displacement (the extra distance the impulse glides to from
-    /// rest if no further inputs arrive). Used for incremental scroll
-    /// (j/k) so rapid keypresses accumulate momentum.
-    ///
-    /// No-op for position-chase variants (`ExpDecay`, `ExpDecayAdaptive`):
-    /// they have no velocity state, so the upstream layer's `target`
-    /// accumulation is authoritative.
-    pub(super) fn add_impulse(&mut self, delta_px: f64) {
-        match self {
-            Self::ExpDecay { .. } | Self::ExpDecayAdaptive { .. } => {}
-            Self::Kinetic {
-                velocity, tau_ms, ..
-            } => {
-                let tau_s = *tau_ms / 1000.0;
-                *velocity += delta_px / tau_s;
+            Self::Kinetic(params) => {
+                let x = params.position_at(anchor, history, now);
+                let v = params.velocity_at(history, now);
+                !((target - x).abs() < SNAP_THRESHOLD_PX && v.abs() < KINETIC_SNAP_VELOCITY)
             }
         }
     }
 
-    /// Override velocity so the kinetic glide settles at `target_px`
-    /// asymptotically. Used for absolute scroll jumps (gg/G/search):
-    /// any pre-existing momentum is discarded — matches iOS-style
-    /// "scroll-to-top" semantics, where tapping the destination cancels
-    /// in-flight inertia. No-op for position-chase variants.
-    pub(super) fn set_landing(&mut self, target_px: f64) {
+    /// Anchor contribution for an evicted history record.
+    ///
+    /// When a record is evicted (by time-window or cap), its displacement
+    /// is folded into the permanent anchor.  For Kinetic the record's
+    /// *current* contribution to position is `δ·(1 - e^(-elapsed/τ))`
+    /// rather than the full `δ` — the residual `δ·e^(-elapsed/τ)` is
+    /// still in-flight.  For ExpDecay variants the history isn't part of
+    /// the position formula, so the full `δ` is correct.
+    pub(super) fn eviction_contribution(
+        &self,
+        record: &super::input_history::InputRecord,
+        now: Instant,
+    ) -> f64 {
         match self {
-            Self::ExpDecay { .. } | Self::ExpDecayAdaptive { .. } => {}
-            Self::Kinetic {
-                current,
-                velocity,
-                tau_ms,
-            } => {
-                let tau_s = *tau_ms / 1000.0;
-                *velocity = (target_px - *current) / tau_s;
+            Self::Kinetic(params) => {
+                let tau_s = params.tau_ms / 1000.0;
+                let elapsed = now
+                    .saturating_duration_since(record.timestamp)
+                    .as_secs_f64();
+                record.delta_px as f64 * (1.0 - (-elapsed / tau_s).exp())
             }
+            _ => record.delta_px as f64,
         }
     }
 
-    /// Advance one frame toward `target` over elapsed `dt`. Returns the
-    /// new current position. Snaps to `target` when residual is
-    /// sub-pixel to avoid asymptotic never-reaching.
+    /// Reset the ExpDecay ease-in ramp.  No-op for other variants.
     ///
-    /// `viewport_px` is consumed by distance-adaptive variants to
-    /// compute residual-in-screens; fixed-half-life variants ignore it.
-    /// Callers can pass 0 when viewport is not meaningful (e.g. tests
-    /// for ExpDecay).
-    pub(super) fn tick(&mut self, target: f64, viewport_px: f64, dt: Duration) -> f64 {
+    /// Called from the apply layer when entering a new scroll from a
+    /// settled state so the eye gets the pursuit-onset ramp; while
+    /// already scrolling the ramp is left intact.
+    pub(super) fn restart_ease_in_if_settled(&mut self, settled: bool) {
+        if let Self::ExpDecay {
+            ramp_elapsed_ms, ..
+        } = self
+            && settled
+        {
+            *ramp_elapsed_ms = 0.0;
+        }
+    }
+
+    /// Advance one frame toward the derived target (`anchor + Σ
+    /// history.delta_px`) over elapsed `dt`.  Returns the new sub-pixel
+    /// position.
+    ///
+    /// `viewport_px` is consumed by distance-adaptive variants;
+    /// fixed-half-life variants and Kinetic ignore it.  Kinetic also
+    /// ignores `dt` — its position is a pure closed-form function of
+    /// `(anchor, history, now)`.
+    pub(super) fn tick(
+        &mut self,
+        anchor: f64,
+        history: &InputHistory,
+        viewport_px: f64,
+        now: Instant,
+        dt: Duration,
+    ) -> f64 {
+        let target_sum: i64 = history.iter().map(|r| r.delta_px as i64).sum();
+        let target = anchor + target_sum as f64;
         match self {
             Self::ExpDecay {
                 current,
@@ -281,36 +326,17 @@ impl ScrollAnimator {
                     return *current;
                 }
                 let d = (target - *current).abs();
-                // Guard against zero viewport (Viewport::default() path,
-                // pre-layout init). Falls back to base half-life.
                 let v = viewport_px.max(1.0);
                 let hl = *base_half_life_ms * (1.0 + (1.0 + d / v).ln());
                 let dt_ms = dt.as_secs_f64() * 1000.0;
                 let alpha = 1.0 - 0.5_f64.powf(dt_ms / hl);
                 apply_step(current, target, alpha)
             }
-            Self::Kinetic {
-                current,
-                velocity,
-                tau_ms,
-            } => {
-                if dt.is_zero() {
-                    return *current;
-                }
-                // Closed-form integration of dv/dt = -v/τ over `dt`:
-                // exact, frame-rate independent, stable for any dt.
-                let dt_s = dt.as_secs_f64();
-                let tau_s = *tau_ms / 1000.0;
-                let decay = (-dt_s / tau_s).exp();
-                *current += *velocity * tau_s * (1.0 - decay);
-                *velocity *= decay;
-                if (*current - target).abs() < SNAP_THRESHOLD_PX
-                    && velocity.abs() < KINETIC_SNAP_VELOCITY
-                {
-                    *current = target;
-                    *velocity = 0.0;
-                }
-                *current
+            Self::Kinetic(params) => {
+                // Pure: position is a closed-form function of (anchor,
+                // history, now).  No internal state, dt unused.
+                let _ = dt;
+                params.position_at(anchor, history, now)
             }
         }
     }
@@ -331,16 +357,118 @@ fn apply_step(current: &mut f64, target: f64, alpha: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::input_history::ScrollDirection;
     use super::*;
 
     /// Viewport height irrelevant for ExpDecay; use an obvious sentinel.
     const NO_VP: f64 = 0.0;
 
+    fn empty_history() -> InputHistory {
+        InputHistory::new(Duration::from_secs(5), 128)
+    }
+
+    // ---- KineticParams (history-driven, pure) -----------------------------
+
+    #[test]
+    fn kinetic_params_position_is_anchor_with_no_history() {
+        let params = KineticParams::new();
+        let h = empty_history();
+        let x = params.position_at(123.5, &h, Instant::now());
+        assert_eq!(x, 123.5);
+    }
+
+    #[test]
+    fn kinetic_params_position_asymptotes_to_anchor_plus_sum() {
+        // After many τ, residual ≈ 0 → x ≈ anchor + Σδᵢ.
+        let params = KineticParams::new();
+        let mut h = empty_history();
+        let t0 = Instant::now();
+        let _ = h.record(ScrollDirection::Down, 72);
+        let later = t0 + Duration::from_secs(5); // ≫ 5τ
+        let x = params.position_at(0.0, &h, later);
+        assert!((x - 72.0).abs() < 0.01, "x = {x}");
+    }
+
+    #[test]
+    fn kinetic_params_one_tau_progress() {
+        // After exactly τ, position should equal anchor + δ * (1 - 1/e).
+        let params = KineticParams::new();
+        let mut h = empty_history();
+        let t0 = Instant::now();
+        let _ = h.record(ScrollDirection::Down, 100);
+        let later = t0 + Duration::from_secs_f64(DEFAULT_KINETIC_TAU_MS / 1000.0);
+        let x = params.position_at(0.0, &h, later);
+        let expected = 100.0 * (1.0 - (-1.0_f64).exp());
+        assert!(
+            (x - expected).abs() < 0.5,
+            "x = {x} vs expected = {expected}"
+        );
+    }
+
+    #[test]
+    fn kinetic_params_velocity_decays_with_tau() {
+        let params = KineticParams::new();
+        let mut h = empty_history();
+        let t0 = Instant::now();
+        let _ = h.record(ScrollDirection::Down, 1000);
+        let v0 = params.velocity_at(&h, t0); // ≈ 1000 / 0.05 = 20000 px/s
+        let v1 = params.velocity_at(
+            &h,
+            t0 + Duration::from_secs_f64(DEFAULT_KINETIC_TAU_MS / 1000.0),
+        );
+        let ratio = v1 / v0;
+        let expected = (-1.0_f64).exp(); // 1/e
+        assert!(
+            (ratio - expected).abs() < 0.01,
+            "v1/v0 = {ratio} vs 1/e = {expected}"
+        );
+    }
+
+    #[test]
+    fn kinetic_params_impulses_accumulate_in_position() {
+        // Two impulses must asymptotically land at anchor + δ₁ + δ₂.
+        let params = KineticParams::new();
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 50);
+        let _ = h.record(ScrollDirection::Down, 50);
+        let later = Instant::now() + Duration::from_secs(5);
+        let x = params.position_at(0.0, &h, later);
+        assert!((x - 100.0).abs() < 0.5, "x = {x}");
+    }
+
+    #[test]
+    fn kinetic_params_signed_deltas_can_brake() {
+        // Down impulse followed by Up impulse should asymptote to net.
+        let params = KineticParams::new();
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 100);
+        let _ = h.record(ScrollDirection::Up, -40);
+        let later = Instant::now() + Duration::from_secs(5);
+        let x = params.position_at(0.0, &h, later);
+        assert!((x - 60.0).abs() < 0.5, "x = {x}");
+    }
+
+    // ---- ExpDecay (target-chase, history is empty) ------------------------
+
+    /// Wrap a position-chase tick: anchor=target, no history, current Instant.
+    fn tick_chase(a: &mut ScrollAnimator, target: f64, vp: f64, dt: Duration) -> f64 {
+        let h = empty_history();
+        a.tick(target, &h, vp, Instant::now(), dt)
+    }
+
+    fn position_chase_current(a: &ScrollAnimator) -> f64 {
+        a.current_position(0.0, &empty_history(), Instant::now())
+    }
+
+    fn is_animating_chase(a: &ScrollAnimator, target: f64) -> bool {
+        a.is_animating(target, &empty_history(), Instant::now())
+    }
+
     #[test]
     fn exp_decay_half_life_behavior() {
-        // Starting at 0, target 100. After one half-life, residual halves → ~50.
         let mut a = ScrollAnimator::new_exp_decay(0.0);
-        let c = a.tick(
+        let c = tick_chase(
+            &mut a,
             100.0,
             NO_VP,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
@@ -350,16 +478,15 @@ mod tests {
 
     #[test]
     fn exp_decay_frame_rate_independent() {
-        // Two half-dt steps must equal one full-dt step (within FP error).
         let full = Duration::from_millis(40);
         let half = Duration::from_millis(20);
 
         let mut one = ScrollAnimator::new_exp_decay(0.0);
-        let one_shot = one.tick(100.0, NO_VP, full);
+        let one_shot = tick_chase(&mut one, 100.0, NO_VP, full);
 
         let mut two = ScrollAnimator::new_exp_decay(0.0);
-        two.tick(100.0, NO_VP, half);
-        let two_shot = two.tick(100.0, NO_VP, half);
+        tick_chase(&mut two, 100.0, NO_VP, half);
+        let two_shot = tick_chase(&mut two, 100.0, NO_VP, half);
 
         assert!(
             (one_shot - two_shot).abs() < 1e-9,
@@ -374,9 +501,9 @@ mod tests {
             half_life_ms: DEFAULT_HALF_LIFE_MS,
             ramp_elapsed_ms: RAMP_DURATION_MS,
         };
-        let c = a.tick(100.0, NO_VP, Duration::ZERO);
+        let c = tick_chase(&mut a, 100.0, NO_VP, Duration::ZERO);
         assert_eq!(c, 10.0);
-        assert_eq!(a.current(), 10.0);
+        assert_eq!(position_chase_current(&a), 10.0);
     }
 
     #[test]
@@ -386,24 +513,24 @@ mod tests {
             half_life_ms: DEFAULT_HALF_LIFE_MS,
             ramp_elapsed_ms: RAMP_DURATION_MS,
         };
-        let c = a.tick(100.0, NO_VP, Duration::from_millis(40));
+        let c = tick_chase(&mut a, 100.0, NO_VP, Duration::from_millis(40));
         assert_eq!(c, 100.0);
-        assert!(!a.is_animating(100.0));
+        assert!(!is_animating_chase(&a, 100.0));
     }
 
     #[test]
     fn exp_decay_converges_toward_target() {
-        // After ~10 half-lives the residual is well under a pixel → snaps.
         let mut a = ScrollAnimator::new_exp_decay(0.0);
         let dt = Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS * 10.0 / 1000.0);
-        let c = a.tick(100.0, NO_VP, dt);
+        let c = tick_chase(&mut a, 100.0, NO_VP, dt);
         assert_eq!(c, 100.0);
     }
 
     #[test]
     fn exp_decay_handles_negative_direction() {
         let mut a = ScrollAnimator::new_exp_decay(100.0);
-        let c = a.tick(
+        let c = tick_chase(
+            &mut a,
             0.0,
             NO_VP,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
@@ -412,10 +539,10 @@ mod tests {
     }
 
     #[test]
-    fn set_target_does_not_change_position() {
+    fn restart_ease_in_does_not_change_position() {
         let mut a = ScrollAnimator::new_exp_decay(10.0);
-        a.set_target(true);
-        assert_eq!(a.current(), 10.0);
+        a.restart_ease_in_if_settled(true);
+        assert_eq!(position_chase_current(&a), 10.0);
     }
 
     #[test]
@@ -435,32 +562,28 @@ mod tests {
 
     #[test]
     fn is_animating_threshold() {
-        // Residual >= 0.5 → still animating.
         let a = ScrollAnimator::ExpDecay {
             current: 99.4,
             half_life_ms: DEFAULT_HALF_LIFE_MS,
             ramp_elapsed_ms: RAMP_DURATION_MS,
         };
-        assert!(a.is_animating(100.0));
-        // Residual < 0.5 → settled.
+        assert!(is_animating_chase(&a, 100.0));
         let b = ScrollAnimator::ExpDecay {
             current: 99.6,
             half_life_ms: DEFAULT_HALF_LIFE_MS,
             ramp_elapsed_ms: RAMP_DURATION_MS,
         };
-        assert!(!b.is_animating(100.0));
+        assert!(!is_animating_chase(&b, 100.0));
     }
 
     // ---- ExpDecay ease-in ramp --------------------------------------------
 
-    /// At t=0 the ramp makes effective hl = RAMP_INITIAL_SCALE × base.
-    /// Progress after one base half-life must be less than 50% (the
-    /// post-ramp steady-state value).
     #[test]
     fn exp_decay_ramp_starts_slow() {
         let mut a = ScrollAnimator::new_exp_decay(0.0);
-        a.set_target(true); // trigger ease-in
-        let c = a.tick(
+        a.restart_ease_in_if_settled(true); // trigger ease-in
+        let c = tick_chase(
+            &mut a,
             100.0,
             NO_VP,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
@@ -469,21 +592,17 @@ mod tests {
         assert!(c < 50.0, "expected ramp to slow start, got {c}");
     }
 
-    /// After `RAMP_DURATION_MS` of accumulated ticks the ramp is complete;
-    /// subsequent behaviour must match normal ExpDecay (hl_scale = 1).
     #[test]
     fn exp_decay_ramp_completes_after_100ms() {
         let ramp_ms = RAMP_DURATION_MS as u64;
         let mut a = ScrollAnimator::new_exp_decay(0.0);
-        a.set_target(true);
-        // Burn through the ramp window with small steps.
+        a.restart_ease_in_if_settled(true);
         for _ in 0..10 {
-            a.tick(100.0, NO_VP, Duration::from_millis(ramp_ms / 10));
+            tick_chase(&mut a, 100.0, NO_VP, Duration::from_millis(ramp_ms / 10));
         }
-        // Now ramp should be complete. One more base half-life tick must
-        // give ~50% of remaining residual, matching steady-state ExpDecay.
-        let residual_before = 100.0 - a.current();
-        let c = a.tick(
+        let residual_before = 100.0 - position_chase_current(&a);
+        let c = tick_chase(
+            &mut a,
             100.0,
             NO_VP,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
@@ -496,22 +615,18 @@ mod tests {
         );
     }
 
-    /// set_target(false) must not reset the ramp — simulates continuous
-    /// keypress where the eye is already tracking.
     #[test]
     fn exp_decay_no_ramp_reset_when_already_animating() {
         let mut a = ScrollAnimator::new_exp_decay(0.0);
-        a.set_target(true); // trigger ramp
-        // Advance partway through ramp.
-        a.tick(100.0, NO_VP, Duration::from_millis(50));
+        a.restart_ease_in_if_settled(true);
+        tick_chase(&mut a, 100.0, NO_VP, Duration::from_millis(50));
         let elapsed_mid = match &a {
             ScrollAnimator::ExpDecay {
                 ramp_elapsed_ms, ..
             } => *ramp_elapsed_ms,
             _ => panic!(),
         };
-        // A second set_target(false) must not reset ramp_elapsed_ms.
-        a.set_target(false);
+        a.restart_ease_in_if_settled(false);
         let elapsed_after = match &a {
             ScrollAnimator::ExpDecay {
                 ramp_elapsed_ms, ..
@@ -521,14 +636,11 @@ mod tests {
         assert_eq!(elapsed_mid, elapsed_after, "ramp should not reset");
     }
 
-    /// set_target(true) resets ramp_elapsed_ms to 0 so ease-in restarts.
     #[test]
     fn exp_decay_ramp_resets_on_new_scroll_from_settled() {
         let mut a = ScrollAnimator::new_exp_decay(0.0);
-        // Consume full ramp.
-        a.tick(100.0, NO_VP, Duration::from_millis(200));
-        // Now at rest (current → target). Trigger new ease-in.
-        a.set_target(true);
+        tick_chase(&mut a, 100.0, NO_VP, Duration::from_millis(200));
+        a.restart_ease_in_if_settled(true);
         let elapsed = match &a {
             ScrollAnimator::ExpDecay {
                 ramp_elapsed_ms, ..
@@ -540,16 +652,13 @@ mod tests {
 
     // ---- ExpDecayAdaptive -------------------------------------------------
 
-    /// At residual equal to one viewport, effective half-life is
-    /// `base × (1 + ln 2) ≈ base × 1.693`. Feeding exactly that much
-    /// wall-time should halve the residual.
     #[test]
     fn adaptive_half_life_at_one_viewport() {
         let viewport = 1000.0;
         let mut a = ScrollAnimator::new_exp_decay_adaptive(0.0);
-        // distance = 1000 px = one viewport → hl = base × (1 + ln 2)
         let expected_hl_ms = DEFAULT_HALF_LIFE_MS * (1.0 + 2.0_f64.ln());
-        let c = a.tick(
+        let c = tick_chase(
+            &mut a,
             1000.0,
             viewport,
             Duration::from_secs_f64(expected_hl_ms / 1000.0),
@@ -560,47 +669,39 @@ mod tests {
         );
     }
 
-    /// Near distances (d ≪ viewport) reduce to the base half-life:
-    /// `log(1 + ε) ≈ ε` so the scale factor is ≈ 1. One base half-life
-    /// should still halve a small residual.
     #[test]
     fn adaptive_near_distance_matches_base_half_life() {
-        let viewport = 10_000.0; // make d/v tiny: 50 / 10000 = 0.005
+        let viewport = 10_000.0;
         let mut a = ScrollAnimator::ExpDecayAdaptive {
             current: 0.0,
             base_half_life_ms: DEFAULT_HALF_LIFE_MS,
         };
-        let c = a.tick(
+        let c = tick_chase(
+            &mut a,
             50.0,
             viewport,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
         );
-        // Within 1% of true half (25.0).
         assert!(
             (c - 25.0).abs() < 0.25,
             "expected ~25 for near-distance, got {c}"
         );
     }
 
-    /// Large jumps: `hl` grows sub-linearly. For d = 10 × viewport,
-    /// scale is `1 + ln 11 ≈ 3.40`. After `base_hl` wall-time,
-    /// residual should have shrunk by less than a factor of two —
-    /// confirming the stretch is active.
     #[test]
     fn adaptive_large_jump_decays_slower_than_base() {
         let viewport = 100.0;
         let mut a = ScrollAnimator::new_exp_decay_adaptive(0.0);
-        let c = a.tick(
-            1000.0, // 10 viewports
+        let c = tick_chase(
+            &mut a,
+            1000.0,
             viewport,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
         );
-        // Fixed-hl would give 500. Adaptive must give less progress → c < 500.
         assert!(
             c < 500.0,
             "adaptive should under-progress vs fixed, got {c}"
         );
-        // And more than would be reached if hl = base × 4 (bounds the stretch).
         let alpha_cap = 1.0 - 0.5_f64.powf(1.0 / 4.0);
         let lower_bound = 1000.0 * alpha_cap;
         assert!(c > lower_bound, "adaptive regressing too much: {c}");
@@ -612,7 +713,7 @@ mod tests {
             current: 10.0,
             base_half_life_ms: DEFAULT_HALF_LIFE_MS,
         };
-        let c = a.tick(100.0, 500.0, Duration::ZERO);
+        let c = tick_chase(&mut a, 100.0, 500.0, Duration::ZERO);
         assert_eq!(c, 10.0);
     }
 
@@ -622,230 +723,225 @@ mod tests {
             current: 99.9,
             base_half_life_ms: DEFAULT_HALF_LIFE_MS,
         };
-        let c = a.tick(100.0, 500.0, Duration::from_millis(40));
+        let c = tick_chase(&mut a, 100.0, 500.0, Duration::from_millis(40));
         assert_eq!(c, 100.0);
-        assert!(!a.is_animating(100.0));
+        assert!(!is_animating_chase(&a, 100.0));
     }
 
-    /// Zero viewport (Viewport::default() path) must not divide-by-zero
-    /// or explode. Falls back to base-half-life behavior.
     #[test]
     fn adaptive_zero_viewport_is_safe() {
         let mut a = ScrollAnimator::new_exp_decay_adaptive(0.0);
-        let c = a.tick(
+        let c = tick_chase(
+            &mut a,
             100.0,
             0.0,
             Duration::from_secs_f64(DEFAULT_HALF_LIFE_MS / 1000.0),
         );
-        // With viewport clamped to 1.0, d/v = 100, scale = 1+ln(101) ≈ 5.6;
-        // residual shrinks only modestly. Just assert no panic and some progress.
         assert!(c > 0.0 && c < 100.0, "got {c}");
     }
 
-    // ---- Kinetic ----------------------------------------------------------
+    // ---- Kinetic (history-driven, equivalent to legacy semantics) --------
 
-    fn kinetic_velocity(a: &ScrollAnimator) -> f64 {
-        match a {
-            ScrollAnimator::Kinetic { velocity, .. } => *velocity,
-            _ => panic!("not a Kinetic"),
-        }
-    }
-
-    /// `add_impulse(d)` from rest must set velocity such that the
-    /// asymptotic glide lands `d` px away (`x_∞ = x₀ + v·τ`, so v = d/τ).
+    /// A single impulse from rest must asymptote to anchor + δ.  The
+    /// legacy `add_impulse(72.0)` behavior is recovered by pushing
+    /// (Down, 72) to history.
     #[test]
-    fn kinetic_add_impulse_glides_to_landing() {
+    fn kinetic_glides_to_anchor_plus_delta() {
         let mut a = ScrollAnimator::new_kinetic(0.0);
-        a.add_impulse(72.0);
-        // Run long enough for residual to vanish.
-        for _ in 0..200 {
-            a.tick(72.0, NO_VP, Duration::from_millis(2));
-        }
-        assert!(
-            (a.current() - 72.0).abs() < 0.5,
-            "kinetic should land at 72, got {}",
-            a.current()
-        );
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 72);
+        let later = Instant::now() + Duration::from_secs(5);
+        let x = a.tick(0.0, &h, NO_VP, later, Duration::from_millis(10));
+        assert!((x - 72.0).abs() < 0.5, "kinetic should land at 72, got {x}");
     }
 
-    /// Velocity decays exponentially with time constant τ. After one τ
-    /// elapsed, |v| should be v₀/e.
-    #[test]
-    fn kinetic_velocity_decays_with_tau() {
-        let mut a = ScrollAnimator::new_kinetic(0.0);
-        a.add_impulse(1000.0); // v₀ = 1000 / (50/1000) = 20000 px/s
-        let v0 = kinetic_velocity(&a);
-        // One τ = 50 ms.
-        a.tick(
-            f64::INFINITY, // target irrelevant — kinetic doesn't pull toward it
-            NO_VP,
-            Duration::from_secs_f64(DEFAULT_KINETIC_TAU_MS / 1000.0),
-        );
-        let v1 = kinetic_velocity(&a);
-        let ratio = v1 / v0;
-        let expected = (-1.0_f64).exp(); // 1/e ≈ 0.368
-        assert!(
-            (ratio - expected).abs() < 0.01,
-            "after τ velocity should be v₀/e ≈ {expected}, got ratio={ratio}"
-        );
-    }
-
-    /// Frame-rate independence: two half-dt steps must equal one full-dt
-    /// step (within FP error). Closed-form integration guarantees this
-    /// exactly, not just for small dt as in Euler.
+    /// Frame-rate independence is automatic: position is a closed-form
+    /// function of (anchor, history, now), so two half-dt sub-ticks
+    /// give the same result as one full-dt tick.
     #[test]
     fn kinetic_frame_rate_independent() {
-        let full = Duration::from_millis(20);
-        let half = Duration::from_millis(10);
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 100);
+        let t0 = Instant::now();
+        let dt_full = Duration::from_millis(20);
+        let dt_half = Duration::from_millis(10);
 
         let mut one = ScrollAnimator::new_kinetic(0.0);
-        one.add_impulse(100.0);
-        one.tick(100.0, NO_VP, full);
+        let one_shot = one.tick(0.0, &h, NO_VP, t0 + dt_full, dt_full);
 
         let mut two = ScrollAnimator::new_kinetic(0.0);
-        two.add_impulse(100.0);
-        two.tick(100.0, NO_VP, half);
-        two.tick(100.0, NO_VP, half);
+        two.tick(0.0, &h, NO_VP, t0 + dt_half, dt_half);
+        let two_shot = two.tick(0.0, &h, NO_VP, t0 + dt_full, dt_half);
 
         assert!(
-            (one.current() - two.current()).abs() < 1e-9,
-            "one_step={} two_step={}",
-            one.current(),
-            two.current()
+            (one_shot - two_shot).abs() < 1e-9,
+            "one_shot={one_shot} two_shot={two_shot}"
         );
     }
 
-    /// Two rapid impulses must accumulate velocity → glide further than
-    /// one impulse. This is the momentum stacking property that
-    /// distinguishes kinetic from position-chase animators.
+    /// Two rapid impulses must accumulate position contribution.
     #[test]
     fn kinetic_impulses_accumulate() {
-        let mut single = ScrollAnimator::new_kinetic(0.0);
-        single.add_impulse(50.0);
-        for _ in 0..200 {
-            single.tick(50.0, NO_VP, Duration::from_millis(2));
-        }
+        let mut single = empty_history();
+        let _ = single.record(ScrollDirection::Down, 50);
 
-        let mut double = ScrollAnimator::new_kinetic(0.0);
-        double.add_impulse(50.0);
-        // Small gap (rapid keypress simulation).
-        for _ in 0..4 {
-            double.tick(100.0, NO_VP, Duration::from_millis(2));
-        }
-        double.add_impulse(50.0);
-        for _ in 0..200 {
-            double.tick(100.0, NO_VP, Duration::from_millis(2));
-        }
+        let mut double = empty_history();
+        let _ = double.record(ScrollDirection::Down, 50);
+        let _ = double.record(ScrollDirection::Down, 50);
 
-        assert!(
-            double.current() > single.current() * 1.5,
-            "double impulse should travel further: single={}, double={}",
-            single.current(),
-            double.current()
-        );
-    }
-
-    /// `set_landing(target)` must override velocity so the asymptotic
-    /// glide settles at target — discarding any prior momentum (matches
-    /// iOS scroll-to-top behavior on absolute jumps).
-    #[test]
-    fn kinetic_set_landing_overrides_velocity() {
+        let later = Instant::now() + Duration::from_secs(5);
         let mut a = ScrollAnimator::new_kinetic(0.0);
-        a.add_impulse(1000.0); // big downward kick
-        let v_before = kinetic_velocity(&a);
-        // Now jump to a landing 100 px upward of current.
-        a.set_landing(-100.0);
-        let v_after = kinetic_velocity(&a);
-        assert!(v_before > 0.0 && v_after < 0.0, "v sign should flip");
-        // Glide to settle.
-        for _ in 0..200 {
-            a.tick(-100.0, NO_VP, Duration::from_millis(2));
-        }
+        let single_x = a.tick(0.0, &single, NO_VP, later, Duration::from_millis(2));
+        let double_x = a.tick(0.0, &double, NO_VP, later, Duration::from_millis(2));
         assert!(
-            (a.current() - (-100.0)).abs() < 0.5,
-            "should land at -100, got {}",
-            a.current()
+            double_x > single_x * 1.5,
+            "double impulse should travel further: single={single_x}, double={double_x}"
         );
     }
 
-    /// A long-running tick sequence must reach `is_animating == false`.
+    /// `Effect::ScrollAnchor`-style landing: the apply layer drains the
+    /// in-flight history, pins anchor to the current position, and
+    /// re-pushes a single (target - current) impulse.  This is the
+    /// closed-form equivalent of legacy `set_landing`.
+    #[test]
+    fn kinetic_landing_via_drain_and_repush() {
+        let mut a = ScrollAnimator::new_kinetic(0.0);
+        let mut h = empty_history();
+        // First flick downward.
+        let _ = h.record(ScrollDirection::Down, 1000);
+
+        // ...some time passes, user fires gg → simulate apply()'s drain
+        // + anchor pin + single landing impulse.
+        let now = Instant::now();
+        let current = a.current_position(0.0, &h, now);
+        h.drain();
+        let anchor = current;
+        let target = -100.0;
+        let delta = (target as i32) - (current.round() as i32);
+        let _ = h.record(ScrollDirection::Up, delta);
+
+        // Glide to settle.
+        let later = now + Duration::from_secs(5);
+        let x = a.tick(anchor, &h, NO_VP, later, Duration::from_millis(2));
+        assert!(
+            (x - target).abs() < 1.0,
+            "should land near {target}, got {x}"
+        );
+    }
+
+    /// Long evolution past 5τ must reach `is_animating == false`.
     #[test]
     fn kinetic_settles() {
-        let mut a = ScrollAnimator::new_kinetic(0.0);
-        a.set_landing(100.0);
-        for _ in 0..1000 {
-            a.tick(100.0, NO_VP, Duration::from_millis(2));
-        }
-        assert!(!a.is_animating(100.0), "kinetic did not settle");
-        assert!(
-            (a.current() - 100.0).abs() < 1.0,
-            "settled far from target: {}",
-            a.current()
-        );
+        let a = ScrollAnimator::new_kinetic(0.0);
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 100);
+        let later = Instant::now() + Duration::from_secs(5);
+        assert!(!a.is_animating(0.0, &h, later), "kinetic did not settle");
     }
 
     /// Snap requires BOTH residual<0.5 AND |v|<KINETIC_SNAP_VELOCITY:
     /// fast-glide passing through target must not prematurely report settled.
     #[test]
     fn kinetic_does_not_snap_while_fast() {
-        // Direct construction to set high velocity at target position.
-        let a = ScrollAnimator::Kinetic {
-            current: 100.0,
-            velocity: 500.0, // well above KINETIC_SNAP_VELOCITY
-            tau_ms: DEFAULT_KINETIC_TAU_MS,
-        };
-        assert!(
-            a.is_animating(100.0),
-            "kinetic at target with high velocity must still animate"
-        );
+        // At time t with single big impulse just fired, x ≈ 0 but v is
+        // huge → still animating even though x might be at the target.
+        let a = ScrollAnimator::new_kinetic(0.0);
+        let mut h = empty_history();
+        let t0 = Instant::now();
+        let _ = h.record(ScrollDirection::Down, 1000);
+        // Sample at exactly t0 — position contribution = 0 (asymptote
+        // factor is 1 - exp(0) = 0), velocity = 1000/τ = 20000 px/s.
+        // Target = anchor + Σδ = 1000.  Residual = 1000.  Definitely animating.
+        assert!(a.is_animating(0.0, &h, t0));
     }
 
     #[test]
     fn kinetic_zero_dt_is_noop() {
         let mut a = ScrollAnimator::new_kinetic(0.0);
-        a.add_impulse(100.0);
-        let c = a.tick(100.0, NO_VP, Duration::ZERO);
+        let h = empty_history();
+        let now = Instant::now();
+        let c = a.tick(0.0, &h, NO_VP, now, Duration::ZERO);
         assert_eq!(c, 0.0);
-    }
-
-    /// `add_impulse` must be a no-op on position-chase animators so they
-    /// behave identically whether mode_normal emits `ScrollTo` or `ScrollBy`.
-    #[test]
-    fn add_impulse_is_noop_for_exp_decay() {
-        let mut a = ScrollAnimator::new_exp_decay(10.0);
-        a.add_impulse(999.0);
-        assert_eq!(a.current(), 10.0);
-    }
-
-    #[test]
-    fn add_impulse_is_noop_for_exp_decay_adaptive() {
-        let mut a = ScrollAnimator::new_exp_decay_adaptive(10.0);
-        a.add_impulse(999.0);
-        assert_eq!(a.current(), 10.0);
-    }
-
-    /// Symmetric no-op assertions for `set_landing`.
-    #[test]
-    fn set_landing_is_noop_for_exp_decay() {
-        let mut a = ScrollAnimator::new_exp_decay(10.0);
-        a.set_landing(999.0);
-        assert_eq!(a.current(), 10.0);
-    }
-
-    #[test]
-    fn set_landing_is_noop_for_exp_decay_adaptive() {
-        let mut a = ScrollAnimator::new_exp_decay_adaptive(10.0);
-        a.set_landing(999.0);
-        assert_eq!(a.current(), 10.0);
     }
 
     #[test]
     fn from_config_dispatches_kinetic() {
         let a = ScrollAnimator::from_config(7.0, crate::config::ScrollAnimation::Kinetic);
-        assert!(matches!(
-            a,
-            ScrollAnimator::Kinetic { current, velocity, .. }
-                if current == 7.0 && velocity == 0.0
-        ));
+        assert!(matches!(a, ScrollAnimator::Kinetic(_)));
+    }
+
+    /// Pin the "bit-equivalent to the legacy stateful Kinetic" claim.
+    ///
+    /// The legacy implementation carried persistent `(current, velocity)`
+    /// and integrated `dv/dt = -v/τ` step-wise: between events
+    /// `v_new = v·e^(-dt/τ)`, `x += (v - v_new)·τ`; an impulse δ added
+    /// `δ/τ` to v.  The new closed form must agree exactly with that
+    /// recurrence for any timestamp set, since both are exact solutions
+    /// of the same linear ODE.  We replay the recurrence over the
+    /// timestamps actually recorded in `InputHistory` (so the comparison
+    /// is independent of how the impulses got spaced) and check
+    /// agreement at several sample points covering pre-settle and
+    /// post-settle regimes.
+    #[test]
+    fn kinetic_matches_legacy_stateful_recurrence() {
+        use std::thread;
+
+        let params = KineticParams::new();
+        let tau_s = params.tau_ms / 1000.0;
+
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 72);
+        thread::sleep(Duration::from_millis(15));
+        let _ = h.record(ScrollDirection::Down, 50);
+        thread::sleep(Duration::from_millis(20));
+        let _ = h.record(ScrollDirection::Up, -30);
+
+        let records: Vec<_> = h.iter().copied().collect();
+        let t_first = records[0].timestamp;
+
+        // Walk the legacy recurrence to `sample`, returning (x, v).
+        let legacy_walk = |sample: Instant| -> (f64, f64) {
+            let mut x = 0.0_f64;
+            let mut v = 0.0_f64;
+            let mut t = t_first;
+            for r in &records {
+                let dt = r.timestamp.saturating_duration_since(t).as_secs_f64();
+                if dt > 0.0 {
+                    let decay = (-dt / tau_s).exp();
+                    let v_new = v * decay;
+                    x += (v - v_new) * tau_s;
+                    v = v_new;
+                    t = r.timestamp;
+                }
+                // Impulse: velocity bumps by δ/τ, position unchanged.
+                v += r.delta_px as f64 / tau_s;
+            }
+            let dt = sample.saturating_duration_since(t).as_secs_f64();
+            if dt > 0.0 {
+                let decay = (-dt / tau_s).exp();
+                let v_new = v * decay;
+                x += (v - v_new) * tau_s;
+                v = v_new;
+            }
+            (x, v)
+        };
+
+        // Sample at several offsets past the last recorded impulse:
+        //   25ms (pre-settle), 100ms (~2τ, mid), 500ms (~10τ, settled).
+        let last_t = records.last().unwrap().timestamp;
+        for offset_ms in [25_u64, 100, 500] {
+            let sample = last_t + Duration::from_millis(offset_ms);
+            let (legacy_x, legacy_v) = legacy_walk(sample);
+            let closed_x = params.position_at(0.0, &h, sample);
+            let closed_v = params.velocity_at(&h, sample);
+            assert!(
+                (closed_x - legacy_x).abs() < 1e-9,
+                "position diverged at +{offset_ms}ms: closed={closed_x} legacy={legacy_x}",
+            );
+            assert!(
+                (closed_v - legacy_v).abs() < 1e-9,
+                "velocity diverged at +{offset_ms}ms: closed={closed_v} legacy={legacy_v}",
+            );
+        }
     }
 }

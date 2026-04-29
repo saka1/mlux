@@ -305,7 +305,7 @@ pub fn run(
         // in_flight: set of tile indices sent to the child but not yet received.
         // Inserted by send_prefetch(), removed on try_recv().
         let mut in_flight: HashSet<usize> = HashSet::new();
-        let mut scroll_strategy = ScrollStrategy::from_mode(app.config.viewer.scroll_mode);
+        let scroll_strategy = ScrollStrategy::from_mode(app.config.viewer.scroll_mode);
         let mut renderer = renderer;
 
         let exit: anyhow::Result<(ExitReason, u32)> = (|| -> anyhow::Result<(ExitReason, u32)> {
@@ -350,9 +350,10 @@ pub fn run(
             let mut last_tick = Instant::now();
 
             loop {
-                // Advance scroll animation (animator → target_y) once per iteration.
-                // Frame-rate independent: dt is the actual elapsed wall-clock time,
-                // clamped to keep tick deltas in a sane range across long idle waits.
+                // Advance scroll animation toward the history-derived target
+                // once per iteration.  Frame-rate independent: dt is the actual
+                // elapsed wall-clock time, clamped to keep tick deltas in a
+                // sane range across long idle waits.
                 let now = Instant::now();
                 let dt = now.duration_since(last_tick).min(Duration::from_millis(64));
                 last_tick = now;
@@ -408,6 +409,7 @@ pub fn run(
                                                 app.config.viewer.scroll_step,
                                                 session.layout.cell_h as u32,
                                                 d,
+                                                &vp.scroll.input_history,
                                             ),
                                             None => {
                                                 app.config.viewer.scroll_step

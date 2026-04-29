@@ -76,7 +76,7 @@ pub(super) fn handle(
         InlineSearchAction::Backspace => {
             if is.query.is_empty() {
                 return vec![
-                    Effect::ScrollTo(is.pre_search_y),
+                    Effect::ScrollAnchor(is.pre_search_y),
                     Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
                 ];
             }
@@ -106,14 +106,14 @@ pub(super) fn handle(
             vec![
                 Effect::SetLastSearch(last),
                 Effect::InvalidateOverlays,
-                Effect::ScrollTo(y),
+                Effect::ScrollAnchor(y),
                 Effect::Flash(flash),
                 Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
             ]
         }
         InlineSearchAction::Cancel => {
             vec![
-                Effect::ScrollTo(is.pre_search_y),
+                Effect::ScrollAnchor(is.pre_search_y),
                 Effect::ExitToNormal(ScreenRestore::StatusBarRefresh),
             ]
         }
@@ -161,7 +161,7 @@ mod tests {
         let effects = handle(InlineSearchAction::Type('f'), &mut is, &doc, 1000);
         assert_eq!(is.query, "f");
         assert!(is.matches.is_empty());
-        assert!(!effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+        assert!(!effects.iter().any(|e| matches!(e, Effect::ScrollAnchor(_))));
         assert!(
             effects
                 .iter()
@@ -194,7 +194,11 @@ mod tests {
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
         let mut is = InlineSearchState::new(42, SearchDirection::Forward);
         let effects = handle(InlineSearchAction::Backspace, &mut is, &doc, 1000);
-        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(42))));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::ScrollAnchor(42)))
+        );
         assert!(
             effects
                 .iter()
@@ -220,7 +224,7 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::SetLastSearch(_)))
         );
-        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollAnchor(_))));
     }
 
     #[test]
@@ -263,7 +267,11 @@ mod tests {
         let doc = DocumentQuery::new(md, &vl, &ci, 0);
         let mut is = InlineSearchState::new(99, SearchDirection::Forward);
         let effects = handle(InlineSearchAction::Cancel, &mut is, &doc, 1000);
-        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(99))));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::ScrollAnchor(99)))
+        );
         assert!(
             effects
                 .iter()
