@@ -19,7 +19,7 @@ use std::time::Duration;
 ///
 /// The residual distance to target halves every `DEFAULT_HALF_LIFE_MS`,
 /// regardless of frame rate. Tuned empirically — see
-/// `docs/2026-04-18-experiment-subcell-scroll.md` §4.
+/// `docs/2026-04-29-experiments-scroll-animation.md` Phase 1.
 pub(super) const DEFAULT_HALF_LIFE_MS: f64 = 40.0;
 
 /// Pixel residual below which the animator snaps `current` to `target`
