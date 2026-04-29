@@ -52,15 +52,46 @@ const RAMP_INITIAL_SCALE: f64 = 3.0;
 /// kinetic feel but lengthens the tail.
 const DEFAULT_KINETIC_TAU_MS: f64 = 50.0;
 
-/// Velocity magnitude (px/s) below which the Kinetic animator snaps.
+/// Residual threshold (px) for the Kinetic snap criterion.
 ///
-/// Pairs with [`SNAP_THRESHOLD_PX`] — both conditions must hold so a
-/// fast-moving glide passing target doesn't prematurely stop. 30 px/s
-/// = ~1 px / 33 ms (≈ 30 fps), the boundary above which sub-pixel
-/// motion remains perceptually continuous; below it, integer rounding
-/// produces the visible "ticking creep" the kinetic snap is meant to
-/// eliminate.
-const KINETIC_SNAP_VELOCITY: f64 = 30.0;
+/// Wider than [`SNAP_THRESHOLD_PX`] (used by the position-chase
+/// variants) because what's perceptually visible is the *integer*
+/// y_offset, not the sub-pixel position.  A residual in the
+/// `[SNAP_THRESHOLD_PX, KINETIC_SNAP_RESIDUAL_PX)` band leaves
+/// `y_offset` rounded to `target − 1`; if next-frame motion is also
+/// sub-pixel the integer position is stuck for a frame, producing a
+/// perceptible "limbo" gap before the final snap (ranger-side
+/// 2-stage motion).  Pairing this 1.0-px residual gate with the
+/// velocity gate below resolves the limbo by snapping inside the
+/// band as soon as next-frame travel is sub-pixel.
+const KINETIC_SNAP_RESIDUAL_PX: f64 = 1.0;
+
+/// Velocity threshold (px/s) for the Kinetic snap criterion.
+///
+/// Snap fires when **both** `residual < KINETIC_SNAP_RESIDUAL_PX` and
+/// `|v| < KINETIC_SNAP_VELOCITY` hold.  The conjunction is structural:
+/// the residual gate handles "we're already at the target pixel,"
+/// the velocity gate handles "we won't reach a new integer pixel
+/// next frame either" — i.e. `|v| · dt < SNAP_THRESHOLD_PX`.  Without
+/// the velocity gate, a target-passing glide (multi-impulse,
+/// `set_landing` from far away) would settle at peak-velocity
+/// pass-through.
+///
+/// Numerically `0.5 px / 0.032 s = 15.625 px/s`, derived from
+/// [`SNAP_THRESHOLD_PX`] / `frame_budget`.  **Tied to
+/// [`crate::config::ViewerConfig::frame_budget`] (32 ms in
+/// `config.rs::ViewerConfig::default`).**  If the budget changes,
+/// recompute as `SNAP_THRESHOLD_PX / frame_budget.as_secs_f64()`;
+/// the `kinetic_snap_velocity_matches_frame_budget` test guards the
+/// relationship so the two stay in sync.
+///
+/// `15.625 = 125/8` is exactly representable in f64 (no rounding on
+/// assignment).  `v` itself accumulates ULP-level error from the
+/// closed-form `(δ/τ)·exp(-elapsed/τ)`, but a 1-ULP shift across the
+/// snap boundary changes nothing perceptually — limbo is a
+/// multi-frame integer-stagnation phenomenon, not a sub-ULP one — so
+/// no `+ε` margin is needed at the comparison site.
+const KINETIC_SNAP_VELOCITY: f64 = 15.625;
 
 /// Pure parameters for the Kinetic animator.  Persists no state — every
 /// query is a closed-form function of `(anchor, history, now)`.
@@ -220,10 +251,16 @@ impl ScrollAnimator {
     /// Whether the animator has motion left toward the derived target
     /// (`anchor + Σ history.delta_px`).
     ///
-    /// Returns false once residual is below [`SNAP_THRESHOLD_PX`].
-    /// `Kinetic` additionally requires |velocity| below
-    /// [`KINETIC_SNAP_VELOCITY`] so a fast glide passing through target
-    /// doesn't prematurely report settled.
+    /// `ExpDecay` / `ExpDecayAdaptive`: residual ≥ [`SNAP_THRESHOLD_PX`].
+    ///
+    /// `Kinetic`: animation continues unless **both** residual <
+    /// [`KINETIC_SNAP_RESIDUAL_PX`] (= 1 visible-pixel boundary) and
+    /// `|v| < `[`KINETIC_SNAP_VELOCITY`] (= projected next-frame motion
+    /// below sub-pixel — see that constant for the
+    /// `frame_budget`-derivation).  The velocity gate rejects
+    /// target-passing glides where residual is momentarily small at
+    /// peak velocity; the residual gate plus velocity gate together
+    /// eliminate the integer-rounding "limbo" frame at the tail.
     pub(super) fn is_animating(&self, anchor: f64, history: &InputHistory, now: Instant) -> bool {
         let target_sum: i64 = history.iter().map(|r| r.delta_px as i64).sum();
         let target = anchor + target_sum as f64;
@@ -234,7 +271,7 @@ impl ScrollAnimator {
             Self::Kinetic(params) => {
                 let x = params.position_at(anchor, history, now);
                 let v = params.velocity_at(history, now);
-                !((target - x).abs() < SNAP_THRESHOLD_PX && v.abs() < KINETIC_SNAP_VELOCITY)
+                !((target - x).abs() < KINETIC_SNAP_RESIDUAL_PX && v.abs() < KINETIC_SNAP_VELOCITY)
             }
         }
     }
@@ -839,8 +876,9 @@ mod tests {
         assert!(!a.is_animating(0.0, &h, later), "kinetic did not settle");
     }
 
-    /// Snap requires BOTH residual<0.5 AND |v|<KINETIC_SNAP_VELOCITY:
-    /// fast-glide passing through target must not prematurely report settled.
+    /// Snap requires BOTH residual<KINETIC_SNAP_RESIDUAL_PX AND
+    /// |v|<KINETIC_SNAP_VELOCITY: fast-glide passing through target must
+    /// not prematurely report settled.
     #[test]
     fn kinetic_does_not_snap_while_fast() {
         // At time t with single big impulse just fired, x ≈ 0 but v is
@@ -868,6 +906,94 @@ mod tests {
     fn from_config_dispatches_kinetic() {
         let a = ScrollAnimator::from_config(7.0, crate::config::ScrollAnimation::Kinetic);
         assert!(matches!(a, ScrollAnimator::Kinetic(_)));
+    }
+
+    /// Guard for the snap-velocity ↔ frame-budget coupling.  The
+    /// `KINETIC_SNAP_VELOCITY` constant is a derived value:
+    /// `SNAP_THRESHOLD_PX / frame_budget`.  If `frame_budget` is
+    /// changed in `config.rs` without recomputing this constant, the
+    /// `|v|·dt < SNAP_THRESHOLD_PX` semantic of the snap criterion
+    /// silently breaks (limbo frames return).
+    ///
+    /// Tolerance: the f64 division `0.5 / 0.032` happens to round
+    /// bit-exactly to 15.625 (round-to-even), but for arbitrary
+    /// future `frame_budget` values that bit-exact landing isn't
+    /// guaranteed.  A small absolute tolerance keeps the guard's
+    /// intent (catch order-of-magnitude drift) without becoming a
+    /// hostage to fp-rounding luck.
+    #[test]
+    fn kinetic_snap_velocity_matches_frame_budget() {
+        let frame_budget = crate::config::ViewerConfig::default().frame_budget;
+        let expected = SNAP_THRESHOLD_PX / frame_budget.as_secs_f64();
+        assert!(
+            (KINETIC_SNAP_VELOCITY - expected).abs() < 1e-6,
+            "KINETIC_SNAP_VELOCITY={KINETIC_SNAP_VELOCITY} but \
+             SNAP_THRESHOLD_PX/frame_budget={expected}; \
+             if frame_budget changed in config.rs, recompute the constant"
+        );
+    }
+
+    /// Regression: integer y_offset trajectory must not contain a
+    /// "limbo" frame (Δ=0 between two unequal positions before
+    /// settling) for any plausible single-impulse magnitude.
+    ///
+    /// Background: with the legacy `residual<0.5 AND |v|<30` snap
+    /// criterion, a single δ=48 impulse (one mouse-wheel notch on a
+    /// 24-px cell) left exactly such a frame at t≈224 ms — sub-pixel
+    /// position 47.46, integer y_offset stuck at 47 while target=48.
+    /// The next frame snapped to 48, leaving the user with a
+    /// perceptible 32 ms "pause then settle" 2-stage motion.  The
+    /// frame-budget-aware criterion (`residual<1` AND `|v|·dt<0.5`)
+    /// snaps inside that band.  See
+    /// `docs/2026-04-29-experiments-scroll-animation.md`.
+    #[test]
+    fn kinetic_no_limbo_frame_in_visible_trajectory() {
+        let frame_budget = Duration::from_millis(32);
+        // δ values cover wheel_step=1..5 over cell heights typical of
+        // common terminals (20..28 px), plus a couple beyond.
+        for delta in [24_i32, 40, 48, 56, 72, 96, 120] {
+            let a = ScrollAnimator::new_kinetic(0.0);
+            let mut h = empty_history();
+            let t0 = Instant::now();
+            let _ = h.record(ScrollDirection::Down, delta);
+            let mut prev_y: i64 = 0;
+            let mut limbos: Vec<u32> = Vec::new();
+            for f in 1u32..=30 {
+                let t = t0 + frame_budget * f;
+                if !a.is_animating(0.0, &h, t) {
+                    break;
+                }
+                let x = a.current_position(0.0, &h, t);
+                let y = x.round() as i64;
+                if y == prev_y && y != delta as i64 {
+                    limbos.push(f);
+                }
+                prev_y = y;
+            }
+            assert!(
+                limbos.is_empty(),
+                "δ={delta}: limbo frames at indices {limbos:?}"
+            );
+        }
+    }
+
+    /// Concrete pin for the canonical mouse-wheel case (δ=48,
+    /// wheel_step=2, cell_h=24).  Sample at t=224 ms — the exact frame
+    /// where the legacy criterion left a limbo.  With the new gate
+    /// `is_animating` must report settled.
+    #[test]
+    fn kinetic_snaps_in_legacy_limbo_band_at_t_224ms() {
+        let a = ScrollAnimator::new_kinetic(0.0);
+        let mut h = empty_history();
+        let t0 = Instant::now();
+        let _ = h.record(ScrollDirection::Down, 48);
+        let sample = t0 + Duration::from_millis(224);
+        // At t=224ms: x=47.46, residual=0.54 (<1.0), |v|=10.88
+        // (<15.625) → both gates satisfied → snap.
+        assert!(
+            !a.is_animating(0.0, &h, sample),
+            "δ=48 at t=224ms must settle (legacy limbo band)"
+        );
     }
 
     /// Pin the "bit-equivalent to the legacy stateful Kinetic" claim.
