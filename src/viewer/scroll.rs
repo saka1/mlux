@@ -57,7 +57,7 @@ impl ScrollStrategy {
         match self {
             Self::Fixed => scroll_step * cell_h,
             Self::Adaptive { history, policy } => {
-                history.record(dir);
+                let _ = history.record(dir, 0);
                 policy.effective_step(cell_h, dir, history)
             }
         }

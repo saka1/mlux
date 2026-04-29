@@ -175,7 +175,7 @@ mod tests {
         // 1 event in DENSITY_WINDOW < MID_THRESHOLD=2 → Normal.
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
-        h.record(ScrollDirection::Down);
+        let _ = h.record(ScrollDirection::Down, 0);
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 48);
     }
 
@@ -184,8 +184,8 @@ mod tests {
         // 2 events within DENSITY_WINDOW → reaches MID_THRESHOLD → Mid.
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
-        h.record(ScrollDirection::Down);
-        h.record(ScrollDirection::Down);
+        let _ = h.record(ScrollDirection::Down, 0);
+        let _ = h.record(ScrollDirection::Down, 0);
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 77);
     }
 
@@ -195,7 +195,7 @@ mod tests {
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         for _ in 0..12 {
-            h.record(ScrollDirection::Down);
+            let _ = h.record(ScrollDirection::Down, 0);
         }
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 86);
     }
@@ -210,7 +210,7 @@ mod tests {
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         for _ in 0..6 {
-            h.record(ScrollDirection::Down);
+            let _ = h.record(ScrollDirection::Down, 0);
         }
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 77);
     }
@@ -225,10 +225,10 @@ mod tests {
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         for _ in 0..12 {
-            h.record(ScrollDirection::Down);
+            let _ = h.record(ScrollDirection::Down, 0);
         }
         thread::sleep(DENSITY_WINDOW + Duration::from_millis(50));
-        h.record(ScrollDirection::Down);
+        let _ = h.record(ScrollDirection::Down, 0);
         // Only this single post-idle event is inside DENSITY_WINDOW →
         // density=1 < 2 → Normal.
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 48);
@@ -239,7 +239,7 @@ mod tests {
         let policy = ScrollPolicy::new();
         let mut h = InputHistory::new(Duration::from_secs(5), 128);
         for _ in 0..12 {
-            h.record(ScrollDirection::Up);
+            let _ = h.record(ScrollDirection::Up, 0);
         }
         // Asking for Down — all Up events are ignored → density=0 → Normal.
         assert_eq!(policy.effective_step(CELL_H, ScrollDirection::Down, &h), 48);
