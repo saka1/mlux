@@ -194,7 +194,7 @@ pub(super) fn handle(
             let y = visual_line_offset(visual_lines, max_scroll, line_num);
             let heading = state.entries[state.selected].text.clone();
             vec![
-                Effect::ScrollTo(y),
+                Effect::ScrollAnchor(y),
                 Effect::Flash(format!("Jumped to: {heading}")),
                 Effect::ExitToNormal(ScreenRestore::FullRefresh),
             ]
@@ -348,7 +348,7 @@ mod tests {
             make_vl("", None),
         ];
         let effects = handle(TocAction::Confirm, &mut state, &vls, 20, 1000);
-        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollTo(_))));
+        assert!(effects.iter().any(|e| matches!(e, Effect::ScrollAnchor(_))));
         assert!(
             effects
                 .iter()

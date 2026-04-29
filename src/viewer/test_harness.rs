@@ -201,6 +201,20 @@ impl TestHarness {
         // Drain the scroll animation: tests observe the final resting position
         // rather than a partially-interpolated frame. The real loop ticks over
         // many frames; the harness collapses that to a single step.
+        //
+        // Only valid for ExpDecay / ExpDecayAdaptive: those use `dt` to advance
+        // their internal `current` field via half-life decay, so a synthetic
+        // 10s `dt` settles them in one call. The Kinetic animator is wall-clock
+        // driven (its position is a closed-form function of `Instant::now()`),
+        // so a synthetic `dt` does nothing. Tests that need to observe Kinetic
+        // settling cannot use this helper.
+        debug_assert!(
+            !matches!(
+                self.viewport.scroll.animator,
+                super::scroll_animator::ScrollAnimator::Kinetic(_)
+            ),
+            "TestHarness drain helper does not advance Kinetic (wall-clock driven, ignores dt)",
+        );
         if self.viewport.scroll.is_animating() {
             self.viewport
                 .scroll

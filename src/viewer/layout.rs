@@ -2,8 +2,19 @@
 
 use std::time::Duration;
 
+use super::input_history::InputHistory;
 use super::scroll_animator::ScrollAnimator;
 use crate::frame::VisualLine;
+
+/// Outer window for the scroll input history.  Sized comfortably
+/// above the scroll_policy's longest sub-window (800ms) to absorb
+/// transient bursts; older entries are convolved into the anchor
+/// when evicted.
+const HISTORY_WINDOW: Duration = Duration::from_millis(5000);
+
+/// Hard cap on the input history buffer.  Key repeat at 60Hz yields
+/// ~300 events over 5s; 128 is enough headroom without unbounded growth.
+const HISTORY_CAP: usize = 128;
 
 // ---------------------------------------------------------------------------
 // Layout / ScrollState
@@ -23,24 +34,39 @@ pub(super) struct Layout {
 /// Scroll position and viewport/document pixel dimensions.
 ///
 /// Groups the data needed for scroll-bound calculations: current rendered
-/// position (`y_offset`), desired position (`target_y`), document height
-/// (`img_h`), viewport dimensions (`vp_w`, `vp_h`), and the animation
-/// strategy driving `y_offset` toward `target_y` each frame.
+/// position (`y_offset`), the per-document `anchor` (sub-pixel "0-time"
+/// position from which the input-history offsets accumulate), document
+/// height, viewport dimensions, the animation strategy, and the shared
+/// input history.
 ///
-/// The animator owns the sub-pixel position; `y_offset` is the rounded
-/// integer readers depend on.
+/// The current scroll *target* is derived as `anchor + Σ history.delta_px`;
+/// the rendered sub-pixel *position* (Kinetic) is also derived from the
+/// same closed form (see `KineticParams::position_at`).  No persistent
+/// `target_y` or velocity state.
 pub(super) struct ScrollState {
     /// Rendered integer position (pixels). Updated by `tick()` from the
     /// animator's current sub-pixel position. Read widely by downstream
     /// code (status bar, visible_tiles, prefetch, etc.).
     pub y_offset: u32,
-    /// Desired final position set by `Effect::ScrollTo`.
-    pub target_y: u32,
+    /// Sub-pixel anchor — the "0-time" position from which the input
+    /// history offsets accumulate to give the current target and the
+    /// animator's closed-form position.  Updated when:
+    /// - History entries are evicted (cap or time window): `anchor += δ`
+    ///   for each evicted record (≈ full contribution past 5τ).
+    /// - `Effect::ScrollAnchor` flushes history and pins anchor to the
+    ///   current sub-pixel position.
+    pub anchor: f64,
     pub img_h: u32, // ドキュメント高さ（ピクセル）
     pub vp_w: u32,  // ビューポート幅（ピクセル）
     pub vp_h: u32,  // ビューポート高さ（ピクセル）
-    /// Animation strategy. Advances `y_offset` toward `target_y` each tick.
+    /// Animation strategy.  See `ScrollAnimator::tick` for the unified
+    /// `(anchor, history, now, dt)` API.
     pub animator: ScrollAnimator,
+    /// Shared input history.  scroll_policy reads direction + timestamp
+    /// for adaptive step classification; the Kinetic animator reads
+    /// delta_px + timestamp for its closed-form position formula.
+    /// Single source of truth — keystrokes are one event.
+    pub input_history: InputHistory,
 }
 
 impl ScrollState {
@@ -54,17 +80,36 @@ impl ScrollState {
     ) -> Self {
         Self {
             y_offset: initial_y,
-            target_y: initial_y,
+            anchor: initial_y as f64,
             img_h,
             vp_w,
             vp_h,
             animator: ScrollAnimator::from_config(initial_y as f64, animation),
+            input_history: InputHistory::new(HISTORY_WINDOW, HISTORY_CAP),
         }
+    }
+
+    /// Current scroll target (anchor + Σ history.delta_px), clamped to
+    /// `[0, max_scroll]`.  Read by mode handlers when computing the
+    /// next incremental delta.
+    pub fn derived_target(&self, max_scroll: u32) -> u32 {
+        let sum: i64 = self.input_history.iter().map(|r| r.delta_px as i64).sum();
+        let raw = (self.anchor.round() as i64 + sum).max(0);
+        (raw as u32).min(max_scroll)
+    }
+
+    /// Current rendered position (sub-pixel) at `now`.  For Kinetic
+    /// this is a closed-form evaluation; for ExpDecay variants it is
+    /// the animator's internal `current` field.
+    pub fn current_position(&self, now: std::time::Instant) -> f64 {
+        self.animator
+            .current_position(self.anchor, &self.input_history, now)
     }
 
     /// Whether an in-flight animation is still running.
     pub fn is_animating(&self) -> bool {
-        self.animator.is_animating(self.target_y as f64)
+        self.animator
+            .is_animating(self.anchor, &self.input_history, std::time::Instant::now())
     }
 
     /// Advance the animation one frame. Returns true if `y_offset` (the
@@ -72,10 +117,11 @@ impl ScrollState {
     /// whether to redraw.
     pub fn tick(&mut self, dt: Duration) -> bool {
         let prev = self.y_offset;
-        let current = self
-            .animator
-            .tick(self.target_y as f64, self.vp_h as f64, dt);
-        self.y_offset = current.round() as u32;
+        let now = std::time::Instant::now();
+        let current =
+            self.animator
+                .tick(self.anchor, &self.input_history, self.vp_h as f64, now, dt);
+        self.y_offset = current.round().max(0.0) as u32;
         self.y_offset != prev
     }
 }

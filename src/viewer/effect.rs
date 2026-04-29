@@ -66,19 +66,24 @@ pub(super) enum ScreenRestore {
 /// Handlers return `Vec<Effect>` which the apply loop in `run()` executes.
 /// This separates "what to do" (handler) from "how to do it" (apply loop).
 pub(super) enum Effect {
-    /// Absolute scroll jump (gg, G, Ngg, TOC, search). Sets `target_y`
-    /// to the given absolute position; velocity-based animators
-    /// (Kinetic) override their velocity via `set_landing` so any
-    /// in-flight momentum is cancelled.
-    ScrollTo(u32),
-    /// Incremental scroll (j, k, Ctrl-D, Ctrl-U). Carries both the
-    /// updated absolute `target` (for position-chase animators that
-    /// only consume target) and the signed `impulse_px` delta (for
-    /// velocity-based animators that accumulate impulses as momentum).
-    ScrollBy {
-        target: u32,
-        impulse_px: i32,
+    /// Incremental scroll (j, k, Ctrl-D, Ctrl-U).  The signed
+    /// `delta_px` is pushed to the input history with `timestamp = now`;
+    /// the animator derives position as a closed-form function of
+    /// `(anchor, history, now)`.  `direction` is carried explicitly
+    /// because it can differ from `delta_px.signum()` only in the
+    /// degenerate clamp-to-edge case (delta = 0); keeping it explicit
+    /// matches what scroll_policy expects.
+    ScrollImpulse {
+        delta_px: i32,
+        direction: super::input_history::ScrollDirection,
     },
+    /// Absolute scroll jump (gg, G, Ngg, TOC, search).  Drains the
+    /// in-flight history (cancelling any residual momentum), pins the
+    /// anchor to the current sub-pixel position, and re-pushes a
+    /// single impulse for `(target - current)` so velocity-based
+    /// animators glide smoothly to the new anchor (matches legacy
+    /// `set_landing` semantics).
+    ScrollAnchor(u32),
     MarkDirty,
     Flash(String),
     RedrawStatusBar,
