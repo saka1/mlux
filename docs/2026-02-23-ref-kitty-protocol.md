@@ -425,6 +425,27 @@ for (i, chunk) in chunks.enumerate():
 
 ## Ghostty 固有の注意点（spike_kitty で実機検証済み）
 
+### tmux 経由時の配置不整合対策（mlux 実装ノート）
+
+tmux + Ghostty 環境では、KGP の `a=p` を pane ローカル座標だけに依存すると、
+tmux のカーソル転送タイミング次第で外側ターミナル側のカーソルが古い位置のままになり、
+隣接 pane へ誤配置されることがある。
+
+mlux は以下の方針で回避している。
+
+1. **`?2026h/l` は tmux へ直書きしない**
+   - synchronized update は tmux DCS passthrough 経由で外側端末(Ghostty)にだけ送る。
+   - 理由: tmux 自体を sync mode に入れると、カーソル転送が遅延し配置ずれを誘発するため。
+
+2. **tmux 内の `a=p` は絶対座標で送る**
+   - `tmux display-message -p -t $TMUX_PANE "#{pane_left} #{pane_top}"` で pane 原点を取得し、
+     `abs_col = pane_left + local_col + 1`, `abs_row = pane_top + local_row + 1` を計算。
+   - `CSI {abs_row};{abs_col}H` と `a=p` を **同一 passthrough payload** で送る。
+
+3. **取得失敗時はフォールバック**
+   - pane 原点取得に失敗した場合は従来の pane ローカルカーソル移動 + `a=p` にフォールバック。
+   - これにより機能停止は避ける（ただし一部 tmux 実装では再発余地あり）。
+
 ### `\x1b[2J` で画像データが消える（唯一の地雷）
 
 標準的なターミナルクリア `\x1b[2J`（CSI 2 J, Erase in Display）を送ると、Ghostty ではテキストだけでなく **Kitty 画像のキャッシュデータごと破棄** される。
