@@ -190,6 +190,15 @@ pub(super) enum ScrollAnimator {
     /// equivalent to the legacy iOS "scroll-to-top" `set_landing`
     /// semantics, but without persistent velocity state.
     Kinetic(KineticParams),
+
+    /// No animation — snaps directly to `anchor + Σ history.delta_px`
+    /// on every `tick()`.  `is_animating` always returns `false` so the
+    /// event loop stays idle between keypresses, emitting exactly one
+    /// KGP frame per keypress.
+    ///
+    /// This is intentionally runtime-only (used for tmux transport
+    /// compatibility), not exposed via `Config`/CLI.
+    Instant,
 }
 
 impl ScrollAnimator {
@@ -219,6 +228,11 @@ impl ScrollAnimator {
         Self::Kinetic(KineticParams::new())
     }
 
+    /// Construct an Instant animator (no animation; always snaps to target).
+    pub(super) fn new_instant(_initial: f64) -> Self {
+        Self::Instant
+    }
+
     /// Construct an animator for the algorithm selected in config.
     /// Adding a [`crate::config::ScrollAnimation`] variant forces a new
     /// arm here — that's the handoff point from user selection to
@@ -236,6 +250,7 @@ impl ScrollAnimator {
     /// Current sub-pixel position at `now` given `anchor` and `history`.
     /// For Kinetic this is a closed-form evaluation; for ExpDecay
     /// variants it returns the animator's internal `current`.
+    /// For Instant it returns the target directly.
     pub(super) fn current_position(
         &self,
         anchor: f64,
@@ -245,6 +260,10 @@ impl ScrollAnimator {
         match self {
             Self::ExpDecay { current, .. } | Self::ExpDecayAdaptive { current, .. } => *current,
             Self::Kinetic(params) => params.position_at(anchor, history, now),
+            Self::Instant => {
+                let target_sum: i64 = history.iter().map(|r| r.delta_px as i64).sum();
+                anchor + target_sum as f64
+            }
         }
     }
 
@@ -273,6 +292,7 @@ impl ScrollAnimator {
                 let v = params.velocity_at(history, now);
                 !((target - x).abs() < KINETIC_SNAP_RESIDUAL_PX && v.abs() < KINETIC_SNAP_VELOCITY)
             }
+            Self::Instant => false,
         }
     }
 
@@ -374,6 +394,13 @@ impl ScrollAnimator {
                 // history, now).  No internal state, dt unused.
                 let _ = dt;
                 params.position_at(anchor, history, now)
+            }
+            Self::Instant => {
+                // No animation: snap directly to target every tick.
+                // Combined with is_animating=false, this produces exactly
+                // one KGP redraw per keypress — critical for tmux where
+                // multiple intermediate frames cause rendering artifacts.
+                target
             }
         }
     }
@@ -906,6 +933,33 @@ mod tests {
     fn from_config_dispatches_kinetic() {
         let a = ScrollAnimator::from_config(7.0, crate::config::ScrollAnimation::Kinetic);
         assert!(matches!(a, ScrollAnimator::Kinetic(_)));
+    }
+
+    #[test]
+    fn instant_snaps_to_target_on_tick() {
+        let mut a = ScrollAnimator::Instant;
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 100);
+        let x = a.tick(0.0, &h, NO_VP, Instant::now(), Duration::from_millis(32));
+        assert_eq!(x, 100.0);
+    }
+
+    #[test]
+    fn instant_is_never_animating() {
+        let a = ScrollAnimator::Instant;
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 200);
+        // Even with a large pending delta, is_animating must be false.
+        assert!(!a.is_animating(0.0, &h, Instant::now()));
+    }
+
+    #[test]
+    fn instant_current_position_returns_target() {
+        let a = ScrollAnimator::Instant;
+        let mut h = empty_history();
+        let _ = h.record(ScrollDirection::Down, 50);
+        let pos = a.current_position(10.0, &h, Instant::now());
+        assert_eq!(pos, 60.0); // anchor=10 + delta=50
     }
 
     /// Guard for the snap-velocity ↔ frame-budget coupling.  The
