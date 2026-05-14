@@ -14,6 +14,7 @@ use super::mode_toc::{self, TocState};
 use super::mode_url::{self, UrlPickerState};
 use super::terminal;
 use super::viewport::{ViewContext, Viewport};
+use std::io::Write;
 
 /// Why the inner event loop exited back to the outer rebuild loop.
 #[derive(Debug, Clone)]
@@ -152,13 +153,16 @@ pub(super) fn execute_render_ops(
                     };
                     terminal::draw_inline_search_bar(ctx.layout, &is.query, prompt)?;
                 } else {
+                    let mut out = std::io::stdout();
                     terminal::draw_status_bar(
+                        &mut out,
                         ctx.layout,
                         &vp.scroll,
                         ctx.filename,
                         ctx.acc_value,
                         vp.flash.as_deref(),
                     )?;
+                    out.flush()?;
                 }
             }
             RenderOp::DrawModeScreen => match &vp.mode {

@@ -89,6 +89,11 @@ pub fn run(
 ) -> anyhow::Result<()> {
     terminal::check_tty()?;
 
+    // Runtime-only override: inside tmux, disable interpolation and emit
+    // exactly one KGP frame per keypress to avoid row-by-row artifacts.
+    // Keep this out of Config/CLI surface — it's transport-specific policy.
+    let tmux_runtime_instant = std::env::var_os("TMUX").is_some();
+
     let winsize = crossterm_terminal::window_size()
         .map_err(|e| anyhow::anyhow!("failed to get terminal size: {e}"))?;
     let (term_cols, term_rows) = (winsize.columns, winsize.rows);
@@ -283,15 +288,21 @@ pub fn run(
         let (vp_w, vp_h) = layout::vp_dims(&session.layout, img_w, img_h);
 
         // 6. Inner event loop
+        let initial_y = session.scroll_carry.min(meta.max_scroll(vp_h));
+        let mut scroll = ScrollState::new(
+            initial_y,
+            img_h,
+            vp_w,
+            vp_h,
+            app.config.viewer.scroll_animation,
+        );
+        if tmux_runtime_instant {
+            scroll.animator = scroll_animator::ScrollAnimator::new_instant(initial_y as f64);
+        }
+
         let mut vp = Viewport {
             mode: ViewerMode::Normal,
-            scroll: ScrollState::new(
-                session.scroll_carry.min(meta.max_scroll(vp_h)),
-                img_h,
-                vp_w,
-                vp_h,
-                app.config.viewer.scroll_animation,
-            ),
+            scroll,
             display: DisplayState::new_with_start_id(
                 app.config.viewer.evict_distance,
                 GEN_BASES[active_gen],

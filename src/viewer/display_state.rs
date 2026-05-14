@@ -342,7 +342,10 @@ impl DisplayState {
         let mut out = std::io::stdout();
         for (slot, image_id) in self.live_slots.drain() {
             let pid = slot.placement_id();
-            write!(out, "\x1b_Ga=d,d=i,i={image_id},p={pid},q=2\x1b\\")?;
+            terminal::write_kgp(
+                &mut out,
+                format_args!("\x1b_Ga=d,d=i,i={image_id},p={pid},q=2\x1b\\"),
+            )?;
         }
         out.flush()
     }
@@ -362,7 +365,10 @@ impl DisplayState {
         if let Some(old_id) = self.live_slots.insert(slot, image_id)
             && old_id != image_id
         {
-            write!(out, "\x1b_Ga=d,d=i,i={old_id},p={pid},q=2\x1b\\")?;
+            terminal::write_kgp(
+                out,
+                format_args!("\x1b_Ga=d,d=i,i={old_id},p={pid},q=2\x1b\\"),
+            )?;
         }
         Ok(pid)
     }
@@ -384,7 +390,10 @@ impl DisplayState {
         for slot in stale {
             if let Some(image_id) = self.live_slots.remove(&slot) {
                 let pid = slot.placement_id();
-                write!(out, "\x1b_Ga=d,d=i,i={image_id},p={pid},q=2\x1b\\")?;
+                terminal::write_kgp(
+                    out,
+                    format_args!("\x1b_Ga=d,d=i,i={image_id},p={pid},q=2\x1b\\"),
+                )?;
             }
         }
         Ok(())
@@ -405,7 +414,7 @@ impl DisplayState {
 fn delete_placements_for_ids(ids: &[u32]) -> io::Result<()> {
     let mut out = std::io::stdout();
     for &id in ids {
-        write!(out, "\x1b_Ga=d,d=i,i={id},q=2\x1b\\")?;
+        terminal::write_kgp(&mut out, format_args!("\x1b_Ga=d,d=i,i={id},q=2\x1b\\"))?;
     }
     out.flush()
 }
@@ -561,19 +570,20 @@ pub(super) fn redraw(
         }
     }
 
-    // Phase 2: Delete only slots that disappear this frame.
+    // Phase 2/3 share one stdout batch so tmux sees a complete frame update
+    // instead of a delete flush followed by several partial redraw flushes.
     let new_slots = collect_new_slots(&visible, loaded, layout, include_overlays);
-    {
-        let mut out = std::io::stdout();
-        loaded.delete_stale_slots(&mut out, &new_slots)?;
-        out.flush()?;
-    }
+    let mut out = std::io::stdout();
+    terminal::begin_sync_update(&mut out)?;
+    loaded.delete_stale_slots(&mut out, &new_slots)?;
 
     // Phase 3: Place content + sidebar + overlay + status bar.
-    terminal::place_content_tiles(&visible, loaded, layout, scroll)?;
-    terminal::place_sidebar_tiles(&visible, loaded, meta.sidebar_width_px, layout)?;
-    terminal::place_overlay_rects(&visible, loaded, layout)?;
-    terminal::draw_status_bar(layout, scroll, filename, acc_peek, flash)?;
+    terminal::place_content_tiles(&mut out, &visible, loaded, layout, scroll)?;
+    terminal::place_sidebar_tiles(&mut out, &visible, loaded, meta.sidebar_width_px, layout)?;
+    terminal::place_overlay_rects(&mut out, &visible, loaded, layout)?;
+    terminal::draw_status_bar(&mut out, layout, scroll, filename, acc_peek, flash)?;
+    terminal::end_sync_update(&mut out)?;
+    out.flush()?;
     Ok(())
 }
 
@@ -729,7 +739,11 @@ pub(super) fn redraw_and_prefetch(
         // update_overlays may have populated new rects; re-emit overlay
         // placements. Stale slots (rects that vanished for the current
         // tile set) were already pruned by Phase 2's delete_stale_slots.
-        terminal::place_overlay_rects(&visible, display, layout)?;
+        let mut out = std::io::stdout();
+        terminal::begin_sync_update(&mut out)?;
+        terminal::place_overlay_rects(&mut out, &visible, display, layout)?;
+        terminal::end_sync_update(&mut out)?;
+        out.flush()?;
     }
     send_prefetch(rh, meta, cache, scroll.y_offset);
     Ok(())

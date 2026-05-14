@@ -10,11 +10,181 @@ use crossterm::{
 use log::{debug, warn};
 use std::io::{self, Write, stdout};
 use std::os::unix::io::AsRawFd;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::display_state::{DisplayState, PlacementSlot};
 use super::layout::{Layout, ScrollState};
 use crate::frame::VisibleTiles;
+
+fn tmux_passthrough_enabled() -> bool {
+    std::env::var_os("TMUX").is_some()
+}
+
+#[derive(Clone, Copy)]
+struct TmuxPaneOrigin {
+    left: u16,
+    top: u16,
+}
+
+#[derive(Clone, Copy)]
+struct TmuxPaneOriginCache {
+    origin: Option<TmuxPaneOrigin>,
+    last_probe: Instant,
+}
+
+fn parse_tmux_pane_origin(s: &str) -> Option<TmuxPaneOrigin> {
+    let mut it = s.split_whitespace();
+    let left = it.next()?.parse::<u16>().ok()?;
+    let top = it.next()?.parse::<u16>().ok()?;
+    Some(TmuxPaneOrigin { left, top })
+}
+
+fn query_tmux_pane_origin() -> Option<TmuxPaneOrigin> {
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let output = std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{pane_left} #{pane_top}",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let out = std::str::from_utf8(&output.stdout).ok()?;
+    parse_tmux_pane_origin(out)
+}
+
+fn tmux_pane_origin_cached() -> Option<TmuxPaneOrigin> {
+    const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+    static CACHE: OnceLock<Mutex<Option<TmuxPaneOriginCache>>> = OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().ok()?;
+
+    if let Some(entry) = *guard
+        && entry.last_probe.elapsed() < REFRESH_INTERVAL
+    {
+        return entry.origin;
+    }
+
+    let prev_origin = (*guard).and_then(|entry| entry.origin);
+    let refreshed = query_tmux_pane_origin().or(prev_origin);
+    *guard = Some(TmuxPaneOriginCache {
+        origin: refreshed,
+        last_probe: Instant::now(),
+    });
+    refreshed
+}
+
+struct TmuxPassthroughWriter<'a, W> {
+    inner: &'a mut W,
+}
+
+impl<W: Write> Write for TmuxPassthroughWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for &byte in buf {
+            if byte == b'\x1b' {
+                self.inner.write_all(b"\x1b\x1b")?;
+            } else {
+                self.inner.write_all(&[byte])?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn write_tmux_passthrough<W: Write, F>(out: &mut W, write_inner: F) -> io::Result<()>
+where
+    F: FnOnce(&mut TmuxPassthroughWriter<'_, W>) -> io::Result<()>,
+{
+    out.write_all(b"\x1bPtmux;")?;
+    {
+        let mut passthrough = TmuxPassthroughWriter { inner: out };
+        write_inner(&mut passthrough)?;
+    }
+    out.write_all(b"\x1b\\")
+}
+
+pub(super) fn write_kgp(out: &mut impl Write, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+    if tmux_passthrough_enabled() {
+        write_tmux_passthrough(out, |passthrough| passthrough.write_fmt(args))?;
+    } else {
+        out.write_fmt(args)?;
+    }
+    Ok(())
+}
+
+/// Position the cursor at `(col, row)` and emit a KGP command.
+///
+/// Outside tmux, this writes a normal pane-local cursor move then emits
+/// the KGP command.
+///
+/// Under tmux, it emits an absolute cursor move and the KGP command in the
+/// same passthrough payload. Absolute coordinates are computed from pane
+/// origin (`pane_left`, `pane_top`) plus pane-local `(col, row)`, so
+/// Ghostty receives a fully-positioned command independent of tmux cursor
+/// flush timing.
+pub(super) fn write_kgp_at(
+    out: &mut impl Write,
+    col: u16,
+    row: u16,
+    args: std::fmt::Arguments<'_>,
+) -> io::Result<()> {
+    if tmux_passthrough_enabled() {
+        if let Some(origin) = tmux_pane_origin_cached() {
+            let abs_col = origin.left as u32 + col as u32 + 1;
+            let abs_row = origin.top as u32 + row as u32 + 1;
+
+            write_tmux_passthrough(out, |passthrough| {
+                passthrough.write_fmt(format_args!("\x1b[{abs_row};{abs_col}H"))?;
+                passthrough.write_fmt(args)
+            })?;
+            return Ok(());
+        }
+
+        // Fallback: rely on tmux cursor translation when pane origin query
+        // is unavailable. This may still misplace images on some tmux builds,
+        // but preserves functionality instead of failing hard.
+        out.execute(cursor::MoveTo(col, row))?;
+        return write_kgp(out, args);
+    }
+
+    out.queue(cursor::MoveTo(col, row))?;
+    write_kgp(out, args)
+}
+
+pub(super) fn begin_sync_update(out: &mut impl Write) -> io::Result<()> {
+    if tmux_passthrough_enabled() {
+        // Under tmux: forward ?2026h to Ghostty via passthrough ONLY.
+        // Writing ?2026h directly to tmux puts tmux itself into synchronized
+        // mode, which can delay cursor forwarding and break KGP placement.
+        write_kgp(out, format_args!("\x1b[?2026h"))
+    } else {
+        out.write_all(b"\x1b[?2026h")
+    }
+}
+
+pub(super) fn end_sync_update(out: &mut impl Write) -> io::Result<()> {
+    if tmux_passthrough_enabled() {
+        // Under tmux: forward ?2026l to Ghostty via DCS passthrough ONLY.
+        // Same reasoning as begin_sync_update — avoid putting tmux in its
+        // own sync mode.
+        write_kgp(out, format_args!("\x1b[?2026l"))
+    } else {
+        out.write_all(b"\x1b[?2026l")
+    }
+}
 
 // ---------------------------------------------------------------------------
 // RawGuard — restores raw mode / alternate screen / image cleanup on Drop
@@ -45,7 +215,7 @@ impl RawGuard {
         }
         self.cleaned = true;
         let mut out = stdout();
-        let _ = write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\");
+        let _ = write_kgp(&mut out, format_args!("\x1b_Ga=d,d=A,q=2\x1b\\"));
         let _ = out.execute(cursor::Show);
         if self.mouse {
             let _ = out.execute(DisableMouseCapture);
@@ -90,9 +260,9 @@ pub(super) fn send_image(png_data: &[u8], image_id: u32) -> io::Result<()> {
 
     let encoded_path = BASE64.encode(path.as_bytes());
     let mut out = stdout();
-    write!(
-        out,
-        "\x1b_Ga=t,f=100,i={image_id},t=t,q=2;{encoded_path}\x1b\\"
+    write_kgp(
+        &mut out,
+        format_args!("\x1b_Ga=t,f=100,i={image_id},t=t,q=2;{encoded_path}\x1b\\"),
     )?;
     out.flush()?;
 
@@ -116,9 +286,9 @@ pub(super) fn send_raw_image(
 ) -> io::Result<()> {
     let encoded = BASE64.encode(rgba);
     let mut out = stdout();
-    write!(
-        out,
-        "\x1b_Ga=t,f=32,s={width},v={height},i={image_id},t=d,q=2;{encoded}\x1b\\"
+    write_kgp(
+        &mut out,
+        format_args!("\x1b_Ga=t,f=32,s={width},v={height},i={image_id},t=d,q=2;{encoded}\x1b\\"),
     )?;
     out.flush()
 }
@@ -126,7 +296,10 @@ pub(super) fn send_raw_image(
 /// Delete image data and placements
 pub(super) fn delete_image(image_id: u32) -> io::Result<()> {
     let mut out = stdout();
-    write!(out, "\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\")?;
+    write_kgp(
+        &mut out,
+        format_args!("\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\"),
+    )?;
     out.flush()
 }
 
@@ -145,7 +318,7 @@ pub(super) fn delete_image(image_id: u32) -> io::Result<()> {
 ///   fresh `DisplayState` for the next iteration.
 pub(super) fn delete_all_images() -> io::Result<()> {
     let mut out = stdout();
-    write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\")?;
+    write_kgp(&mut out, format_args!("\x1b_Ga=d,d=A,q=2\x1b\\"))?;
     out.flush()
 }
 
@@ -154,7 +327,7 @@ pub(super) fn delete_images_by_ids(ids: &[u32]) -> io::Result<()> {
     debug!("kgp: delete_images_by_ids ({} images)", ids.len());
     let mut out = stdout();
     for &id in ids {
-        write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
+        write_kgp(&mut out, format_args!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\"))?;
     }
     out.flush()
 }
@@ -192,7 +365,8 @@ pub(super) fn split_rows_pub(top_src_h: u32, cell_h: u16, image_rows: u16) -> (u
 /// `make_slot(tile_idx)` builds the corresponding `PlacementSlot` so that
 /// the emitted `a=p` carries a stable `p=<placement_id>` and the live-slot
 /// tracker can handle future diffing.
-pub(super) fn place_tiles(
+fn place_tiles(
+    out: &mut impl Write,
     visible: &VisibleTiles,
     loaded: &mut DisplayState,
     layout: &Layout,
@@ -200,7 +374,6 @@ pub(super) fn place_tiles(
     get_id: fn(&super::display_state::TileImageIds) -> u32,
     make_slot: fn(usize) -> PlacementSlot,
 ) -> io::Result<()> {
-    let mut out = stdout();
     let w = params.img_width;
     let cols = params.num_cols;
 
@@ -212,11 +385,14 @@ pub(super) fn place_tiles(
                 .min(layout.image_rows as f64) as u16;
             let rows = rows.max(1);
             let slot = make_slot(*idx);
-            let pid = loaded.track_placement(&mut out, slot, id)?;
-            out.queue(cursor::MoveTo(params.start_col, 0))?;
-            write!(
+            let pid = loaded.track_placement(out, slot, id)?;
+            write_kgp_at(
                 out,
-                "\x1b_Ga=p,i={id},p={pid},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,q=2\x1b\\",
+                params.start_col,
+                0,
+                format_args!(
+                    "\x1b_Ga=p,i={id},p={pid},x=0,y={src_y},w={w},h={src_h},c={cols},r={rows},C=1,q=2\x1b\\",
+                ),
             )?;
         }
         VisibleTiles::Split {
@@ -241,32 +417,40 @@ pub(super) fn place_tiles(
             );
 
             let top_slot = make_slot(*top_idx);
-            let top_pid = loaded.track_placement(&mut out, top_slot, top_id)?;
-            out.queue(cursor::MoveTo(params.start_col, 0))?;
-            write!(
+            let top_pid = loaded.track_placement(out, top_slot, top_id)?;
+            write_kgp_at(
                 out,
-                "\x1b_Ga=p,i={top_id},p={top_pid},x=0,y={top_src_y},w={w},h={top_src_h},c={cols},r={top_rows},C=1,q=2\x1b\\",
+                params.start_col,
+                0,
+                format_args!(
+                    "\x1b_Ga=p,i={top_id},p={top_pid},x=0,y={top_src_y},w={w},h={top_src_h},c={cols},r={top_rows},C=1,q=2\x1b\\",
+                ),
             )?;
             let bot_slot = make_slot(*bot_idx);
-            let bot_pid = loaded.track_placement(&mut out, bot_slot, bot_id)?;
-            out.queue(cursor::MoveTo(params.start_col, top_rows))?;
-            write!(
+            let bot_pid = loaded.track_placement(out, bot_slot, bot_id)?;
+            write_kgp_at(
                 out,
-                "\x1b_Ga=p,i={bot_id},p={bot_pid},x=0,y=0,w={w},h={bot_src_h},c={cols},r={bot_rows},C=1,q=2\x1b\\",
+                params.start_col,
+                top_rows,
+                format_args!(
+                    "\x1b_Ga=p,i={bot_id},p={bot_pid},x=0,y=0,w={w},h={bot_src_h},c={cols},r={bot_rows},C=1,q=2\x1b\\",
+                ),
             )?;
         }
     }
-    out.flush()
+    Ok(())
 }
 
 /// Place content tile(s) based on visible_tiles result.
 pub(super) fn place_content_tiles(
+    out: &mut impl Write,
     visible: &VisibleTiles,
     loaded: &mut DisplayState,
     layout: &Layout,
     scroll: &ScrollState,
 ) -> io::Result<()> {
     place_tiles(
+        out,
         visible,
         loaded,
         layout,
@@ -282,12 +466,14 @@ pub(super) fn place_content_tiles(
 
 /// Place sidebar tile(s) based on the same visible_tiles as content.
 pub(super) fn place_sidebar_tiles(
+    out: &mut impl Write,
     visible: &VisibleTiles,
     loaded: &mut DisplayState,
     sidebar_width_px: u32,
     layout: &Layout,
 ) -> io::Result<()> {
     place_tiles(
+        out,
         visible,
         loaded,
         layout,
@@ -307,6 +493,7 @@ pub(super) fn place_sidebar_tiles(
 /// Each rect gets a primary placement at `row = top / ch` with `Y = top % ch`,
 /// and optionally a second placement on the next row for overflow coverage.
 pub(super) fn place_overlay_rects(
+    out: &mut impl Write,
     visible: &VisibleTiles,
     loaded: &mut DisplayState,
     layout: &Layout,
@@ -325,13 +512,11 @@ pub(super) fn place_overlay_rects(
         return Ok(());
     }
 
-    let mut out = stdout();
-
     match visible {
         VisibleTiles::Single { idx, src_y, src_h } => {
             let rects = loaded.overlay_rects(*idx).to_vec();
             place_rects_in_region(
-                &mut out,
+                out,
                 loaded,
                 *idx,
                 &rects,
@@ -359,7 +544,7 @@ pub(super) fn place_overlay_rects(
             let bot_rects = loaded.overlay_rects(*bot_idx).to_vec();
 
             place_rects_in_region(
-                &mut out,
+                out,
                 loaded,
                 *top_idx,
                 &top_rects,
@@ -375,7 +560,7 @@ pub(super) fn place_overlay_rects(
                 },
             )?;
             place_rects_in_region(
-                &mut out,
+                out,
                 loaded,
                 *bot_idx,
                 &bot_rects,
@@ -392,7 +577,7 @@ pub(super) fn place_overlay_rects(
             )?;
         }
     }
-    out.flush()
+    Ok(())
 }
 
 /// Copy of `HighlightImages` for use during rect iteration while
@@ -578,13 +763,16 @@ fn place_rects_in_region(
         // 1st placement: FULL image with Y sub-cell offset
         let primary_slot = PlacementSlot::OverlayPrimary(tile_idx, rect_idx);
         let primary_pid = loaded.track_placement(out, primary_slot, full_id)?;
-        out.queue(cursor::MoveTo(e.col, e.row))?;
-        write!(
+        write_kgp_at(
             out,
-            "\x1b_Ga=p,i={full_id},p={primary_pid},w={src_w},h={src_h},X={x_off},Y={y_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
-            x_off = e.x_off,
-            y_off = e.y_off,
-            cols = e.cols,
+            e.col,
+            e.row,
+            format_args!(
+                "\x1b_Ga=p,i={full_id},p={primary_pid},w={src_w},h={src_h},X={x_off},Y={y_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+                x_off = e.x_off,
+                y_off = e.y_off,
+                cols = e.cols,
+            ),
         )?;
 
         // 2nd placement: overflow into next row (if any)
@@ -604,12 +792,15 @@ fn place_rects_in_region(
 
             let overflow_slot = PlacementSlot::OverlayOverflow(tile_idx, rect_idx);
             let overflow_pid = loaded.track_placement(out, overflow_slot, ov_id)?;
-            out.queue(cursor::MoveTo(e.col, next_row))?;
-            write!(
+            write_kgp_at(
                 out,
-                "\x1b_Ga=p,i={ov_id},p={overflow_pid},w={ov_w},h={ov_h},X={x_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
-                x_off = e.x_off,
-                cols = e.cols,
+                e.col,
+                next_row,
+                format_args!(
+                    "\x1b_Ga=p,i={ov_id},p={overflow_pid},w={ov_w},h={ov_h},X={x_off},c={cols},r=1,C=1,z=1,q=2\x1b\\",
+                    x_off = e.x_off,
+                    cols = e.cols,
+                ),
             )?;
         }
     }
@@ -621,13 +812,13 @@ fn place_rects_in_region(
 /// `acc_peek`: shows accumulated count like `:56_` when digits are being typed
 /// `flash`: transient message (e.g. yank success), cleared on next keypress
 pub(super) fn draw_status_bar(
+    out: &mut impl Write,
     layout: &Layout,
     scroll: &ScrollState,
     filename: &str,
     acc_peek: Option<u32>,
     flash: Option<&str>,
 ) -> io::Result<()> {
-    let mut out = stdout();
     out.queue(cursor::MoveTo(0, layout.status_row))?;
 
     let max_y = scroll.img_h.saturating_sub(scroll.vp_h);
@@ -660,7 +851,7 @@ pub(super) fn draw_status_bar(
     let truncated: String = padded.chars().take(total_cols as usize).collect();
     write!(out, "{}", truncated.on_dark_grey().white())?;
     out.queue(style::ResetColor)?;
-    out.flush()
+    Ok(())
 }
 
 /// Truncate a string to at most `max_bytes`, respecting UTF-8 char boundaries.
@@ -900,6 +1091,21 @@ pub(super) fn check_tty() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_tmux_pane_origin_valid() {
+        let parsed = parse_tmux_pane_origin("12 34\n").unwrap();
+        assert_eq!(parsed.left, 12);
+        assert_eq!(parsed.top, 34);
+    }
+
+    #[test]
+    fn parse_tmux_pane_origin_invalid() {
+        assert!(parse_tmux_pane_origin("").is_none());
+        assert!(parse_tmux_pane_origin("12").is_none());
+        assert!(parse_tmux_pane_origin("x 34").is_none());
+        assert!(parse_tmux_pane_origin("12 y").is_none());
+    }
 
     #[test]
     fn parse_osc11_4digit() {

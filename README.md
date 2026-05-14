@@ -29,6 +29,17 @@ PNG export (`mlux render`), and stdin support
   supports the
   [Kitty Graphics Protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 
+### tmux
+
+When running inside tmux, enable passthrough so Kitty graphics and synchronized
+updates reach the outer terminal:
+
+```tmux
+set -g allow-passthrough on
+```
+
+Without this, image placement can fail or render in the wrong pane.
+
 ## Installation
 
 Pre-built binaries are available on the
@@ -122,4 +133,3 @@ through its rendering pipeline. Exercise caution with untrusted documents.
 ## License
 
 MIT
-
